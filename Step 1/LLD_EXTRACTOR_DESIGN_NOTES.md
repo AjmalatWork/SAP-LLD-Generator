@@ -39,10 +39,10 @@ inline in the code with a `VERIFY:` comment at the exact point it matters.
    the real one is `READ_LATEST_VERSION` (`TYPE PROGDIR-STATE`, default `SPACE`).
    Fixed to pass `read_latest_version = 'A'` (the standard SAP convention for
    "active version") explicitly, rather than trust `SPACE`'s default behavior.
-   `ABAPTXT255`'s exact line type is still assumed (flat `C(255)`, matching
-   `TS_LINE_255` and the same convention `SVRS_GET_REPS_FROM_OBJECT`'s
-   `REPOS_TAB` already uses elsewhere in this codebase) — if extracted source
-   comes back garbled rather than just failing to activate, check this first.
+   `ABAPTXT255`'s line type assumption (flat `C(255)`, matching `TS_LINE_255`)
+   is **confirmed correct** — the first real run produced clean, non-garbled,
+   non-truncated source across all 23 extracted objects (verified: plain ASCII,
+   CRLF, zero null bytes, no line-length anomalies).
 3. ~~`SEO_CLASS_GET_SOURCE`'s exact parameter names/types~~ — moot: this FM does
    not exist on the target system at all (confirmed). Replaced with
    `CL_OO_CLASSNAME_SERVICE=>GET_CLASSPOOL_NAME` + the same `READ_PROGRAM_AND_INCLUDES`
@@ -52,20 +52,19 @@ inline in the code with a `VERIFY:` comment at the exact point it matters.
    exists as a sibling of `GET_PUBSEC_NAME`/`GET_PRISEC_NAME`/`GET_PROSEC_NAME`/
    `GET_CCDEF_NAME` on `CL_OO_CLASSNAME_SERVICE` — those four are already called
    successfully by `ZCR_AURA_CODE_EXTRACTOR`'s own `BUILD_DEPENDENCY_INPUT` on
-   this system, so the same utility class is confirmed present; only this one
-   additional method needs checking in SE24/SE37 before activating.
-4. **`REPOSITORY_ENVIRONMENT_RFC` on a main program's own name covers its includes'
-   references too**, not just the top-level program's own lines. This is the basis
-   for calling `ZCR_GET_DEPENDENCY_OBJ_NEW` with `obj_type='PROG'` once per whole
-   program in `BUILD_DEPENDENCY_FOR_OBJECT`, rather than once per include (which is
-   what the *original* per-fragment tool does). If real testing shows this
-   assumption is wrong — i.e. a multi-include program's dependency JSON is missing
-   calls that only appear in an include — the fix is to call the FM once per
-   include (main program + every `RS_GET_ALL_INCLUDES` result) and merge/dedup the
-   resulting JSON candidate lists, the same way the original tool effectively does
-   it per-fragment. **This is the single most important thing to eye-check per
-   acceptance criterion 5** — pick a PROG object that actually has includes for
-   that check, not a single-include one, or this specific risk won't be exercised.
+   this system, so the same utility class is confirmed present. **Confirmed
+   working**: the first real FULL run against `ZZBA91` produced complete class
+   source for all 17 extracted classes, including full method bodies (e.g.
+   `ZCL_CBA_ALIAS_DEFINITION` — every `METHOD`/`ENDMETHOD` pair from its
+   private-section method list was present and non-duplicated).
+4. ~~`REPOSITORY_ENVIRONMENT_RFC` on a main program's own name covers its includes'
+   references too~~ — **confirmed correct**, against a real first FULL run against
+   package `ZZBA91`. `ZPCBA91R_IMPORT_ALIAS_MDL` (a 3-include program: `_TOP`,
+   `_SCR`, `_F01`) had calls that only appear deep in `_F01`
+   (`ZCL_CBA_AUTHORIZATION=>USER_HAS_CREATION_ACCESS`, `CL_GUI_FRONTEND_SERVICES`,
+   `CL_SXML_STRING_READER`, `CL_IXML`, `CL_ABAP_CODEPAGE`), and every one of them
+   showed up correctly in that object's dependency JSON. This was the single
+   riskiest untested assumption in this whole report — it held up.
 5. **`D010INC` reverse lookup (`include` → `master`) correctly resolves which
    program owns a given include**, used in `DETERMINE_OWNER`'s `REPS` branch to
    route a transport-touched include back to its whole owning program. If a
@@ -143,10 +142,16 @@ inline in the code with a `VERIFY:` comment at the exact point it matters.
 
 Run these against a real test package once activated:
 
-1. **First run, valid package with objects.** Expect: every PROG/CLAS/FUNC (incl.
-   FUGR members) present in the ALV, `RUN_TYPE: FULL` in the output header, no
-   `REMOVED_OBJECTS` (i.e. `NONE`), exactly one `--- DDIC ---` section, and a new
-   `ZDCCRT_SYNC_LOG` row for the package after EXEC.
+1. **First run, valid package with objects.** ✅ **Passed** — first real FULL run
+   against package `ZZBA91` produced `LLD_EXTRACT_ZZBA91_FULL.TXT`: 23 objects
+   (17 CLASS, 5 PROGRAM, 1 FUNCTION_MODULE), `RUN_TYPE: FULL`,
+   `REMOVED_OBJECTS: NONE`, exactly one `--- DDIC ---` section covering all four
+   categories (263 domains, 828 data elements, plus tables/structures/table
+   types), `=== OBJECT ===`/`=== END OBJECT ===` counts balanced (23/23), zero
+   null bytes, no truncation or garbling. (Whether a `ZDCCRT_SYNC_LOG` row was
+   actually written still needs a DB check — not verified from the output file
+   alone.) Also incidentally validated assumption #4 above (the riskiest one)
+   and assumption #3's `GET_CLASSPOOL_NAME` fix.
 2. **Second run, no new released transports.** Expect: empty ALV grid (not an
    error), and — since the brief's wording implies EXEC should still work on an
    empty grid — a header-only output file with `RUN_TYPE: INCREMENTAL`,

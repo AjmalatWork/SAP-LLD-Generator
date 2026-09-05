@@ -1,0 +1,297 @@
+=== RETRIEVAL METADATA ===
+REQUIREMENT: Calculate the shipping cost for an order based on customer location zone and item count
+SCOPING_NOTE: ZCL_SHIPPING_CALCULATOR
+CONFIDENCE: certain
+LIKELY_NEW_OBJECT: False
+LIKELY_NEW_OBJECT_REASON: (none)
+DISAGREEMENTS: 0
+=== END RETRIEVAL METADATA ===
+
+=== OBJECT: ZCL_SHIPPING_CALCULATOR ===
+TYPE: CLASS
+PACKAGE: ZORDER_MGMT
+
+--- SOURCE ---
+CLASS zcl_shipping_calculator DEFINITION PUBLIC CREATE PUBLIC.
+
+  PUBLIC SECTION.
+    METHODS: calculate_shipping
+               IMPORTING iv_kunnr       TYPE kunnr
+                         iv_items       TYPE i
+               RETURNING VALUE(rv_cost) TYPE netwr,
+             determine_zone
+               IMPORTING iv_kunnr       TYPE kunnr
+               RETURNING VALUE(rv_zone) TYPE char4.
+
+ENDCLASS.
+
+CLASS zcl_shipping_calculator IMPLEMENTATION.
+
+METHOD determine_zone.
+    DATA: lv_land1 TYPE land1.
+
+    SELECT SINGLE land1 FROM zcust_master
+      INTO lv_land1
+      WHERE kunnr = iv_kunnr.
+
+    SELECT SINGLE zone FROM zship_zone
+      INTO rv_zone
+      WHERE land1 = lv_land1.
+
+    IF sy-subrc <> 0.
+      rv_zone = 'DFLT'.
+    ENDIF.
+  ENDMETHOD.
+
+METHOD calculate_shipping.
+    DATA: lv_zone TYPE char4,
+          lv_base TYPE netwr,
+          lv_per  TYPE netwr.
+
+    lv_zone = determine_zone( iv_kunnr ).
+
+    SELECT SINGLE base_cost per_item FROM zship_zone
+      INTO (lv_base, lv_per)
+      WHERE zone = lv_zone.
+
+    IF sy-subrc <> 0.
+      zcl_order_logger=>log_error(
+        iv_object = 'ZCL_SHIPPING_CALCULATOR'
+        iv_key    = iv_kunnr
+        iv_text   = |Zone { lv_zone } has no cost entry| ).
+      rv_cost = 0.
+      RETURN.
+    ENDIF.
+
+    rv_cost = lv_base + ( lv_per * iv_items ).
+  ENDMETHOD.
+
+ENDCLASS.
+
+--- DEPENDENCIES ---
+{
+  "calls": [
+    "ZCL_ORDER_LOGGER"
+  ],
+  "tables_used": [
+    {
+      "table": "ZCUST_MASTER",
+      "fields": [
+        "KUNNR",
+        "LAND1"
+      ]
+    },
+    {
+      "table": "ZSHIP_ZONE",
+      "fields": [
+        "ZONE",
+        "LAND1",
+        "BASE_COST",
+        "PER_ITEM"
+      ]
+    }
+  ]
+}
+=== END OBJECT ===
+
+=== OBJECT: ZCL_PRICING_ENGINE ===
+TYPE: CLASS
+PACKAGE: ZORDER_MGMT
+
+--- SOURCE ---
+CLASS zcl_pricing_engine DEFINITION PUBLIC CREATE PUBLIC.
+
+  PUBLIC SECTION.
+    METHODS: calculate_order_total
+               IMPORTING is_header       TYPE zorder_header
+                         it_items        TYPE ztt_order_item
+               RETURNING VALUE(rv_total) TYPE netwr,
+             get_base_price
+               IMPORTING iv_matnr        TYPE matnr
+                         iv_kunnr        TYPE kunnr
+               RETURNING VALUE(rv_price) TYPE netwr.
+
+  PRIVATE SECTION.
+    DATA: mo_discount TYPE REF TO zcl_discount_calculator,
+          mo_tax      TYPE REF TO zcl_tax_calculator,
+          mo_shipping TYPE REF TO zcl_shipping_calculator.
+
+ENDCLASS.
+
+CLASS zcl_pricing_engine IMPLEMENTATION.
+
+METHOD get_base_price.
+    SELECT SINGLE kbetr FROM zprice_cond
+      INTO rv_price
+      WHERE matnr = iv_matnr
+        AND kunnr = iv_kunnr
+        AND datbi >= sy-datum
+        AND datab <= sy-datum.
+
+    IF sy-subrc <> 0.
+      SELECT SINGLE kbetr FROM zprice_cond
+        INTO rv_price
+        WHERE matnr = iv_matnr
+          AND kunnr = space
+          AND datbi >= sy-datum.
+    ENDIF.
+  ENDMETHOD.
+
+METHOD calculate_order_total.
+    DATA: lv_gross    TYPE netwr,
+          lv_discount TYPE netwr,
+          lv_tax      TYPE netwr,
+          lv_ship     TYPE netwr,
+          lv_line     TYPE netwr.
+
+    IF mo_discount IS INITIAL.
+      CREATE OBJECT mo_discount.
+      CREATE OBJECT mo_tax.
+      CREATE OBJECT mo_shipping.
+    ENDIF.
+
+    LOOP AT it_items INTO DATA(ls_item).
+      lv_line = get_base_price(
+                  iv_matnr = ls_item-matnr
+                  iv_kunnr = is_header-kunnr ) * ls_item-kwmeng.
+      ADD lv_line TO lv_gross.
+    ENDLOOP.
+
+    lv_discount = mo_discount->calculate_discount(
+                    iv_kunnr = is_header-kunnr
+                    iv_gross = lv_gross ).
+
+    lv_tax = mo_tax->calculate_tax(
+               iv_land1  = is_header-land1
+               iv_amount = lv_gross - lv_discount ).
+
+    lv_ship = mo_shipping->calculate_shipping(
+                iv_kunnr = is_header-kunnr
+                iv_items = lines( it_items ) ).
+
+    rv_total = lv_gross - lv_discount + lv_tax + lv_ship.
+  ENDMETHOD.
+
+ENDCLASS.
+
+--- DEPENDENCIES ---
+{
+  "calls": [
+    "ZCL_DISCOUNT_CALCULATOR",
+    "ZCL_SHIPPING_CALCULATOR",
+    "ZCL_TAX_CALCULATOR"
+  ],
+  "tables_used": [
+    {
+      "table": "ZORDER_ITEM",
+      "fields": [
+        "MATNR",
+        "KWMENG",
+        "POSNR"
+      ]
+    },
+    {
+      "table": "ZPRICE_COND",
+      "fields": [
+        "MATNR",
+        "KUNNR",
+        "KBETR",
+        "DATAB",
+        "DATBI"
+      ]
+    }
+  ]
+}
+=== END OBJECT ===
+
+=== OBJECT: ZCL_ORDER_LOGGER ===
+TYPE: CLASS
+PACKAGE: ZORDER_MGMT
+
+--- SOURCE ---
+CLASS zcl_order_logger DEFINITION PUBLIC CREATE PUBLIC.
+
+  PUBLIC SECTION.
+    CLASS-METHODS: log_error
+                     IMPORTING iv_object TYPE char30
+                               iv_key    TYPE char20
+                               iv_text   TYPE string,
+                   log_info
+                     IMPORTING iv_object TYPE char30
+                               iv_key    TYPE char20
+                               iv_text   TYPE string,
+                   purge_old_entries
+                     IMPORTING iv_days          TYPE i DEFAULT 90
+                     RETURNING VALUE(rv_deleted) TYPE i.
+
+  PRIVATE SECTION.
+    CLASS-METHODS: write_entry
+                     IMPORTING iv_object TYPE char30
+                               iv_key    TYPE char20
+                               iv_text   TYPE string
+                               iv_sev    TYPE char1.
+
+ENDCLASS.
+
+CLASS zcl_order_logger IMPLEMENTATION.
+
+METHOD write_entry.
+    INSERT INTO zorder_log VALUES @( VALUE #(
+      logdat  = sy-datum
+      logtim  = sy-uzeit
+      objname = iv_object
+      objkey  = iv_key
+      severity = iv_sev
+      logtext = iv_text
+      uname   = sy-uname ) ).
+  ENDMETHOD.
+
+METHOD log_error.
+    write_entry(
+      iv_object = iv_object
+      iv_key    = iv_key
+      iv_text   = iv_text
+      iv_sev    = 'E' ).
+  ENDMETHOD.
+
+METHOD log_info.
+    write_entry(
+      iv_object = iv_object
+      iv_key    = iv_key
+      iv_text   = iv_text
+      iv_sev    = 'I' ).
+  ENDMETHOD.
+
+METHOD purge_old_entries.
+    DATA: lv_cutoff TYPE sy-datum.
+
+    lv_cutoff = sy-datum - iv_days.
+
+    DELETE FROM zorder_log
+      WHERE logdat < lv_cutoff.
+
+    rv_deleted = sy-dbcnt.
+    COMMIT WORK.
+  ENDMETHOD.
+
+ENDCLASS.
+
+--- DEPENDENCIES ---
+{
+  "calls": [],
+  "tables_used": [
+    {
+      "table": "ZORDER_LOG",
+      "fields": [
+        "LOGDAT",
+        "LOGTIM",
+        "OBJNAME",
+        "OBJKEY",
+        "SEVERITY",
+        "LOGTEXT",
+        "UNAME"
+      ]
+    }
+  ]
+}
+=== END OBJECT ===

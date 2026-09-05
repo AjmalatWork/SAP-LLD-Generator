@@ -1,0 +1,534 @@
+=== RETRIEVAL METADATA ===
+REQUIREMENT: Change the maximum discount cap from 50 percent to 60 percent of the gross order amount
+SCOPING_NOTE: (none)
+CONFIDENCE: (none)
+LIKELY_NEW_OBJECT: False
+LIKELY_NEW_OBJECT_REASON: (none)
+DISAGREEMENTS: 0
+=== END RETRIEVAL METADATA ===
+
+=== OBJECT: ZCL_DISCOUNT_CALCULATOR ===
+TYPE: CLASS
+PACKAGE: ZORDER_MGMT
+
+--- SOURCE ---
+CLASS zcl_discount_calculator DEFINITION PUBLIC CREATE PUBLIC.
+
+  PUBLIC SECTION.
+    METHODS: calculate_discount
+               IMPORTING iv_kunnr       TYPE kunnr
+                         iv_gross       TYPE netwr
+               RETURNING VALUE(rv_disc) TYPE netwr,
+             get_customer_tier
+               IMPORTING iv_kunnr       TYPE kunnr
+               RETURNING VALUE(rv_tier) TYPE char2.
+
+ENDCLASS.
+
+CLASS zcl_discount_calculator IMPLEMENTATION.
+
+METHOD get_customer_tier.
+    SELECT SINGLE tier FROM zcust_master
+      INTO rv_tier
+      WHERE kunnr = iv_kunnr.
+
+    IF sy-subrc <> 0.
+      rv_tier = 'ST'.
+    ENDIF.
+  ENDMETHOD.
+
+METHOD calculate_discount.
+    DATA: lv_tier    TYPE char2,
+          lv_percent TYPE p DECIMALS 2.
+
+    lv_tier = get_customer_tier( iv_kunnr ).
+
+    SELECT SINGLE percent FROM zdiscount_rule
+      INTO lv_percent
+      WHERE tier      = lv_tier
+        AND min_value <= iv_gross
+        AND valid_to  >= sy-datum.
+
+    IF sy-subrc <> 0.
+      rv_disc = 0.
+      zcl_order_logger=>log_info(
+        iv_object = 'ZCL_DISCOUNT_CALCULATOR'
+        iv_key    = iv_kunnr
+        iv_text   = |No discount rule for tier { lv_tier }| ).
+      RETURN.
+    ENDIF.
+
+    rv_disc = iv_gross * lv_percent / 100.
+
+    IF rv_disc > iv_gross / 2.
+      rv_disc = iv_gross / 2.
+      zcl_order_logger=>log_info(
+        iv_object = 'ZCL_DISCOUNT_CALCULATOR'
+        iv_key    = iv_kunnr
+        iv_text   = 'Discount capped at 50 percent' ).
+    ENDIF.
+  ENDMETHOD.
+
+ENDCLASS.
+
+--- DEPENDENCIES ---
+{
+  "calls": [
+    "ZCL_ORDER_LOGGER"
+  ],
+  "tables_used": [
+    {
+      "table": "ZCUST_MASTER",
+      "fields": [
+        "KUNNR",
+        "TIER"
+      ]
+    },
+    {
+      "table": "ZDISCOUNT_RULE",
+      "fields": [
+        "TIER",
+        "MIN_VALUE",
+        "PERCENT",
+        "VALID_TO"
+      ]
+    }
+  ]
+}
+=== END OBJECT ===
+
+=== OBJECT: ZCL_PRICING_ENGINE ===
+TYPE: CLASS
+PACKAGE: ZORDER_MGMT
+
+--- SOURCE ---
+CLASS zcl_pricing_engine DEFINITION PUBLIC CREATE PUBLIC.
+
+  PUBLIC SECTION.
+    METHODS: calculate_order_total
+               IMPORTING is_header       TYPE zorder_header
+                         it_items        TYPE ztt_order_item
+               RETURNING VALUE(rv_total) TYPE netwr,
+             get_base_price
+               IMPORTING iv_matnr        TYPE matnr
+                         iv_kunnr        TYPE kunnr
+               RETURNING VALUE(rv_price) TYPE netwr.
+
+  PRIVATE SECTION.
+    DATA: mo_discount TYPE REF TO zcl_discount_calculator,
+          mo_tax      TYPE REF TO zcl_tax_calculator,
+          mo_shipping TYPE REF TO zcl_shipping_calculator.
+
+ENDCLASS.
+
+CLASS zcl_pricing_engine IMPLEMENTATION.
+
+METHOD get_base_price.
+    SELECT SINGLE kbetr FROM zprice_cond
+      INTO rv_price
+      WHERE matnr = iv_matnr
+        AND kunnr = iv_kunnr
+        AND datbi >= sy-datum
+        AND datab <= sy-datum.
+
+    IF sy-subrc <> 0.
+      SELECT SINGLE kbetr FROM zprice_cond
+        INTO rv_price
+        WHERE matnr = iv_matnr
+          AND kunnr = space
+          AND datbi >= sy-datum.
+    ENDIF.
+  ENDMETHOD.
+
+METHOD calculate_order_total.
+    DATA: lv_gross    TYPE netwr,
+          lv_discount TYPE netwr,
+          lv_tax      TYPE netwr,
+          lv_ship     TYPE netwr,
+          lv_line     TYPE netwr.
+
+    IF mo_discount IS INITIAL.
+      CREATE OBJECT mo_discount.
+      CREATE OBJECT mo_tax.
+      CREATE OBJECT mo_shipping.
+    ENDIF.
+
+    LOOP AT it_items INTO DATA(ls_item).
+      lv_line = get_base_price(
+                  iv_matnr = ls_item-matnr
+                  iv_kunnr = is_header-kunnr ) * ls_item-kwmeng.
+      ADD lv_line TO lv_gross.
+    ENDLOOP.
+
+    lv_discount = mo_discount->calculate_discount(
+                    iv_kunnr = is_header-kunnr
+                    iv_gross = lv_gross ).
+
+    lv_tax = mo_tax->calculate_tax(
+               iv_land1  = is_header-land1
+               iv_amount = lv_gross - lv_discount ).
+
+    lv_ship = mo_shipping->calculate_shipping(
+                iv_kunnr = is_header-kunnr
+                iv_items = lines( it_items ) ).
+
+    rv_total = lv_gross - lv_discount + lv_tax + lv_ship.
+  ENDMETHOD.
+
+ENDCLASS.
+
+--- DEPENDENCIES ---
+{
+  "calls": [
+    "ZCL_DISCOUNT_CALCULATOR",
+    "ZCL_SHIPPING_CALCULATOR",
+    "ZCL_TAX_CALCULATOR"
+  ],
+  "tables_used": [
+    {
+      "table": "ZORDER_ITEM",
+      "fields": [
+        "MATNR",
+        "KWMENG",
+        "POSNR"
+      ]
+    },
+    {
+      "table": "ZPRICE_COND",
+      "fields": [
+        "MATNR",
+        "KUNNR",
+        "KBETR",
+        "DATAB",
+        "DATBI"
+      ]
+    }
+  ]
+}
+=== END OBJECT ===
+
+=== OBJECT: ZCL_ORDER_LOGGER ===
+TYPE: CLASS
+PACKAGE: ZORDER_MGMT
+
+--- SOURCE ---
+CLASS zcl_order_logger DEFINITION PUBLIC CREATE PUBLIC.
+
+  PUBLIC SECTION.
+    CLASS-METHODS: log_error
+                     IMPORTING iv_object TYPE char30
+                               iv_key    TYPE char20
+                               iv_text   TYPE string,
+                   log_info
+                     IMPORTING iv_object TYPE char30
+                               iv_key    TYPE char20
+                               iv_text   TYPE string,
+                   purge_old_entries
+                     IMPORTING iv_days          TYPE i DEFAULT 90
+                     RETURNING VALUE(rv_deleted) TYPE i.
+
+  PRIVATE SECTION.
+    CLASS-METHODS: write_entry
+                     IMPORTING iv_object TYPE char30
+                               iv_key    TYPE char20
+                               iv_text   TYPE string
+                               iv_sev    TYPE char1.
+
+ENDCLASS.
+
+CLASS zcl_order_logger IMPLEMENTATION.
+
+METHOD write_entry.
+    INSERT INTO zorder_log VALUES @( VALUE #(
+      logdat  = sy-datum
+      logtim  = sy-uzeit
+      objname = iv_object
+      objkey  = iv_key
+      severity = iv_sev
+      logtext = iv_text
+      uname   = sy-uname ) ).
+  ENDMETHOD.
+
+METHOD log_error.
+    write_entry(
+      iv_object = iv_object
+      iv_key    = iv_key
+      iv_text   = iv_text
+      iv_sev    = 'E' ).
+  ENDMETHOD.
+
+METHOD log_info.
+    write_entry(
+      iv_object = iv_object
+      iv_key    = iv_key
+      iv_text   = iv_text
+      iv_sev    = 'I' ).
+  ENDMETHOD.
+
+METHOD purge_old_entries.
+    DATA: lv_cutoff TYPE sy-datum.
+
+    lv_cutoff = sy-datum - iv_days.
+
+    DELETE FROM zorder_log
+      WHERE logdat < lv_cutoff.
+
+    rv_deleted = sy-dbcnt.
+    COMMIT WORK.
+  ENDMETHOD.
+
+ENDCLASS.
+
+--- DEPENDENCIES ---
+{
+  "calls": [],
+  "tables_used": [
+    {
+      "table": "ZORDER_LOG",
+      "fields": [
+        "LOGDAT",
+        "LOGTIM",
+        "OBJNAME",
+        "OBJKEY",
+        "SEVERITY",
+        "LOGTEXT",
+        "UNAME"
+      ]
+    }
+  ]
+}
+=== END OBJECT ===
+
+=== OBJECT: ZCL_ORDER_VALIDATOR ===
+TYPE: CLASS
+PACKAGE: ZORDER_MGMT
+
+--- SOURCE ---
+CLASS zcl_order_validator DEFINITION PUBLIC CREATE PUBLIC.
+
+  PUBLIC SECTION.
+    METHODS: validate_header
+               IMPORTING is_header    TYPE zorder_header
+               RETURNING VALUE(rv_ok) TYPE abap_bool,
+             validate_customer
+               IMPORTING iv_kunnr     TYPE kunnr
+               RETURNING VALUE(rv_ok) TYPE abap_bool,
+             check_credit_limit
+               IMPORTING iv_kunnr     TYPE kunnr
+                         iv_amount    TYPE netwr
+               RETURNING VALUE(rv_ok) TYPE abap_bool.
+
+ENDCLASS.
+
+CLASS zcl_order_validator IMPLEMENTATION.
+
+METHOD validate_header.
+    rv_ok = abap_false.
+
+    IF is_header-vbeln IS INITIAL.
+      RETURN.
+    ENDIF.
+
+    IF is_header-kunnr IS INITIAL.
+      zcl_order_logger=>log_error(
+        iv_object = 'ZCL_ORDER_VALIDATOR'
+        iv_key    = is_header-vbeln
+        iv_text   = 'Customer missing on header' ).
+      RETURN.
+    ENDIF.
+
+    IF validate_customer( is_header-kunnr ) = abap_false.
+      RETURN.
+    ENDIF.
+
+    IF is_header-netwr > 0.
+      IF check_credit_limit(
+           iv_kunnr  = is_header-kunnr
+           iv_amount = is_header-netwr ) = abap_false.
+        RETURN.
+      ENDIF.
+    ENDIF.
+
+    rv_ok = abap_true.
+  ENDMETHOD.
+
+METHOD validate_customer.
+    DATA: lv_blocked TYPE abap_bool.
+
+    SELECT SINGLE blocked FROM zcust_master
+      INTO lv_blocked
+      WHERE kunnr = iv_kunnr.
+
+    IF sy-subrc <> 0.
+      rv_ok = abap_false.
+      RETURN.
+    ENDIF.
+
+    IF lv_blocked = abap_true.
+      zcl_order_logger=>log_error(
+        iv_object = 'ZCL_ORDER_VALIDATOR'
+        iv_key    = iv_kunnr
+        iv_text   = 'Customer is blocked' ).
+      rv_ok = abap_false.
+      RETURN.
+    ENDIF.
+
+    rv_ok = abap_true.
+  ENDMETHOD.
+
+METHOD check_credit_limit.
+    DATA: lv_available TYPE netwr.
+
+    CALL FUNCTION 'ZFM_CUSTOMER_CREDIT_CHECK'
+      EXPORTING
+        iv_kunnr     = iv_kunnr
+      IMPORTING
+        ev_available = lv_available
+      EXCEPTIONS
+        no_limit_set = 1
+        OTHERS       = 2.
+
+    IF sy-subrc <> 0.
+      rv_ok = abap_false.
+      RETURN.
+    ENDIF.
+
+    IF lv_available >= iv_amount.
+      rv_ok = abap_true.
+    ELSE.
+      rv_ok = abap_false.
+    ENDIF.
+  ENDMETHOD.
+
+ENDCLASS.
+
+--- DEPENDENCIES ---
+{
+  "calls": [
+    "ZCL_ORDER_LOGGER",
+    "ZFM_CUSTOMER_CREDIT_CHECK"
+  ],
+  "tables_used": [
+    {
+      "table": "ZCUST_MASTER",
+      "fields": [
+        "KUNNR",
+        "BLOCKED",
+        "NAME1",
+        "LAND1"
+      ]
+    },
+    {
+      "table": "ZORDER_HEADER",
+      "fields": [
+        "VBELN",
+        "KUNNR",
+        "NETWR"
+      ]
+    }
+  ]
+}
+=== END OBJECT ===
+
+=== OBJECT: ZRP_ORDER_SUMMARY_REPORT ===
+TYPE: PROGRAM
+PACKAGE: ZORDER_MGMT
+
+--- SOURCE ---
+REPORT zrp_order_summary_report.
+
+TYPES: BEGIN OF ty_summary,
+         kunnr    TYPE kunnr,
+         name1    TYPE name1,
+         cnt      TYPE i,
+         total    TYPE netwr,
+       END OF ty_summary.
+
+DATA: gt_summary TYPE STANDARD TABLE OF ty_summary,
+      go_persist TYPE REF TO zcl_order_persistence,
+      go_alv     TYPE REF TO cl_salv_table.
+
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME.
+  SELECT-OPTIONS: s_kunnr FOR gt_summary-kunnr,
+                  s_datum FOR sy-datum.
+  PARAMETERS: p_closed AS CHECKBOX.
+SELECTION-SCREEN END OF BLOCK b1.
+
+START-OF-SELECTION.
+  PERFORM collect_data.
+  PERFORM enrich_names.
+  PERFORM display_alv.
+
+FORM collect_data.
+  DATA: lv_status TYPE char4.
+
+  IF p_closed = abap_true.
+    lv_status = 'CLSD'.
+  ELSE.
+    lv_status = 'NEW'.
+  ENDIF.
+
+  SELECT kunnr COUNT( * ) AS cnt SUM( netwr ) AS total
+    FROM zorder_header
+    INTO CORRESPONDING FIELDS OF TABLE gt_summary
+    WHERE kunnr  IN s_kunnr
+      AND erdat  IN s_datum
+      AND status = lv_status
+    GROUP BY kunnr.
+
+  IF sy-subrc <> 0.
+    MESSAGE 'No data for selection' TYPE 'S' DISPLAY LIKE 'W'.
+    LEAVE LIST-PROCESSING.
+  ENDIF.
+ENDFORM.
+
+FORM enrich_names.
+  LOOP AT gt_summary ASSIGNING FIELD-SYMBOL(<fs>).
+    SELECT SINGLE name1 FROM zcust_master
+      INTO <fs>-name1
+      WHERE kunnr = <fs>-kunnr.
+  ENDLOOP.
+ENDFORM.
+
+FORM display_alv.
+  TRY.
+      cl_salv_table=>factory(
+        IMPORTING r_salv_table = go_alv
+        CHANGING  t_table      = gt_summary ).
+
+      go_alv->display( ).
+
+    CATCH cx_salv_msg.
+      zcl_order_logger=>log_error(
+        iv_object = 'ZRP_ORDER_SUMMARY_REPORT'
+        iv_key    = sy-uname
+        iv_text   = 'ALV display failed' ).
+  ENDTRY.
+ENDFORM.
+
+--- DEPENDENCIES ---
+{
+  "calls": [
+    "ZCL_ORDER_LOGGER",
+    "ZCL_ORDER_PERSISTENCE"
+  ],
+  "tables_used": [
+    {
+      "table": "ZCUST_MASTER",
+      "fields": [
+        "KUNNR",
+        "NAME1"
+      ]
+    },
+    {
+      "table": "ZORDER_HEADER",
+      "fields": [
+        "KUNNR",
+        "NETWR",
+        "ERDAT",
+        "STATUS"
+      ]
+    }
+  ]
+}
+=== END OBJECT ===

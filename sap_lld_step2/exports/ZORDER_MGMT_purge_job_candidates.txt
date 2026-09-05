@@ -1,0 +1,553 @@
+=== RETRIEVAL METADATA ===
+REQUIREMENT: Add a purge job that deletes old log entries older than a given number of days from the order log table
+SCOPING_NOTE: (none)
+CONFIDENCE: (none)
+LIKELY_NEW_OBJECT: False
+LIKELY_NEW_OBJECT_REASON: (none)
+DISAGREEMENTS: 0
+=== END RETRIEVAL METADATA ===
+
+=== OBJECT: ZCL_ORDER_LOGGER ===
+TYPE: CLASS
+PACKAGE: ZORDER_MGMT
+
+--- SOURCE ---
+CLASS zcl_order_logger DEFINITION PUBLIC CREATE PUBLIC.
+
+  PUBLIC SECTION.
+    CLASS-METHODS: log_error
+                     IMPORTING iv_object TYPE char30
+                               iv_key    TYPE char20
+                               iv_text   TYPE string,
+                   log_info
+                     IMPORTING iv_object TYPE char30
+                               iv_key    TYPE char20
+                               iv_text   TYPE string,
+                   purge_old_entries
+                     IMPORTING iv_days          TYPE i DEFAULT 90
+                     RETURNING VALUE(rv_deleted) TYPE i.
+
+  PRIVATE SECTION.
+    CLASS-METHODS: write_entry
+                     IMPORTING iv_object TYPE char30
+                               iv_key    TYPE char20
+                               iv_text   TYPE string
+                               iv_sev    TYPE char1.
+
+ENDCLASS.
+
+CLASS zcl_order_logger IMPLEMENTATION.
+
+METHOD write_entry.
+    INSERT INTO zorder_log VALUES @( VALUE #(
+      logdat  = sy-datum
+      logtim  = sy-uzeit
+      objname = iv_object
+      objkey  = iv_key
+      severity = iv_sev
+      logtext = iv_text
+      uname   = sy-uname ) ).
+  ENDMETHOD.
+
+METHOD log_error.
+    write_entry(
+      iv_object = iv_object
+      iv_key    = iv_key
+      iv_text   = iv_text
+      iv_sev    = 'E' ).
+  ENDMETHOD.
+
+METHOD log_info.
+    write_entry(
+      iv_object = iv_object
+      iv_key    = iv_key
+      iv_text   = iv_text
+      iv_sev    = 'I' ).
+  ENDMETHOD.
+
+METHOD purge_old_entries.
+    DATA: lv_cutoff TYPE sy-datum.
+
+    lv_cutoff = sy-datum - iv_days.
+
+    DELETE FROM zorder_log
+      WHERE logdat < lv_cutoff.
+
+    rv_deleted = sy-dbcnt.
+    COMMIT WORK.
+  ENDMETHOD.
+
+ENDCLASS.
+
+--- DEPENDENCIES ---
+{
+  "calls": [],
+  "tables_used": [
+    {
+      "table": "ZORDER_LOG",
+      "fields": [
+        "LOGDAT",
+        "LOGTIM",
+        "OBJNAME",
+        "OBJKEY",
+        "SEVERITY",
+        "LOGTEXT",
+        "UNAME"
+      ]
+    }
+  ]
+}
+=== END OBJECT ===
+
+=== OBJECT: ZRP_ORDER_BATCH_RUN ===
+TYPE: PROGRAM
+PACKAGE: ZORDER_MGMT
+
+--- SOURCE ---
+REPORT zrp_order_batch_run.
+
+TABLES: zorder_header.
+
+TYPES: BEGIN OF ty_run_stat,
+         processed TYPE i,
+         failed    TYPE i,
+         skipped   TYPE i,
+       END OF ty_run_stat.
+
+DATA: gt_orders  TYPE STANDARD TABLE OF zorder_header,
+      gs_stat    TYPE ty_run_stat,
+      go_proc    TYPE REF TO zcl_order_processor,
+      gv_runid   TYPE char20.
+
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-001.
+  SELECT-OPTIONS: s_vbeln FOR zorder_header-vbeln,
+                  s_erdat FOR zorder_header-erdat.
+  PARAMETERS: p_test AS CHECKBOX DEFAULT 'X',
+              p_maxrec TYPE i DEFAULT 500.
+SELECTION-SCREEN END OF BLOCK b1.
+
+START-OF-SELECTION.
+  PERFORM get_run_id.
+  PERFORM select_orders.
+  PERFORM process_orders.
+  PERFORM write_summary.
+
+FORM get_run_id.
+  CALL FUNCTION 'ZFM_ORDER_NUMBER_RANGE'
+    EXPORTING
+      iv_object    = 'ZBATCHRUN'
+    IMPORTING
+      ev_number    = gv_runid
+    EXCEPTIONS
+      no_range     = 1
+      OTHERS       = 2.
+
+  IF sy-subrc <> 0.
+    gv_runid = |FALLBACK{ sy-datum }{ sy-uzeit }|.
+  ENDIF.
+ENDFORM.
+
+FORM select_orders.
+  SELECT * FROM zorder_header
+    INTO TABLE gt_orders
+    UP TO p_maxrec ROWS
+    WHERE vbeln IN s_vbeln
+      AND erdat IN s_erdat
+      AND status = 'NEW'.
+
+  IF sy-subrc <> 0.
+    MESSAGE 'No orders found for selection' TYPE 'S'.
+    RETURN.
+  ENDIF.
+ENDFORM.
+
+FORM process_orders.
+  DATA: lv_ok TYPE abap_bool.
+
+  CREATE OBJECT go_proc.
+
+  LOOP AT gt_orders INTO DATA(ls_order).
+    IF p_test = abap_true.
+      ADD 1 TO gs_stat-skipped.
+      CONTINUE.
+    ENDIF.
+
+    lv_ok = go_proc->process_single_order( is_header = ls_order ).
+
+    IF lv_ok = abap_true.
+      ADD 1 TO gs_stat-processed.
+    ELSE.
+      ADD 1 TO gs_stat-failed.
+      zcl_order_logger=>log_error(
+        iv_object = 'ZRP_ORDER_BATCH_RUN'
+        iv_key    = ls_order-vbeln
+        iv_text   = 'Processing returned false' ).
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+FORM write_summary.
+  WRITE: / 'Run ID:', gv_runid.
+  WRITE: / 'Processed:', gs_stat-processed.
+  WRITE: / 'Failed:', gs_stat-failed.
+  WRITE: / 'Skipped:', gs_stat-skipped.
+
+  zcl_order_logger=>log_info(
+    iv_object = 'ZRP_ORDER_BATCH_RUN'
+    iv_key    = gv_runid
+    iv_text   = |Batch complete: { gs_stat-processed } ok| ).
+ENDFORM.
+
+--- DEPENDENCIES ---
+{
+  "calls": [
+    "ZCL_ORDER_LOGGER",
+    "ZCL_ORDER_PROCESSOR",
+    "ZFM_ORDER_NUMBER_RANGE"
+  ],
+  "tables_used": [
+    {
+      "table": "ZORDER_HEADER",
+      "fields": [
+        "VBELN",
+        "ERDAT",
+        "STATUS",
+        "KUNNR",
+        "NETWR"
+      ]
+    }
+  ]
+}
+=== END OBJECT ===
+
+=== OBJECT: ZCL_STOCK_MANAGER ===
+TYPE: CLASS
+PACKAGE: ZORDER_MGMT
+
+--- SOURCE ---
+CLASS zcl_stock_manager DEFINITION PUBLIC CREATE PUBLIC.
+
+  PUBLIC SECTION.
+    METHODS: reserve_for_order
+               IMPORTING iv_vbeln     TYPE vbeln
+                         it_items     TYPE ztt_order_item
+               RETURNING VALUE(rv_ok) TYPE abap_bool,
+             release_reservation
+               IMPORTING iv_vbeln     TYPE vbeln
+               RETURNING VALUE(rv_ok) TYPE abap_bool.
+
+ENDCLASS.
+
+CLASS zcl_stock_manager IMPLEMENTATION.
+
+METHOD reserve_for_order.
+    DATA: lv_avail TYPE kwmeng.
+
+    rv_ok = abap_true.
+
+    LOOP AT it_items INTO DATA(ls_item).
+      CALL FUNCTION 'ZFM_STOCK_CHECK'
+        EXPORTING
+          iv_matnr   = ls_item-matnr
+          iv_werks   = ls_item-werks
+        IMPORTING
+          ev_avail   = lv_avail
+        EXCEPTIONS
+          not_found  = 1
+          OTHERS     = 2.
+
+      IF sy-subrc <> 0 OR lv_avail < ls_item-kwmeng.
+        zcl_order_logger=>log_error(
+          iv_object = 'ZCL_STOCK_MANAGER'
+          iv_key    = iv_vbeln
+          iv_text   = |Insufficient stock for { ls_item-matnr }| ).
+        rv_ok = abap_false.
+        RETURN.
+      ENDIF.
+    ENDLOOP.
+
+    LOOP AT it_items INTO ls_item.
+      UPDATE zstock_level
+        SET reserved = reserved + ls_item-kwmeng
+        WHERE matnr = ls_item-matnr
+          AND werks = ls_item-werks.
+    ENDLOOP.
+
+    COMMIT WORK.
+  ENDMETHOD.
+
+METHOD release_reservation.
+    DATA: lt_items TYPE ztt_order_item.
+
+    SELECT * FROM zorder_item
+      INTO TABLE lt_items
+      WHERE vbeln = iv_vbeln.
+
+    LOOP AT lt_items INTO DATA(ls_item).
+      UPDATE zstock_level
+        SET reserved = reserved - ls_item-kwmeng
+        WHERE matnr = ls_item-matnr
+          AND werks = ls_item-werks.
+    ENDLOOP.
+
+    COMMIT WORK.
+    rv_ok = abap_true.
+  ENDMETHOD.
+
+ENDCLASS.
+
+--- DEPENDENCIES ---
+{
+  "calls": [
+    "ZCL_ORDER_LOGGER",
+    "ZFM_STOCK_CHECK"
+  ],
+  "tables_used": [
+    {
+      "table": "ZORDER_ITEM",
+      "fields": [
+        "VBELN",
+        "POSNR",
+        "MATNR",
+        "WERKS",
+        "KWMENG"
+      ]
+    },
+    {
+      "table": "ZSTOCK_LEVEL",
+      "fields": [
+        "MATNR",
+        "WERKS",
+        "QUANTITY",
+        "RESERVED"
+      ]
+    }
+  ]
+}
+=== END OBJECT ===
+
+=== OBJECT: ZCL_NOTIFICATION_SENDER ===
+TYPE: CLASS
+PACKAGE: ZORDER_MGMT
+
+--- SOURCE ---
+CLASS zcl_notification_sender DEFINITION PUBLIC CREATE PUBLIC.
+
+  PUBLIC SECTION.
+    CLASS-METHODS: notify_order_confirmed
+                     IMPORTING iv_vbeln TYPE vbeln
+                               iv_kunnr TYPE kunnr,
+                   notify_order_failed
+                     IMPORTING iv_vbeln TYPE vbeln
+                               iv_text  TYPE string,
+                   flush_queue
+                     RETURNING VALUE(rv_sent) TYPE i.
+
+ENDCLASS.
+
+CLASS zcl_notification_sender IMPLEMENTATION.
+
+METHOD notify_order_confirmed.
+    DATA: lv_mail TYPE ad_smtpadr.
+
+    SELECT SINGLE smtp_addr FROM zcust_master
+      INTO lv_mail
+      WHERE kunnr = iv_kunnr.
+
+    IF sy-subrc <> 0 OR lv_mail IS INITIAL.
+      zcl_order_logger=>log_info(
+        iv_object = 'ZCL_NOTIFICATION_SENDER'
+        iv_key    = iv_kunnr
+        iv_text   = 'No email address on customer' ).
+      RETURN.
+    ENDIF.
+
+    INSERT INTO znotif_queue VALUES @( VALUE #(
+      vbeln    = iv_vbeln
+      recip    = lv_mail
+      msgtype  = 'CONF'
+      crdat    = sy-datum
+      sent     = abap_false ) ).
+
+    COMMIT WORK.
+  ENDMETHOD.
+
+METHOD notify_order_failed.
+    INSERT INTO znotif_queue VALUES @( VALUE #(
+      vbeln    = iv_vbeln
+      recip    = 'orders-support@example.com'
+      msgtype  = 'FAIL'
+      msgtext  = iv_text
+      crdat    = sy-datum
+      sent     = abap_false ) ).
+
+    COMMIT WORK.
+  ENDMETHOD.
+
+METHOD flush_queue.
+    DATA: lt_queue TYPE STANDARD TABLE OF znotif_queue.
+
+    SELECT * FROM znotif_queue
+      INTO TABLE lt_queue
+      WHERE sent = abap_false.
+
+    LOOP AT lt_queue INTO DATA(ls_q).
+      UPDATE znotif_queue
+        SET sent = abap_true
+        WHERE vbeln   = ls_q-vbeln
+          AND msgtype = ls_q-msgtype.
+      ADD 1 TO rv_sent.
+    ENDLOOP.
+
+    COMMIT WORK.
+  ENDMETHOD.
+
+ENDCLASS.
+
+--- DEPENDENCIES ---
+{
+  "calls": [
+    "ZCL_ORDER_LOGGER"
+  ],
+  "tables_used": [
+    {
+      "table": "ZCUST_MASTER",
+      "fields": [
+        "KUNNR",
+        "SMTP_ADDR"
+      ]
+    },
+    {
+      "table": "ZNOTIF_QUEUE",
+      "fields": [
+        "VBELN",
+        "RECIP",
+        "MSGTYPE",
+        "MSGTEXT",
+        "CRDAT",
+        "SENT"
+      ]
+    }
+  ]
+}
+=== END OBJECT ===
+
+=== OBJECT: ZCL_ORDER_PERSISTENCE ===
+TYPE: CLASS
+PACKAGE: ZORDER_MGMT
+
+--- SOURCE ---
+CLASS zcl_order_persistence DEFINITION PUBLIC CREATE PUBLIC.
+
+  PUBLIC SECTION.
+    METHODS: save_order_total
+               IMPORTING iv_vbeln     TYPE vbeln
+                         iv_total     TYPE netwr
+               RETURNING VALUE(rv_ok) TYPE abap_bool,
+             update_status
+               IMPORTING iv_vbeln     TYPE vbeln
+                         iv_status    TYPE char4
+               RETURNING VALUE(rv_ok) TYPE abap_bool,
+             create_order_header
+               IMPORTING is_header      TYPE zorder_header
+               RETURNING VALUE(rv_vbeln) TYPE vbeln.
+
+ENDCLASS.
+
+CLASS zcl_order_persistence IMPLEMENTATION.
+
+METHOD save_order_total.
+    UPDATE zorder_header
+      SET netwr  = iv_total
+          aedat  = sy-datum
+      WHERE vbeln = iv_vbeln.
+
+    IF sy-subrc = 0.
+      COMMIT WORK.
+      rv_ok = abap_true.
+    ELSE.
+      ROLLBACK WORK.
+      rv_ok = abap_false.
+      zcl_order_logger=>log_error(
+        iv_object = 'ZCL_ORDER_PERSISTENCE'
+        iv_key    = iv_vbeln
+        iv_text   = 'Failed to update order total' ).
+    ENDIF.
+  ENDMETHOD.
+
+METHOD update_status.
+    UPDATE zorder_header
+      SET status = iv_status
+      WHERE vbeln = iv_vbeln.
+
+    IF sy-subrc = 0.
+      INSERT INTO zorder_status VALUES @( VALUE #(
+        vbeln  = iv_vbeln
+        status = iv_status
+        chdat  = sy-datum
+        chusr  = sy-uname ) ).
+      COMMIT WORK.
+      rv_ok = abap_true.
+    ELSE.
+      rv_ok = abap_false.
+    ENDIF.
+  ENDMETHOD.
+
+METHOD create_order_header.
+    DATA: ls_header TYPE zorder_header.
+
+    ls_header = is_header.
+
+    CALL FUNCTION 'ZFM_ORDER_NUMBER_RANGE'
+      EXPORTING
+        iv_object = 'ZORDER'
+      IMPORTING
+        ev_number = rv_vbeln
+      EXCEPTIONS
+        no_range  = 1
+        OTHERS    = 2.
+
+    IF sy-subrc <> 0.
+      CLEAR rv_vbeln.
+      RETURN.
+    ENDIF.
+
+    ls_header-vbeln = rv_vbeln.
+    ls_header-erdat = sy-datum.
+    ls_header-status = 'NEW'.
+
+    INSERT zorder_header FROM ls_header.
+    COMMIT WORK.
+  ENDMETHOD.
+
+ENDCLASS.
+
+--- DEPENDENCIES ---
+{
+  "calls": [
+    "ZCL_ORDER_LOGGER",
+    "ZFM_ORDER_NUMBER_RANGE"
+  ],
+  "tables_used": [
+    {
+      "table": "ZORDER_HEADER",
+      "fields": [
+        "VBELN",
+        "NETWR",
+        "STATUS",
+        "ERDAT",
+        "AEDAT"
+      ]
+    },
+    {
+      "table": "ZORDER_STATUS",
+      "fields": [
+        "VBELN",
+        "STATUS",
+        "CHDAT",
+        "CHUSR"
+      ]
+    }
+  ]
+}
+=== END OBJECT ===

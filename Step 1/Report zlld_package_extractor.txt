@@ -1,0 +1,1642 @@
+REPORT zlld_package_extractor.
+
+*&---------------------------------------------------------------------*
+*& ZLLD_PACKAGE_EXTRACTOR
+*&---------------------------------------------------------------------*
+*  Step 1 of the LLD tool: package-scoped extraction with transport
+*  sync. First run against a package = full extraction of every
+*  PROG/CLAS/FUNC (incl. FUGR members) it contains. Every run after
+*  that = incremental: only objects touched by released transports
+*  since the last sync, plus deletion detection against the package's
+*  live TADIR contents. Output is written in the LLD block format that
+*  lld_step2.parser (the Python side of this tool) already understands
+*  - see the brief this was built from for the exact format.
+*
+*  This is a NEW, separate report. It reuses ZCR_GET_DEPENDENCY_OBJ_NEW,
+*  ZCR_GET_OBJECT_SIGNATURE and Z_GET_DDIC_INFO exactly as they exist
+*  (no changes to any of the three), and reuses several forms from
+*  ZCR_AURA_CODE_EXTRACTOR verbatim or near-verbatim (marked "REUSED"
+*  below). Nothing about ZCR_AURA_CODE_EXTRACTOR's own behavior changes.
+*
+*  REQUIRES (create before activating - see DDIC_TABLES_TO_CREATE_LLD.txt):
+*    - Table ZLLD_SYNC_LOG
+*    - Table ZLLD_SYNC_OBJECTS
+*
+*  SEVERAL FM CALLS BELOW ARE FLAGGED "VERIFY" - their exact parameter
+*  names/types are written from best recollection, not from a live
+*  system, since this was built without SAP access. Check each one in
+*  SE37 before activating. See LLD_EXTRACTOR_DESIGN_NOTES.md for the
+*  full list and for the acceptance-criteria test plan.
+*&---------------------------------------------------------------------*
+
+*&---------------------------------------------------------------------*
+*& Local Types
+*&---------------------------------------------------------------------*
+TYPES: ts_line_255 TYPE c LENGTH 255.
+
+TYPES: BEGIN OF ts_output,
+         line TYPE string,
+       END OF ts_output,
+       tt_output TYPE STANDARD TABLE OF ts_output WITH EMPTY KEY.
+
+TYPES: BEGIN OF ts_code_line,
+         line TYPE string,
+       END OF ts_code_line,
+       tt_code_line TYPE STANDARD TABLE OF ts_code_line WITH EMPTY KEY.
+
+TYPES: tt_e071 TYPE STANDARD TABLE OF e071 WITH EMPTY KEY.
+
+TYPES: BEGIN OF ts_e070_recency,
+         trkorr  TYPE e070-trkorr,
+         as4date TYPE e070-as4date,
+         as4time TYPE e070-as4time,
+       END OF ts_e070_recency.
+
+" One raw "object found in transport X" hit, before dedup across TRs.
+" Reused verbatim from ZCR_AURA_CODE_EXTRACTOR (same shape COLLECT_TR_HITS/
+" EXPAND_CLASS_METHODS/BUILD_TR_LIST already work with) - in FULL-run mode
+" TRKORR is simply left blank for every row (see CONVERT_E071_TO_LLD_HITS).
+TYPES: BEGIN OF ts_tr_hit,
+         pgmid    TYPE e071-pgmid,
+         object   TYPE e071-object,
+         obj_name TYPE e071-obj_name,
+         trkorr   TYPE e070-trkorr,
+       END OF ts_tr_hit,
+       tt_tr_hit TYPE STANDARD TABLE OF ts_tr_hit WITH EMPTY KEY.
+
+" One top-level LLD-extractable object identity: PROG (executable),
+" CLAS (class), or FUNC (function module - FUGR itself never appears
+" here, only its individual member FUNCs, since that's the granularity
+" actually extracted and tracked for deletion detection).
+TYPES: BEGIN OF ts_lld_obj,
+         obj_type TYPE e071-object,
+         obj_name TYPE e071-obj_name,
+       END OF ts_lld_obj,
+       tt_lld_obj TYPE STANDARD TABLE OF ts_lld_obj WITH EMPTY KEY.
+
+" One row of the ALV review screen (9000). Fragment-level (PROG/REPS
+" include, METH member, FUNC, CLAS/CPUB/CPRI/CPRO/CLSD class-section) -
+" NOT one row per whole LLD object. OWNER_TYPE/OWNER_NAME is which whole
+" top-level object this fragment rolls up to; any owner with at least
+" one checked fragment gets extracted as a single whole-object block
+" (see PROCESS_CHECKED_LLD_OBJECTS). This is the deliberate reconciliation
+" between reusing the original tool's fragment-level ALV UX pattern
+* (explicitly requested) and this report's whole-object output format.
+TYPES: BEGIN OF ts_lld_multi_obj,
+         checked        TYPE abap_bool,
+         pgmid          TYPE e071-pgmid,
+         object         TYPE e071-object,
+         obj_name       TYPE e071-obj_name,
+         obj_display    TYPE string,
+         tr_list        TYPE string,
+         most_recent_tr TYPE e070-trkorr,
+         owner_type     TYPE e071-object,
+         owner_name     TYPE e071-obj_name,
+       END OF ts_lld_multi_obj,
+       tt_lld_multi_obj TYPE STANDARD TABLE OF ts_lld_multi_obj WITH EMPTY KEY.
+
+*&---------------------------------------------------------------------*
+*& Global Data
+*&---------------------------------------------------------------------*
+DATA: gt_e071        TYPE tt_e071,
+      gr_class_name  TYPE RANGE OF seoclsname,
+      gt_hits        TYPE tt_tr_hit,
+      gt_lld_multi_obj TYPE tt_lld_multi_obj,
+      gt_output      TYPE tt_output,
+      gv_filename    TYPE string,
+      gv_full_path   TYPE string,
+      gv_error       TYPE abap_bool.
+
+DATA: gv_run_type          TYPE char4,
+      gs_sync_log          TYPE zlld_sync_log,
+      gv_sync_found        TYPE abap_bool,
+      gt_current_inventory TYPE tt_lld_obj,
+      gt_removed_objects   TYPE tt_lld_obj,
+      gt_qualifying_trkorr TYPE STANDARD TABLE OF e070-trkorr WITH EMPTY KEY,
+      gv_new_hwm           TYPE e070-trkorr,
+      gv_extracted_count   TYPE i.
+
+" Package-membership name index (built once per run by
+" BUILD_PACKAGE_NAME_INDEX, used by TRANSPORT_TOUCHES_PACKAGE) -
+" separate from GT_CURRENT_INVENTORY because these need per-type binary
+" search, not the combined obj_type+obj_name shape.
+DATA: gt_pkg_prog TYPE STANDARD TABLE OF e071-obj_name WITH EMPTY KEY,
+      gt_pkg_clas TYPE STANDARD TABLE OF e071-obj_name WITH EMPTY KEY,
+      gt_pkg_func TYPE STANDARD TABLE OF e071-obj_name WITH EMPTY KEY.
+
+" ALV review screen (9000) state.
+DATA: go_container       TYPE REF TO cl_gui_custom_container,
+      go_alv_grid        TYPE REF TO cl_gui_alv_grid,
+      gv_multi_cancelled TYPE abap_bool.
+
+*&---------------------------------------------------------------------*
+*& ALV event handler
+*&---------------------------------------------------------------------*
+*       Trimmed down from ZCR_AURA_CODE_EXTRACTOR's version: no F4 /
+*       DATA_CHANGED handling at all, since this report drops the
+*       "Compare Against Version" column and everything tied to it
+*       entirely (this report has no diff/version-comparison concept -
+*       it only ever extracts current active source). ON_TOOLBAR is
+*       reused unchanged in behavior.
+*&---------------------------------------------------------------------*
+CLASS lcl_alv_event_handler DEFINITION.
+  PUBLIC SECTION.
+    METHODS on_toolbar FOR EVENT toolbar OF cl_gui_alv_grid
+      IMPORTING e_object.
+ENDCLASS.
+
+" GO_ALV_EVENTS must be declared after the class it's typed as - same
+" reason ZCR_AURA_CODE_EXTRACTOR declares its own equivalent separately
+" from its main Global Data block.
+DATA go_alv_events TYPE REF TO lcl_alv_event_handler.
+
+CLASS lcl_alv_event_handler IMPLEMENTATION.
+  METHOD on_toolbar.
+    " Keep-list approach: delete every standard toolbar button except
+    " Sort Ascending/Descending and Find. REUSED behavior from
+    " ZCR_AURA_CODE_EXTRACTOR's own ON_TOOLBAR.
+    DATA ls_toolbar TYPE stb_button.
+
+    LOOP AT e_object->mt_toolbar INTO ls_toolbar.
+      CASE ls_toolbar-function.
+        WHEN cl_gui_alv_grid=>mc_fc_sort_asc
+          OR cl_gui_alv_grid=>mc_fc_sort_dsc
+          OR cl_gui_alv_grid=>mc_fc_find
+          OR cl_gui_alv_grid=>mc_fc_find_more.
+          " keep
+        WHEN OTHERS.
+          DELETE e_object->mt_toolbar.
+      ENDCASE.
+    ENDLOOP.
+  ENDMETHOD.
+ENDCLASS.
+
+*&---------------------------------------------------------------------*
+*& Selection Screen
+*&---------------------------------------------------------------------*
+* text-001: maintain via SE38 Text Elements, e.g. "Package & Output"
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.
+PARAMETERS: p_pack TYPE devclass OBLIGATORY,
+            p_file TYPE string  OBLIGATORY DEFAULT 'C:\temp\'.
+SELECTION-SCREEN END OF BLOCK b1.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
+  PERFORM f4_output_folder CHANGING p_file.
+
+*&---------------------------------------------------------------------*
+*& Main
+*&---------------------------------------------------------------------*
+START-OF-SELECTION.
+  PERFORM main.
+
+*&---------------------------------------------------------------------*
+*&      Form  MAIN
+*&---------------------------------------------------------------------*
+*       Orchestrates the whole run: determine FULL vs INCR, run
+*       deletion detection (always, regardless of run type), build the
+*       candidate object list, show the ALV review screen, and - once
+*       confirmed - write the LLD file and update sync state.
+*&---------------------------------------------------------------------*
+FORM main.
+  PERFORM validate_package.
+  CHECK gv_error = abap_false.
+
+  PERFORM read_sync_log USING p_pack CHANGING gs_sync_log gv_sync_found.
+  gv_run_type = COND #( WHEN gv_sync_found = abap_true THEN 'INCR' ELSE 'FULL' ).
+
+  " Deletion detection runs on every run - on a first (FULL) run there is
+  " simply nothing stored yet to compare against, so it naturally yields
+  " zero removed objects rather than needing a special case here.
+  PERFORM build_package_inventory USING p_pack CHANGING gt_current_inventory.
+  PERFORM detect_removed_objects USING p_pack gt_current_inventory
+                                  CHANGING gt_removed_objects.
+
+  CLEAR: gt_e071, gr_class_name, gt_hits, gt_lld_multi_obj, gv_extracted_count.
+
+  IF gv_run_type = 'FULL'.
+    PERFORM build_object_list_from_package USING p_pack.
+    PERFORM convert_e071_to_lld_hits CHANGING gt_hits.
+  ELSE.
+    PERFORM gather_qualifying_transports USING p_pack gs_sync_log-last_trkorr_hwm
+                                          CHANGING gt_qualifying_trkorr gv_new_hwm.
+
+    LOOP AT gt_qualifying_trkorr INTO DATA(lv_qual_trkorr).
+      PERFORM collect_tr_hits USING lv_qual_trkorr CHANGING gt_hits.
+    ENDLOOP.
+
+    IF gt_hits IS NOT INITIAL.
+      PERFORM expand_class_methods CHANGING gt_hits.
+    ENDIF.
+  ENDIF.
+
+  PERFORM build_unique_lld_objects USING gt_hits.
+  PERFORM determine_lld_output_path USING p_pack gv_run_type.
+
+  CLEAR gv_multi_cancelled.
+  CALL SCREEN 9000.
+
+  CHECK gv_multi_cancelled = abap_false.
+
+  PERFORM build_and_write_lld_file.
+  PERFORM finalize_sync_state USING p_pack gv_run_type gv_new_hwm.
+  PERFORM download_output_file.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  VALIDATE_PACKAGE
+*&---------------------------------------------------------------------*
+FORM validate_package.
+  CLEAR gv_error.
+
+  SELECT SINGLE devclass FROM tdevc INTO @DATA(lv_dummy) WHERE devclass = @p_pack.
+  IF sy-subrc <> 0.
+    MESSAGE |Package { p_pack } does not exist.| TYPE 'S' DISPLAY LIKE 'E'.
+    gv_error = abap_true.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  F4_OUTPUT_FOLDER   (REUSED unchanged from ZCR_AURA_CODE_EXTRACTOR)
+*&---------------------------------------------------------------------*
+FORM f4_output_folder CHANGING cv_file TYPE string.
+  DATA lv_selected_folder TYPE string.
+
+  cl_gui_frontend_services=>directory_browse(
+    EXPORTING
+      window_title          = 'Select Output Folder'
+      initial_folder        = 'C:\'
+    CHANGING
+      selected_folder       = lv_selected_folder
+    EXCEPTIONS
+      cntl_error            = 1
+      error_no_gui          = 2
+      not_supported_by_gui  = 3
+      OTHERS                = 4 ).
+
+  IF sy-subrc = 0 AND lv_selected_folder IS NOT INITIAL.
+    cv_file = lv_selected_folder.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  DETERMINE_LLD_OUTPUT_PATH
+*&---------------------------------------------------------------------*
+FORM determine_lld_output_path USING iv_package  TYPE devclass
+                                      iv_run_type TYPE char4.
+  gv_filename = |LLD_EXTRACT_{ iv_package }_{ iv_run_type }.TXT|.
+  PERFORM build_full_path.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_FULL_PATH   (REUSED unchanged from ZCR_AURA_CODE_EXTRACTOR)
+*&---------------------------------------------------------------------*
+FORM build_full_path.
+  gv_full_path = p_file.
+  IF substring( val = gv_full_path off = strlen( gv_full_path ) - 1 ) <> '\'.
+    gv_full_path = gv_full_path && '\'.
+  ENDIF.
+  gv_full_path = gv_full_path && gv_filename.
+ENDFORM.
+
+*&=======================================================================*
+*& Package inventory (single source of truth for: full-run object list,
+*& deletion detection's "today's list", and the qualifying-transport
+*& package-membership filter)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_PACKAGE_INVENTORY
+*&---------------------------------------------------------------------*
+*       Every top-level PROG/CLAS/FUNC currently in IV_PACKAGE, with
+*       FUGR expanded to its individual member FUNCs (same technique
+*       ZCR_GET_DEPENDENCY_OBJ_NEW's WHEN 'FUGR' branch already uses:
+*       TFDIR filtered to the function group's "SAPL<name>" pool,
+*       Z*/Y* only). This is the CURRENT live inventory, independent of
+*       what actually gets extracted this run.
+*&---------------------------------------------------------------------*
+FORM build_package_inventory USING iv_package TYPE devclass
+                              CHANGING ct_inventory TYPE tt_lld_obj.
+  CLEAR ct_inventory.
+
+  SELECT obj_name FROM tadir INTO TABLE @DATA(lt_prog)
+    WHERE pgmid = 'R3TR' AND object = 'PROG' AND devclass = @iv_package.
+  LOOP AT lt_prog INTO DATA(lv_prog_name).
+    APPEND VALUE #( obj_type = 'PROG' obj_name = lv_prog_name ) TO ct_inventory.
+  ENDLOOP.
+
+  SELECT obj_name FROM tadir INTO TABLE @DATA(lt_clas)
+    WHERE pgmid = 'R3TR' AND object = 'CLAS' AND devclass = @iv_package.
+  LOOP AT lt_clas INTO DATA(lv_clas_name).
+    APPEND VALUE #( obj_type = 'CLAS' obj_name = lv_clas_name ) TO ct_inventory.
+  ENDLOOP.
+
+  SELECT obj_name FROM tadir INTO TABLE @DATA(lt_func)
+    WHERE pgmid = 'R3TR' AND object = 'FUNC' AND devclass = @iv_package.
+  LOOP AT lt_func INTO DATA(lv_func_name).
+    APPEND VALUE #( obj_type = 'FUNC' obj_name = lv_func_name ) TO ct_inventory.
+  ENDLOOP.
+
+  SELECT obj_name FROM tadir INTO TABLE @DATA(lt_fugr)
+    WHERE pgmid = 'R3TR' AND object = 'FUGR' AND devclass = @iv_package.
+  LOOP AT lt_fugr INTO DATA(lv_fugr_name).
+    DATA(lv_area) = |SAPL{ lv_fugr_name }|.
+
+    SELECT funcname FROM tfdir INTO TABLE @DATA(lt_fugr_funcs)
+      WHERE pname = @lv_area.
+
+    LOOP AT lt_fugr_funcs INTO DATA(ls_fugr_func).
+      IF ls_fugr_func-funcname NP 'Z*' AND ls_fugr_func-funcname NP 'Y*'.
+        CONTINUE.
+      ENDIF.
+      APPEND VALUE #( obj_type = 'FUNC' obj_name = ls_fugr_func-funcname ) TO ct_inventory.
+    ENDLOOP.
+  ENDLOOP.
+
+  SORT ct_inventory BY obj_type obj_name.
+  DELETE ADJACENT DUPLICATES FROM ct_inventory COMPARING obj_type obj_name.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_PACKAGE_NAME_INDEX
+*&---------------------------------------------------------------------*
+*       Same inventory, reshaped into three flat name tables for fast
+*       per-type membership lookup (used by TRANSPORT_TOUCHES_PACKAGE).
+*&---------------------------------------------------------------------*
+FORM build_package_name_index USING iv_package TYPE devclass.
+  DATA lt_inv TYPE tt_lld_obj.
+
+  PERFORM build_package_inventory USING iv_package CHANGING lt_inv.
+
+  CLEAR: gt_pkg_prog, gt_pkg_clas, gt_pkg_func.
+
+  LOOP AT lt_inv INTO DATA(ls_inv).
+    CASE ls_inv-obj_type.
+      WHEN 'PROG'. APPEND ls_inv-obj_name TO gt_pkg_prog.
+      WHEN 'CLAS'. APPEND ls_inv-obj_name TO gt_pkg_clas.
+      WHEN 'FUNC'. APPEND ls_inv-obj_name TO gt_pkg_func.
+    ENDCASE.
+  ENDLOOP.
+
+  SORT: gt_pkg_prog, gt_pkg_clas, gt_pkg_func.
+ENDFORM.
+
+*&=======================================================================*
+*& FULL-run object list building (reuses the original tool's
+*& single-object builders, unchanged, in a loop over the package's
+*& current inventory)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_OBJECT_LIST_FROM_PACKAGE
+*&---------------------------------------------------------------------*
+*       Loops the package's current inventory through the SAME
+*       single-object builders ZCR_AURA_CODE_EXTRACTOR already has
+*       (BUILD_OBJECT_LIST_FROM_PROG/_CLASS/_FUNC, reused unchanged),
+*       then ADD_CLASS_METHODS (also unchanged) expands every collected
+*       class into its methods for the ALV.
+*&---------------------------------------------------------------------*
+FORM build_object_list_from_package USING iv_package TYPE devclass.
+  DATA: lt_inventory TYPE tt_lld_obj,
+        lv_prog      TYPE sy-repid,
+        lv_clas      TYPE seoclsname,
+        lv_func      TYPE rs38l_fnam.
+
+  PERFORM build_package_inventory USING iv_package CHANGING lt_inventory.
+
+  LOOP AT lt_inventory INTO DATA(ls_inv).
+    CASE ls_inv-obj_type.
+      WHEN 'PROG'.
+        lv_prog = ls_inv-obj_name.
+        PERFORM build_object_list_from_prog USING lv_prog.
+      WHEN 'CLAS'.
+        lv_clas = ls_inv-obj_name.
+        PERFORM build_object_list_from_class USING lv_clas.
+      WHEN 'FUNC'.
+        lv_func = ls_inv-obj_name.
+        PERFORM build_object_list_from_func USING lv_func.
+    ENDCASE.
+  ENDLOOP.
+
+  PERFORM add_class_methods.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_OBJECT_LIST_FROM_PROG   (REUSED unchanged)
+*&---------------------------------------------------------------------*
+FORM build_object_list_from_prog USING iv_prog TYPE sy-repid.
+  DATA ls_e071 TYPE e071.
+
+  SELECT SINGLE name, subc
+    FROM trdir
+    INTO @DATA(ls_trdir)
+    WHERE name = @iv_prog.
+
+  IF sy-subrc <> 0.
+    MESSAGE |Program { iv_prog } does not exist or is inactive - skipped.| TYPE 'S' DISPLAY LIKE 'E'.
+    RETURN.
+  ENDIF.
+
+  CASE ls_trdir-subc.
+    WHEN 'I'.                            "Include
+      ls_e071-pgmid  = 'LIMU'.
+      ls_e071-object = 'REPS'.
+    WHEN OTHERS.
+      PERFORM add_program_includes USING iv_prog.
+      CLEAR ls_e071.
+      ls_e071-pgmid  = 'R3TR'.
+      ls_e071-object = 'PROG'.
+  ENDCASE.
+
+  ls_e071-obj_name = iv_prog.
+  APPEND ls_e071 TO gt_e071.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ADD_PROGRAM_INCLUDES   (REUSED unchanged)
+*&---------------------------------------------------------------------*
+FORM add_program_includes USING iv_program TYPE sy-repid.
+  DATA: lt_includes TYPE STANDARD TABLE OF sy-repid,
+        ls_e071     TYPE e071.
+
+  CALL FUNCTION 'RS_GET_ALL_INCLUDES'
+    EXPORTING
+      program      = iv_program
+    TABLES
+      includetab   = lt_includes
+    EXCEPTIONS
+      not_existent = 1
+      no_program   = 2
+      OTHERS       = 3.
+
+  CHECK sy-subrc = 0.
+
+  LOOP AT lt_includes ASSIGNING FIELD-SYMBOL(<fs_incl>).
+    CLEAR ls_e071.
+    ls_e071-pgmid    = 'LIMU'.
+    ls_e071-object   = 'REPS'.
+    ls_e071-obj_name = <fs_incl>.
+    APPEND ls_e071 TO gt_e071.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_OBJECT_LIST_FROM_CLASS   (REUSED unchanged)
+*&---------------------------------------------------------------------*
+FORM build_object_list_from_class USING iv_clas TYPE seoclsname.
+  SELECT SINGLE clsname, clstype
+    FROM seoclass
+    INTO @DATA(ls_class)
+    WHERE clsname = @iv_clas.
+
+  IF sy-subrc <> 0.
+    MESSAGE |Class { iv_clas } does not exist - skipped.| TYPE 'S' DISPLAY LIKE 'E'.
+    RETURN.
+  ENDIF.
+
+  APPEND VALUE #( pgmid = 'R3TR' object = 'CLAS' obj_name = iv_clas ) TO gt_e071.
+  APPEND VALUE #( pgmid = 'LIMU' object = 'CPUB' obj_name = iv_clas ) TO gt_e071.
+  APPEND VALUE #( pgmid = 'LIMU' object = 'CPRO' obj_name = iv_clas ) TO gt_e071.
+  APPEND VALUE #( pgmid = 'LIMU' object = 'CPRI' obj_name = iv_clas ) TO gt_e071.
+
+  APPEND VALUE #( sign = 'I' option = 'EQ' low = iv_clas ) TO gr_class_name.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_OBJECT_LIST_FROM_FUNC   (REUSED unchanged)
+*&---------------------------------------------------------------------*
+FORM build_object_list_from_func USING iv_func TYPE rs38l_fnam.
+  SELECT SINGLE funcname
+    FROM tfdir
+    INTO @DATA(lv_funcname)
+    WHERE funcname = @iv_func.
+
+  IF sy-subrc <> 0.
+    MESSAGE |Function Module { iv_func } does not exist - skipped.| TYPE 'S' DISPLAY LIKE 'E'.
+    RETURN.
+  ENDIF.
+
+  APPEND VALUE #( pgmid = 'LIMU' object = 'FUNC' obj_name = iv_func ) TO gt_e071.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ADD_CLASS_METHODS   (REUSED unchanged)
+*&---------------------------------------------------------------------*
+FORM add_class_methods.
+  LOOP AT gt_e071 ASSIGNING FIELD-SYMBOL(<fs_class>) WHERE object = 'CLAS'.
+    APPEND VALUE #( sign = 'I' option = 'EQ' low = <fs_class>-obj_name ) TO gr_class_name.
+  ENDLOOP.
+
+  CHECK gr_class_name IS NOT INITIAL.
+
+  SELECT clsname, cmpname
+    INTO TABLE @DATA(lt_methods)
+    FROM seocompo
+   WHERE clsname IN @gr_class_name
+     AND cmptype = '1'.
+
+  CHECK sy-subrc = 0.
+
+  LOOP AT lt_methods INTO DATA(ls_meth).
+    APPEND VALUE #( object = 'METH'
+                     obj_name = |{ ls_meth-clsname WIDTH = 30 }{ ls_meth-cmpname }| ) TO gt_e071.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  CONVERT_E071_TO_LLD_HITS
+*&---------------------------------------------------------------------*
+*       Adapts GT_E071 (built above) into the same TT_TR_HIT shape the
+*       transport-sync path produces, with TRKORR left blank (meaning
+*       "full run, no TR context"), so both paths converge on the same
+*       BUILD_UNIQUE_LLD_OBJECTS below.
+*
+*       Deliberately keeps bare CLAS rows (unlike the original tool's
+*       CONVERT_E071_TO_MULTI_OBJ, which excludes them) - a class's own
+*       row is what guarantees it still appears as a checkable/
+*       extractable candidate even if it happens to have zero methods.
+*&---------------------------------------------------------------------*
+FORM convert_e071_to_lld_hits CHANGING ct_hits TYPE tt_tr_hit.
+  CLEAR ct_hits.
+
+  LOOP AT gt_e071 INTO DATA(ls_e071).
+    APPEND VALUE #( pgmid = ls_e071-pgmid
+                     object = ls_e071-object
+                     obj_name = ls_e071-obj_name
+                     trkorr = space ) TO ct_hits.
+  ENDLOOP.
+ENDFORM.
+
+*&=======================================================================*
+*& Incremental sync: qualifying transports + hit gathering
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  GATHER_QUALIFYING_TRANSPORTS
+*&---------------------------------------------------------------------*
+*       Finds every released transport newer than IV_LAST_HWM (by
+*       AS4DATE/AS4TIME, not TRKORR sort order - transport numbers are
+*       not reliably comparable as plain strings across a landscape),
+*       then narrows to the subset that actually touches this package.
+*
+*       CV_NEW_HWM is the highest-timestamp transport CONSIDERED this
+*       run (system-wide), not just the ones that touched the package -
+*       this is deliberate: a transport that was checked and found not
+*       to touch this package should never need re-checking on a future
+*       run, or the HWM would never really advance past irrelevant
+*       system activity.
+*
+*       VERIFY: this assumes E070-TRSTATUS = 'R' is this system's
+*       "released" status value (the standard SAP convention). Some
+*       landscapes use additional/different status codes - confirm
+*       against a known-released transport before relying on this.
+*&---------------------------------------------------------------------*
+FORM gather_qualifying_transports USING iv_package  TYPE devclass
+                                         iv_last_hwm TYPE e070-trkorr
+                                   CHANGING ct_touching_trkorr TYPE STANDARD TABLE OF e070-trkorr
+                                            cv_new_hwm         TYPE e070-trkorr.
+  DATA: lv_hwm_date TYPE e070-as4date,
+        lv_hwm_time TYPE e070-as4time.
+
+  CLEAR: ct_touching_trkorr, cv_new_hwm.
+
+  IF iv_last_hwm IS NOT INITIAL.
+    SELECT SINGLE as4date, as4time FROM e070
+      INTO (@lv_hwm_date, @lv_hwm_time)
+      WHERE trkorr = @iv_last_hwm.
+  ENDIF.
+
+  SELECT trkorr, as4date, as4time FROM e070
+    INTO TABLE @DATA(lt_candidates)
+    WHERE trstatus = 'R'
+      AND ( as4date > @lv_hwm_date
+            OR ( as4date = @lv_hwm_date AND as4time > @lv_hwm_time ) )
+    ORDER BY as4date ASCENDING, as4time ASCENDING.
+
+  CHECK lt_candidates IS NOT INITIAL.
+
+  READ TABLE lt_candidates INTO DATA(ls_highest) INDEX lines( lt_candidates ).
+  cv_new_hwm = ls_highest-trkorr.
+
+  PERFORM build_package_name_index USING iv_package.
+
+  LOOP AT lt_candidates INTO DATA(ls_cand).
+    PERFORM transport_touches_package USING ls_cand-trkorr CHANGING DATA(lv_touches).
+    IF lv_touches = abap_true.
+      APPEND ls_cand-trkorr TO ct_touching_trkorr.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  TRANSPORT_TOUCHES_PACKAGE
+*&---------------------------------------------------------------------*
+*       E071 carries no DEVCLASS, so package membership can only be
+*       checked via each hit's resolved owning object name against
+*       GT_PKG_PROG/GT_PKG_CLAS/GT_PKG_FUNC (built by
+*       BUILD_PACKAGE_NAME_INDEX before this is called in a loop).
+*&---------------------------------------------------------------------*
+FORM transport_touches_package USING iv_trkorr TYPE e070-trkorr
+                                CHANGING cv_touches TYPE abap_bool.
+  DATA: lt_subtask TYPE STANDARD TABLE OF e070-trkorr,
+        lr_trkorr  TYPE RANGE OF e070-trkorr,
+        lt_e071    TYPE tt_e071.
+
+  cv_touches = abap_false.
+
+  SELECT trkorr FROM e070 INTO TABLE lt_subtask WHERE strkorr = iv_trkorr.
+
+  APPEND VALUE #( sign = 'I' option = 'EQ' low = iv_trkorr ) TO lr_trkorr.
+  LOOP AT lt_subtask INTO DATA(lv_sub).
+    APPEND VALUE #( sign = 'I' option = 'EQ' low = lv_sub ) TO lr_trkorr.
+  ENDLOOP.
+
+  SELECT * FROM e071 INTO TABLE lt_e071
+    WHERE trkorr IN lr_trkorr
+      AND pgmid  IN ('R3TR','LIMU')
+      AND object IN ('PROG','REPS','METH','CLAS','CLSD','CPUB','CPRI','CPRO','FUNC').
+
+  CHECK sy-subrc = 0.
+
+  LOOP AT lt_e071 INTO DATA(ls_hit).
+    DATA(ls_hit_shape) = VALUE ts_tr_hit( pgmid = ls_hit-pgmid
+                                           object = ls_hit-object
+                                           obj_name = ls_hit-obj_name ).
+    PERFORM determine_owner USING ls_hit_shape
+                             CHANGING DATA(lv_owner_type) DATA(lv_owner_name).
+
+    CASE lv_owner_type.
+      WHEN 'PROG'.
+        READ TABLE gt_pkg_prog TRANSPORTING NO FIELDS WITH KEY table_line = lv_owner_name BINARY SEARCH.
+      WHEN 'CLAS'.
+        READ TABLE gt_pkg_clas TRANSPORTING NO FIELDS WITH KEY table_line = lv_owner_name BINARY SEARCH.
+      WHEN 'FUNC'.
+        READ TABLE gt_pkg_func TRANSPORTING NO FIELDS WITH KEY table_line = lv_owner_name BINARY SEARCH.
+      WHEN OTHERS.
+        CONTINUE.
+    ENDCASE.
+
+    IF sy-subrc = 0.
+      cv_touches = abap_true.
+      RETURN.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  COLLECT_TR_HITS   (REUSED unchanged from ZCR_AURA_CODE_EXTRACTOR)
+*&---------------------------------------------------------------------*
+FORM collect_tr_hits USING iv_trkorr TYPE e070-trkorr
+                     CHANGING ct_hits TYPE tt_tr_hit.
+  DATA: lt_subtask TYPE STANDARD TABLE OF e070-trkorr,
+        lt_e071    TYPE tt_e071.
+
+  SELECT trkorr FROM e070 INTO TABLE lt_subtask WHERE strkorr = iv_trkorr.
+
+  DATA(lr_subtask) = VALUE rseloption(
+    FOR <fs_subtask> IN lt_subtask
+    ( sign = 'I' option = 'EQ' low = <fs_subtask> ) ).
+
+  CHECK lr_subtask IS NOT INITIAL.
+
+  SELECT * FROM e071 INTO TABLE lt_e071
+    WHERE trkorr IN lr_subtask
+      AND pgmid  IN ('R3TR','LIMU')
+      AND object IN ('PROG', 'REPS', 'METH', 'CLAS', 'CLSD', 'CPUB', 'CPRI', 'CPRO', 'FUNC', 'DOMA', 'DTEL', 'TABL', 'TTYP')
+    ORDER BY pgmid object obj_name.
+
+  CHECK sy-subrc = 0.
+
+  DELETE ADJACENT DUPLICATES FROM lt_e071 COMPARING pgmid object obj_name.
+
+  LOOP AT lt_e071 ASSIGNING FIELD-SYMBOL(<fs_e071>).
+    APPEND VALUE #( pgmid    = <fs_e071>-pgmid
+                     object   = <fs_e071>-object
+                     obj_name = <fs_e071>-obj_name
+                     trkorr   = iv_trkorr ) TO ct_hits.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  EXPAND_CLASS_METHODS   (REUSED unchanged from ZCR_AURA_CODE_EXTRACTOR)
+*&---------------------------------------------------------------------*
+FORM expand_class_methods CHANGING ct_hits TYPE tt_tr_hit.
+  DATA: lt_clas_hits  TYPE tt_tr_hit,
+        lr_class_name TYPE RANGE OF seoclsname,
+        lt_new_hits   TYPE tt_tr_hit.
+
+  lt_clas_hits = VALUE #( FOR ls_hit IN ct_hits WHERE ( object = 'CLAS' ) ( ls_hit ) ).
+  CHECK lt_clas_hits IS NOT INITIAL.
+
+  lr_class_name = VALUE #( FOR ls_clas IN lt_clas_hits
+                            ( sign = 'I' option = 'EQ' low = ls_clas-obj_name ) ).
+
+  SELECT clsname, cmpname
+    INTO TABLE @DATA(lt_methods)
+    FROM seocompo
+   WHERE clsname IN @lr_class_name
+     AND cmptype = '1'.
+
+  CHECK sy-subrc = 0.
+
+  LOOP AT lt_methods INTO DATA(ls_meth).
+    LOOP AT lt_clas_hits INTO DATA(ls_clas_hit) WHERE obj_name = ls_meth-clsname.
+      APPEND VALUE #( pgmid    = 'LIMU'
+                       object   = 'METH'
+                       obj_name = |{ ls_meth-clsname WIDTH = 30 }{ ls_meth-cmpname }|
+                       trkorr   = ls_clas_hit-trkorr ) TO lt_new_hits.
+    ENDLOOP.
+  ENDLOOP.
+
+  APPEND LINES OF lt_new_hits TO ct_hits.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  DETERMINE_OWNER
+*&---------------------------------------------------------------------*
+*       Maps any single E071-shaped hit to the whole top-level LLD
+*       object it belongs to. Used three ways: (1) rolling up ALV
+*       fragments to whole objects, (2) the package-membership check in
+*       TRANSPORT_TOUCHES_PACKAGE, (3) implicitly via both of those for
+*       both FULL and INCR runs. DOMA/DTEL/TABL/TTYP (and anything
+*       unrecognized) return a blank owner - the shared DDIC section
+*       handles those separately (see BUILD_PACKAGE_DDIC_JSON), always
+*       rebuilt fresh from the package's live TADIR, not tracked here.
+*&---------------------------------------------------------------------*
+FORM determine_owner USING is_hit TYPE ts_tr_hit
+                      CHANGING cv_owner_type TYPE e071-object
+                               cv_owner_name TYPE e071-obj_name.
+  DATA: lv_classname  TYPE seoclsname,
+        lv_methodname TYPE string,
+        lv_obj        TYPE string,
+        lv_master     TYPE progname.
+
+  CLEAR: cv_owner_type, cv_owner_name.
+
+  CASE is_hit-object.
+    WHEN 'PROG'.
+      cv_owner_type = 'PROG'.
+      cv_owner_name = is_hit-obj_name.
+
+    WHEN 'REPS'.
+      cv_owner_type = 'PROG'.
+
+      SELECT SINGLE master FROM d010inc INTO lv_master WHERE include = is_hit-obj_name.
+      IF sy-subrc = 0 AND lv_master IS NOT INITIAL.
+        cv_owner_name = lv_master.
+      ELSE.
+        " VERIFY: no D010INC row means either this include has no
+        " separately-tracked master (it IS the main program), or the
+        " program simply has zero other includes - falling back to the
+        " include's own name as the owner in that case.
+        cv_owner_name = is_hit-obj_name.
+      ENDIF.
+
+    WHEN 'CLAS' OR 'CLSD' OR 'CPUB' OR 'CPRI' OR 'CPRO'.
+      cv_owner_type = 'CLAS'.
+      cv_owner_name = is_hit-obj_name.
+
+    WHEN 'METH'.
+      cv_owner_type = 'CLAS'.
+      lv_obj = is_hit-obj_name.
+      CONDENSE lv_obj.
+      SPLIT lv_obj AT space INTO lv_classname lv_methodname.
+      cv_owner_name = lv_classname.
+
+    WHEN 'FUNC'.
+      cv_owner_type = 'FUNC'.
+      cv_owner_name = is_hit-obj_name.
+
+    WHEN OTHERS.
+      CLEAR: cv_owner_type, cv_owner_name.
+  ENDCASE.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_UNIQUE_LLD_OBJECTS
+*&---------------------------------------------------------------------*
+*       Deduplicates IT_HITS by (object, obj_name) into
+*       GT_LLD_MULTI_OBJ, one ALV row per unique fragment, each
+*       resolved to its owning whole object via DETERMINE_OWNER.
+*       Fragments with no resolvable owner (DOMA/DTEL/TABL/TTYP) are
+*       dropped - they have no LLD object-block home.
+*&---------------------------------------------------------------------*
+FORM build_unique_lld_objects USING it_hits TYPE tt_tr_hit.
+  DATA: lt_unique TYPE tt_tr_hit,
+        ls_multi  TYPE ts_lld_multi_obj.
+
+  CLEAR gt_lld_multi_obj.
+
+  lt_unique = it_hits.
+  SORT lt_unique BY object obj_name.
+  DELETE ADJACENT DUPLICATES FROM lt_unique COMPARING object obj_name.
+
+  LOOP AT lt_unique INTO DATA(ls_unique).
+    PERFORM determine_owner USING ls_unique CHANGING DATA(lv_owner_type) DATA(lv_owner_name).
+    CHECK lv_owner_type IS NOT INITIAL.
+
+    CLEAR ls_multi.
+    ls_multi-checked     = abap_true.
+    ls_multi-pgmid       = ls_unique-pgmid.
+    ls_multi-object      = ls_unique-object.
+    ls_multi-obj_name    = ls_unique-obj_name.
+    ls_multi-obj_display = |{ ls_unique-obj_name } { ls_unique-object }|.
+    ls_multi-owner_type  = lv_owner_type.
+    ls_multi-owner_name  = lv_owner_name.
+
+    IF gv_run_type = 'INCR'.
+      PERFORM build_tr_list USING ls_unique-object ls_unique-obj_name it_hits
+                             CHANGING ls_multi-tr_list ls_multi-most_recent_tr.
+    ENDIF.
+
+    APPEND ls_multi TO gt_lld_multi_obj.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_TR_LIST   (REUSED unchanged from ZCR_AURA_CODE_EXTRACTOR)
+*&---------------------------------------------------------------------*
+FORM build_tr_list USING iv_object    TYPE e071-object
+                          iv_obj_name TYPE e071-obj_name
+                          it_hits     TYPE tt_tr_hit
+                   CHANGING cv_tr_list       TYPE string
+                            cv_most_recent   TYPE e070-trkorr.
+  DATA: lt_matching  TYPE STANDARD TABLE OF e070-trkorr,
+        lt_e070      TYPE STANDARD TABLE OF ts_e070_recency,
+        ls_e070      TYPE ts_e070_recency,
+        lv_best_date TYPE e070-as4date,
+        lv_best_time TYPE e070-as4time.
+
+  CLEAR: cv_tr_list, cv_most_recent, lv_best_date, lv_best_time.
+
+  LOOP AT it_hits INTO DATA(ls_hit) WHERE object = iv_object AND obj_name = iv_obj_name.
+    APPEND ls_hit-trkorr TO lt_matching.
+    IF cv_tr_list IS INITIAL.
+      cv_tr_list = ls_hit-trkorr.
+    ELSE.
+      cv_tr_list = |{ cv_tr_list }, { ls_hit-trkorr }|.
+    ENDIF.
+  ENDLOOP.
+
+  CHECK lt_matching IS NOT INITIAL.
+
+  SELECT trkorr, as4date, as4time
+    INTO TABLE @lt_e070
+    FROM e070
+    FOR ALL ENTRIES IN @lt_matching
+   WHERE trkorr = @lt_matching-table_line.
+
+  LOOP AT lt_e070 INTO ls_e070.
+    IF cv_most_recent IS INITIAL
+    OR ls_e070-as4date > lv_best_date
+    OR ( ls_e070-as4date = lv_best_date AND ls_e070-as4time > lv_best_time ).
+      cv_most_recent = ls_e070-trkorr.
+      lv_best_date   = ls_e070-as4date.
+      lv_best_time   = ls_e070-as4time.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+*&=======================================================================*
+*& Deletion detection
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  DETECT_REMOVED_OBJECTS
+*&---------------------------------------------------------------------*
+FORM detect_removed_objects USING iv_package TYPE devclass
+                                   it_current TYPE tt_lld_obj
+                             CHANGING ct_removed TYPE tt_lld_obj.
+  DATA lt_stored TYPE tt_lld_obj.
+
+  CLEAR ct_removed.
+
+  SELECT obj_type, obj_name FROM zlld_sync_objects
+    INTO TABLE @lt_stored
+    WHERE package = @iv_package.
+
+  IF sy-subrc <> 0.
+    RETURN.   " first run - nothing stored yet, nothing can be "removed"
+  ENDIF.
+
+  LOOP AT lt_stored INTO DATA(ls_stored).
+    READ TABLE it_current TRANSPORTING NO FIELDS
+      WITH KEY obj_type = ls_stored-obj_type obj_name = ls_stored-obj_name.
+    IF sy-subrc <> 0.
+      APPEND ls_stored TO ct_removed.
+    ENDIF.
+  ENDLOOP.
+
+  SORT ct_removed BY obj_type obj_name.
+ENDFORM.
+
+*&=======================================================================*
+*& Whole-object extraction (dependency JSON + source + LLD block)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  PROCESS_CHECKED_LLD_OBJECTS
+*&---------------------------------------------------------------------*
+*       Rolls up every checked ALV fragment to its owning whole object
+*       (any owner with >=1 checked fragment is extracted once), then
+*       extracts each distinct owner.
+*&---------------------------------------------------------------------*
+FORM process_checked_lld_objects.
+  DATA lt_owners TYPE tt_lld_obj.
+
+  gv_extracted_count = 0.
+
+  LOOP AT gt_lld_multi_obj INTO DATA(ls_multi) WHERE checked = abap_true.
+    APPEND VALUE #( obj_type = ls_multi-owner_type obj_name = ls_multi-owner_name ) TO lt_owners.
+  ENDLOOP.
+
+  SORT lt_owners BY obj_type obj_name.
+  DELETE ADJACENT DUPLICATES FROM lt_owners COMPARING obj_type obj_name.
+
+  LOOP AT lt_owners INTO DATA(ls_owner).
+    PERFORM extract_lld_object USING ls_owner-obj_type ls_owner-obj_name.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  EXTRACT_LLD_OBJECT
+*&---------------------------------------------------------------------*
+FORM extract_lld_object USING iv_owner_type TYPE e071-object
+                               iv_owner_name TYPE e071-obj_name.
+  DATA: lv_lld_type TYPE string,
+        lt_source   TYPE tt_code_line,
+        lv_dep_json TYPE string,
+        lv_skip     TYPE abap_bool.
+
+  CASE iv_owner_type.
+    WHEN 'PROG'. lv_lld_type = 'PROGRAM'.
+    WHEN 'CLAS'. lv_lld_type = 'CLASS'.
+    WHEN 'FUNC'. lv_lld_type = 'FUNCTION_MODULE'.
+    WHEN OTHERS. RETURN.
+  ENDCASE.
+
+  PERFORM get_source_for_lld_object USING iv_owner_type iv_owner_name
+                                     CHANGING lt_source lv_skip.
+  CHECK lv_skip = abap_false.
+
+  PERFORM build_dependency_for_object USING iv_owner_type iv_owner_name
+                                           CHANGING lv_dep_json lv_skip.
+  CHECK lv_skip = abap_false.
+
+  PERFORM append_lld_object_block USING lv_lld_type iv_owner_name p_pack lt_source lv_dep_json.
+  gv_extracted_count = gv_extracted_count + 1.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  GET_SOURCE_FOR_LLD_OBJECT
+*&---------------------------------------------------------------------*
+*       Current ACTIVE source only - no diff, no version selection.
+*       CLAS uses SEO_CLASS_GET_SOURCE (whole class pool in one call).
+*       PROG concatenates the main program + every include from
+*       RS_GET_ALL_INCLUDES (same FM ADD_PROGRAM_INCLUDES already uses).
+*       FUNC resolves its own include via FUNCTION_INCLUDE_INFO (same
+*       technique the original BUILD_DEPENDENCY_INPUT uses) and reads
+*       just that one include.
+*&---------------------------------------------------------------------*
+FORM get_source_for_lld_object USING iv_owner_type TYPE e071-object
+                                      iv_owner_name TYPE e071-obj_name
+                                CHANGING ct_source TYPE tt_code_line
+                                         cv_skip   TYPE abap_bool.
+  DATA: lv_progname   TYPE progname,
+        lv_clsname    TYPE seoclsname,
+        lv_fm_name    TYPE rs38l_fnam,
+        lv_fm_include TYPE progname,
+        lt_includes   TYPE STANDARD TABLE OF sy-repid.
+
+  CLEAR: ct_source, cv_skip.
+
+  CASE iv_owner_type.
+    WHEN 'PROG'.
+      lv_progname = iv_owner_name.
+
+      PERFORM read_single_program_source USING lv_progname CHANGING ct_source cv_skip.
+      CHECK cv_skip = abap_false.
+
+      CALL FUNCTION 'RS_GET_ALL_INCLUDES'
+        EXPORTING
+          program      = lv_progname
+        TABLES
+          includetab   = lt_includes
+        EXCEPTIONS
+          not_existent = 1
+          no_program   = 2
+          OTHERS       = 3.
+
+      IF sy-subrc = 0.
+        LOOP AT lt_includes INTO DATA(lv_incl).
+          DATA(lt_incl_source) = VALUE tt_code_line( ).
+          DATA(lv_incl_skip)   = abap_false.
+          PERFORM read_single_program_source USING lv_incl CHANGING lt_incl_source lv_incl_skip.
+          IF lv_incl_skip = abap_false.
+            APPEND LINES OF lt_incl_source TO ct_source.
+          ENDIF.
+        ENDLOOP.
+      ENDIF.
+
+    WHEN 'CLAS'.
+      lv_clsname = iv_owner_name.
+      PERFORM read_class_source USING lv_clsname CHANGING ct_source cv_skip.
+
+    WHEN 'FUNC'.
+      lv_fm_name = iv_owner_name.
+
+      CALL FUNCTION 'FUNCTION_INCLUDE_INFO'
+        CHANGING
+          funcname            = lv_fm_name
+          include             = lv_fm_include
+        EXCEPTIONS
+          function_not_exists = 1
+          include_not_exists  = 2
+          group_not_exists    = 3
+          no_selections       = 4
+          no_function_include = 5
+          OTHERS              = 6.
+
+      IF sy-subrc <> 0.
+        cv_skip = abap_true.
+        RETURN.
+      ENDIF.
+
+      PERFORM read_single_program_source USING lv_fm_include CHANGING ct_source cv_skip.
+
+    WHEN OTHERS.
+      cv_skip = abap_true.
+  ENDCASE.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  READ_SINGLE_PROGRAM_SOURCE
+*&---------------------------------------------------------------------*
+*       VERIFY in SE37 before activating: RPY_PROGRAM_READ's exact
+*       TABLES parameter name and line type differ slightly by release.
+*       This assumes a parameter that behaves like SOURCE_EXTENDED,
+*       line-compatible with a flat text line. If your system's version
+*       instead returns TYPE STANDARD TABLE OF STRING directly, this
+*       still works unchanged (the LOOP...APPEND below just moves each
+*       line into CT_SOURCE's own STRING field either way) - what needs
+*       checking is only the TABLES parameter's NAME and whether STATE
+*       = 'A' is the right value for "active version" on your release
+*       (some releases use a different parameter for this, or default
+*       to active with no explicit state parameter at all).
+*&---------------------------------------------------------------------*
+FORM read_single_program_source USING iv_progname TYPE progname
+                                 CHANGING ct_source TYPE tt_code_line
+                                          cv_skip   TYPE abap_bool.
+  DATA: lt_source_raw TYPE STANDARD TABLE OF ts_line_255.
+
+  CLEAR: ct_source, cv_skip.
+
+  CALL FUNCTION 'RPY_PROGRAM_READ'
+    EXPORTING
+      program_name     = iv_progname
+      state             = 'A'
+    TABLES
+      source_extended   = lt_source_raw
+    EXCEPTIONS
+      cancelled         = 1
+      not_found         = 2
+      permission_error  = 3
+      OTHERS            = 4.
+
+  IF sy-subrc <> 0.
+    cv_skip = abap_true.
+    RETURN.
+  ENDIF.
+
+  LOOP AT lt_source_raw INTO DATA(ls_raw).
+    APPEND VALUE #( line = ls_raw ) TO ct_source.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  READ_CLASS_SOURCE
+*&---------------------------------------------------------------------*
+*       VERIFY in SE37 before activating: SEO_CLASS_GET_SOURCE's exact
+*       parameter names/types vary by release. This assumes an
+*       importing CLSKEY (TYPE SEOCLSKEY) and an exporting SOURCE table
+*       of plain text lines. If your release's signature differs,
+*       adjust the CALL FUNCTION below only - callers of this FORM are
+*       unaffected either way.
+*&---------------------------------------------------------------------*
+FORM read_class_source USING iv_clsname TYPE seoclsname
+                        CHANGING ct_source TYPE tt_code_line
+                                 cv_skip   TYPE abap_bool.
+  DATA lt_class_src TYPE seop_source_string.
+
+  CLEAR: ct_source, cv_skip.
+
+  CALL FUNCTION 'SEO_CLASS_GET_SOURCE'
+    EXPORTING
+      clskey = VALUE seoclskey( clsname = iv_clsname )
+    IMPORTING
+      source = lt_class_src
+    EXCEPTIONS
+      OTHERS = 1.
+
+  IF sy-subrc <> 0.
+    cv_skip = abap_true.
+    RETURN.
+  ENDIF.
+
+  LOOP AT lt_class_src INTO DATA(lv_class_line).
+    APPEND VALUE #( line = lv_class_line ) TO ct_source.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_DEPENDENCY_FOR_LLD_OBJECT
+*&---------------------------------------------------------------------*
+*       Calls ZCR_GET_DEPENDENCY_OBJ_NEW exactly as the existing report
+*       does, per object type:
+*         PROG -> obj_type='PROG', the program's own name (its own
+*                 REPOSITORY_ENVIRONMENT_RFC-based branch).
+*         CLAS -> obj_type='CLAS', the class's own name. NOTE: this
+*                 branch's real behavior is an inventory of the class's
+*                 OWN methods + implemented interfaces (via SEOCOMPO/
+*                 SEOMETAREL), not "what this class calls externally" -
+*                 that's the FM's actual existing behavior, reused
+*                 as-is, not something this report changes or works
+*                 around.
+*         FUNC -> ZCR_GET_DEPENDENCY_OBJ_NEW has no native FUNC branch.
+*                 Resolves the FM's own include via FUNCTION_INCLUDE_INFO
+*                 first (same translation BUILD_DEPENDENCY_INPUT already
+*                 performs) and calls with obj_type='PROG' on that
+*                 include - this is what actually yields "what this
+*                 function module calls."
+*
+*       Each call's own EV_DDIC_JSON is intentionally discarded - the
+*       file's single shared DDIC section comes from
+*       BUILD_PACKAGE_DDIC_JSON instead (package-scoped, not
+*       object-referenced-scoped), per the brief's "one shared DDIC
+*       section, not duplicated per object" requirement.
+*&---------------------------------------------------------------------*
+FORM build_dependency_for_object USING iv_owner_type TYPE e071-object
+                                            iv_owner_name TYPE e071-obj_name
+                                      CHANGING cv_dep_json TYPE string
+                                               cv_skip     TYPE abap_bool.
+  DATA: lt_dep_input  TYPE zpoc_tt_obj,
+        lv_dummy_ddic TYPE string,
+        lv_fm_name    TYPE rs38l_fnam,
+        lv_fm_include TYPE progname.
+
+  CLEAR: cv_dep_json, cv_skip, lt_dep_input.
+
+  CASE iv_owner_type.
+    WHEN 'PROG'.
+      APPEND VALUE #( obj_type = 'PROG' object_name = iv_owner_name ) TO lt_dep_input.
+
+    WHEN 'CLAS'.
+      APPEND VALUE #( obj_type = 'CLAS' object_name = iv_owner_name ) TO lt_dep_input.
+
+    WHEN 'FUNC'.
+      lv_fm_name = iv_owner_name.
+
+      CALL FUNCTION 'FUNCTION_INCLUDE_INFO'
+        CHANGING
+          funcname            = lv_fm_name
+          include             = lv_fm_include
+        EXCEPTIONS
+          function_not_exists = 1
+          include_not_exists  = 2
+          group_not_exists    = 3
+          no_selections       = 4
+          no_function_include = 5
+          OTHERS              = 6.
+
+      IF sy-subrc <> 0.
+        cv_skip = abap_true.
+        RETURN.
+      ENDIF.
+
+      APPEND VALUE #( obj_type = 'PROG' object_name = lv_fm_include ) TO lt_dep_input.
+
+    WHEN OTHERS.
+      cv_skip = abap_true.
+      RETURN.
+  ENDCASE.
+
+  CALL FUNCTION 'ZCR_GET_DEPENDENCY_OBJ_NEW'
+    EXPORTING
+      ii_objects   = lt_dep_input
+    IMPORTING
+      ev_json      = cv_dep_json
+      ev_ddic_json = lv_dummy_ddic.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_PACKAGE_DDIC_JSON
+*&---------------------------------------------------------------------*
+*       ONE call to Z_GET_DDIC_INFO, covering every DOMA/DTEL/TABL/TTYP
+*       that belongs to the package itself (via TADIR), independent of
+*       which specific objects got extracted this run. This is the
+*       file's single shared --- DDIC --- section.
+*&---------------------------------------------------------------------*
+FORM build_package_ddic_json USING iv_package TYPE devclass
+                              CHANGING cv_ddic_json TYPE string.
+  DATA lt_ddic_objs TYPE zpoc_tt_ddic_obj.
+
+  CLEAR cv_ddic_json.
+
+  SELECT object, obj_name FROM tadir
+    INTO TABLE @DATA(lt_tadir)
+    WHERE pgmid = 'R3TR' AND devclass = @iv_package
+      AND object IN ('DOMA','DTEL','TABL','TTYP').
+
+  CHECK sy-subrc = 0.
+
+  LOOP AT lt_tadir INTO DATA(ls_tadir).
+    APPEND VALUE #( obj_type = ls_tadir-object object_name = ls_tadir-obj_name ) TO lt_ddic_objs.
+  ENDLOOP.
+
+  CHECK lt_ddic_objs IS NOT INITIAL.
+
+  CALL FUNCTION 'Z_GET_DDIC_INFO'
+    EXPORTING
+      ii_objects = lt_ddic_objs
+    IMPORTING
+      ew_json    = cv_ddic_json.
+ENDFORM.
+
+*&=======================================================================*
+*& LLD-format output writer
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_AND_WRITE_LLD_FILE
+*&---------------------------------------------------------------------*
+FORM build_and_write_lld_file.
+  DATA lv_ddic_json TYPE string.
+
+  CLEAR gt_output.
+
+  PERFORM build_package_ddic_json USING p_pack CHANGING lv_ddic_json.
+  PERFORM append_file_header USING p_pack gv_run_type gt_removed_objects lv_ddic_json.
+  PERFORM process_checked_lld_objects.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  APPEND_FILE_HEADER
+*&---------------------------------------------------------------------*
+*       Written ONCE, before any object blocks. REMOVED_OBJECTS is a
+*       comma-separated "TYPE:NAME" list, or NONE - step 2's loader
+*       needs this explicit list to prune objects the graph/vector
+*       store, since a scoped sync's silence about an object is not
+*       itself a deletion signal.
+*&---------------------------------------------------------------------*
+FORM append_file_header USING iv_package   TYPE devclass
+                               iv_run_type  TYPE char4
+                               it_removed   TYPE tt_lld_obj
+                               iv_ddic_json TYPE string.
+  DATA lv_removed_list TYPE string.
+
+  IF it_removed IS INITIAL.
+    lv_removed_list = 'NONE'.
+  ELSE.
+    LOOP AT it_removed INTO DATA(ls_removed).
+      IF lv_removed_list IS INITIAL.
+        lv_removed_list = |{ ls_removed-obj_type }:{ ls_removed-obj_name }|.
+      ELSE.
+        lv_removed_list = |{ lv_removed_list }, { ls_removed-obj_type }:{ ls_removed-obj_name }|.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+
+  APPEND VALUE #( line = |RUN_TYPE: { iv_run_type }| ) TO gt_output.
+  APPEND VALUE #( line = |PACKAGE: { iv_package }| ) TO gt_output.
+  APPEND VALUE #( line = |EXTRACTED_AT: { sy-datum DATE = ISO } { sy-uzeit TIME = ISO }| ) TO gt_output.
+  APPEND VALUE #( line = |REMOVED_OBJECTS: { lv_removed_list }| ) TO gt_output.
+  APPEND VALUE #( line = | | ) TO gt_output.
+  APPEND VALUE #( line = |--- DDIC ---| ) TO gt_output.
+  APPEND VALUE #( line = iv_ddic_json ) TO gt_output.
+  APPEND VALUE #( line = | | ) TO gt_output.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  APPEND_LLD_OBJECT_BLOCK
+*&---------------------------------------------------------------------*
+FORM append_lld_object_block USING iv_lld_type TYPE string
+                                    iv_obj_name TYPE e071-obj_name
+                                    iv_package  TYPE devclass
+                                    it_source   TYPE tt_code_line
+                                    iv_dep_json TYPE string.
+  APPEND VALUE #( line = |=== OBJECT: { iv_obj_name } ===| ) TO gt_output.
+  APPEND VALUE #( line = |TYPE: { iv_lld_type }| ) TO gt_output.
+  APPEND VALUE #( line = |PACKAGE: { iv_package }| ) TO gt_output.
+  APPEND VALUE #( line = | | ) TO gt_output.
+  APPEND VALUE #( line = |--- SOURCE ---| ) TO gt_output.
+
+  LOOP AT it_source INTO DATA(ls_source).
+    APPEND VALUE #( line = ls_source-line ) TO gt_output.
+  ENDLOOP.
+
+  APPEND VALUE #( line = | | ) TO gt_output.
+  APPEND VALUE #( line = |--- DEPENDENCIES ---| ) TO gt_output.
+  APPEND VALUE #( line = iv_dep_json ) TO gt_output.
+  APPEND VALUE #( line = |=== END OBJECT ===| ) TO gt_output.
+  APPEND VALUE #( line = | | ) TO gt_output.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  CONFIRM_OVERWRITE_IF_EXISTS   (REUSED unchanged)
+*&---------------------------------------------------------------------*
+FORM confirm_overwrite_if_exists CHANGING cv_proceed TYPE abap_bool.
+  DATA: lv_exists TYPE abap_bool,
+        lv_answer TYPE c LENGTH 1.
+
+  cv_proceed = abap_true.
+
+  cl_gui_frontend_services=>file_exist(
+    EXPORTING
+      file   = gv_full_path
+    RECEIVING
+      result = lv_exists
+    EXCEPTIONS
+      OTHERS = 1 ).
+
+  CHECK lv_exists = abap_true.
+
+  CALL FUNCTION 'POPUP_TO_CONFIRM'
+    EXPORTING
+      titlebar       = 'File Already Exists'
+      text_question  = |{ gv_full_path } already exists. Overwrite it?|
+      text_button_1  = 'Yes'
+      text_button_2  = 'No'
+      default_button = '2'
+    IMPORTING
+      answer         = lv_answer
+    EXCEPTIONS
+      text_not_found = 1
+      OTHERS         = 2.
+
+  IF lv_answer <> '1'.
+    cv_proceed = abap_false.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  DOWNLOAD_OUTPUT_FILE   (REUSED unchanged)
+*&---------------------------------------------------------------------*
+FORM download_output_file.
+  DATA lv_proceed TYPE abap_bool.
+
+  PERFORM confirm_overwrite_if_exists CHANGING lv_proceed.
+  IF lv_proceed = abap_false.
+    WRITE: / 'Download cancelled - existing file was not overwritten.'.
+    RETURN.
+  ENDIF.
+
+  CALL FUNCTION 'GUI_DOWNLOAD'
+    EXPORTING
+      filename         = gv_full_path
+      filetype         = 'ASC'
+    TABLES
+      data_tab         = gt_output
+    EXCEPTIONS
+      file_write_error = 1
+      OTHERS           = 2.
+
+  IF sy-subrc = 0.
+    WRITE: / 'File successfully downloaded to:', gv_full_path.
+  ELSE.
+    WRITE: / 'Error downloading file. Check if the file path is valid.'.
+  ENDIF.
+ENDFORM.
+
+*&=======================================================================*
+*& Sync-state persistence (ZLLD_SYNC_LOG / ZLLD_SYNC_OBJECTS)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  READ_SYNC_LOG
+*&---------------------------------------------------------------------*
+FORM read_sync_log USING iv_package TYPE devclass
+                    CHANGING es_log   TYPE zlld_sync_log
+                             ev_found TYPE abap_bool.
+  CLEAR: es_log, ev_found.
+
+  SELECT SINGLE * FROM zlld_sync_log INTO es_log WHERE package = iv_package.
+  IF sy-subrc = 0.
+    ev_found = abap_true.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  UPDATE_SYNC_LOG
+*&---------------------------------------------------------------------*
+FORM update_sync_log USING iv_package      TYPE devclass
+                            iv_run_type     TYPE char4
+                            iv_hwm          TYPE e070-trkorr
+                            iv_object_count TYPE i
+                            iv_status       TYPE char10.
+  DATA: ls_log TYPE zlld_sync_log,
+        lv_ts  TYPE timestampl.
+
+  GET TIME STAMP FIELD lv_ts.
+
+  ls_log-package         = iv_package.
+  ls_log-last_sync_ts    = lv_ts.
+  ls_log-last_trkorr_hwm = iv_hwm.
+  ls_log-run_type        = iv_run_type.
+  ls_log-object_count    = iv_object_count.
+  ls_log-status          = iv_status.
+
+  MODIFY zlld_sync_log FROM ls_log.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  REFRESH_SYNC_OBJECTS
+*&---------------------------------------------------------------------*
+*       Full replace of this package's snapshot with its CURRENT live
+*       inventory (GT_CURRENT_INVENTORY, built once at the top of MAIN)
+*       - needed for the NEXT run's deletion detection regardless of
+*       how narrow this run's own extraction scope was.
+*&---------------------------------------------------------------------*
+FORM refresh_sync_objects USING iv_package TYPE devclass
+                                 it_current TYPE tt_lld_obj.
+  DATA: lt_rows TYPE STANDARD TABLE OF zlld_sync_objects,
+        lv_ts   TYPE timestampl.
+
+  GET TIME STAMP FIELD lv_ts.
+
+  DELETE FROM zlld_sync_objects WHERE package = iv_package.
+
+  LOOP AT it_current INTO DATA(ls_current).
+    APPEND VALUE #( package      = iv_package
+                     obj_type     = ls_current-obj_type
+                     obj_name     = ls_current-obj_name
+                     last_seen_ts = lv_ts ) TO lt_rows.
+  ENDLOOP.
+
+  IF lt_rows IS NOT INITIAL.
+    INSERT zlld_sync_objects FROM TABLE lt_rows.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  DETERMINE_CURRENT_HWM
+*&---------------------------------------------------------------------*
+*       Baseline HWM recorded after a FULL run: the most recently
+*       released transport system-wide as of now. Its own package is
+*       irrelevant - it's used purely as a timestamp anchor (via
+*       GATHER_QUALIFYING_TRANSPORTS' AS4DATE/AS4TIME lookup), so the
+*       very next INCR run only considers transports released after
+*       this full extraction was taken, regardless of which package
+*       they touch.
+*&---------------------------------------------------------------------*
+FORM determine_current_hwm CHANGING cv_hwm TYPE e070-trkorr.
+  SELECT trkorr FROM e070
+    INTO TABLE @DATA(lt_recent)
+    WHERE trstatus = 'R'
+    ORDER BY as4date DESCENDING, as4time DESCENDING.
+
+  CLEAR cv_hwm.
+  READ TABLE lt_recent INTO cv_hwm INDEX 1.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  FINALIZE_SYNC_STATE
+*&---------------------------------------------------------------------*
+FORM finalize_sync_state USING iv_package  TYPE devclass
+                                iv_run_type TYPE char4
+                                iv_new_hwm  TYPE e070-trkorr.
+  DATA lv_hwm TYPE e070-trkorr.
+
+  IF iv_run_type = 'FULL'.
+    PERFORM determine_current_hwm CHANGING lv_hwm.
+  ELSE.
+    IF iv_new_hwm IS NOT INITIAL.
+      lv_hwm = iv_new_hwm.
+    ELSE.
+      " nothing qualified this run - HWM stays where it was
+      lv_hwm = gs_sync_log-last_trkorr_hwm.
+    ENDIF.
+  ENDIF.
+
+  PERFORM update_sync_log USING iv_package iv_run_type lv_hwm gv_extracted_count 'SUCCESS'.
+  PERFORM refresh_sync_objects USING iv_package gt_current_inventory.
+ENDFORM.
+
+*&=======================================================================*
+*& ALV review screen (9000)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  CREATE_LLD_ALV
+*&---------------------------------------------------------------------*
+*       Custom Control 'ALV_CONTAINER' and GUI status 'STATUS_9000'
+*       (function codes EXEC/BACK/EXIT/CANC/SELALL/DESELALL) must be
+*       created manually in SE51/SE41, same as ZCR_AURA_CODE_EXTRACTOR's
+*       screen 9000 - reuse that screen's layout as a starting point.
+*&---------------------------------------------------------------------*
+FORM create_lld_alv.
+  DATA: ls_layout   TYPE lvc_s_layo,
+        lt_fieldcat TYPE lvc_t_fcat.
+
+  CREATE OBJECT go_container
+    EXPORTING
+      container_name = 'ALV_CONTAINER'.
+
+  CREATE OBJECT go_alv_grid
+    EXPORTING
+      i_parent = go_container.
+
+  CREATE OBJECT go_alv_events.
+  SET HANDLER go_alv_events->on_toolbar FOR go_alv_grid.
+
+  PERFORM build_lld_fieldcat CHANGING lt_fieldcat.
+
+  ls_layout-cwidth_opt = abap_true.
+
+  go_alv_grid->set_table_for_first_display(
+    EXPORTING
+      is_layout       = ls_layout
+    CHANGING
+      it_outtab       = gt_lld_multi_obj
+      it_fieldcatalog = lt_fieldcat ).
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_LLD_FIELDCAT
+*&---------------------------------------------------------------------*
+*       Only CHECKED is editable - no version/compare column exists in
+*       this report at all (dropped entirely, per the brief).
+*&---------------------------------------------------------------------*
+FORM build_lld_fieldcat CHANGING ct_fieldcat TYPE lvc_t_fcat.
+  CLEAR ct_fieldcat.
+
+  APPEND VALUE #( fieldname = 'CHECKED'        coltext = 'Include'
+                   checkbox = abap_true edit = abap_true outputlen = 8 ) TO ct_fieldcat.
+  APPEND VALUE #( fieldname = 'OBJ_DISPLAY'    coltext = 'Object'
+                   outputlen = 40 ) TO ct_fieldcat.
+  APPEND VALUE #( fieldname = 'TR_LIST'        coltext = 'TRs Appeared In'
+                   outputlen = 40 ) TO ct_fieldcat.
+  APPEND VALUE #( fieldname = 'MOST_RECENT_TR' coltext = 'Most Recent TR'
+                   outputlen = 20 ) TO ct_fieldcat.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  REFRESH_LLD_ALV_DISPLAY
+*&---------------------------------------------------------------------*
+FORM refresh_lld_alv_display.
+  DATA ls_stable TYPE lvc_s_stbl.
+
+  CHECK go_alv_grid IS BOUND.
+
+  ls_stable-row = abap_true.
+  ls_stable-col = abap_true.
+  go_alv_grid->refresh_table_display( is_stable = ls_stable ).
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*& Screen 9000 PBO/PAI
+*&---------------------------------------------------------------------*
+*       Flow logic needed on screen 9000:
+*         PBO: MODULE status_9000.
+*         PAI: MODULE user_command_9000.
+*       Extraction itself happens back in MAIN, after CALL SCREEN 9000
+*       returns (matching the post-screen CHECK gv_multi_cancelled
+*       pattern ZCR_AURA_CODE_EXTRACTOR's own multi-flows already use) -
+*       EXEC here only closes the screen, it does not extract anything.
+*&---------------------------------------------------------------------*
+MODULE status_9000 OUTPUT.
+  SET PF-STATUS 'STATUS_9000'.
+
+  IF go_container IS NOT BOUND.
+    PERFORM create_lld_alv.
+  ENDIF.
+ENDMODULE.
+
+MODULE user_command_9000 INPUT.
+  DATA lv_ok_code TYPE sy-ucomm.
+
+  lv_ok_code = sy-ucomm.
+  CLEAR sy-ucomm.
+
+  CASE lv_ok_code.
+    WHEN 'EXEC'.
+      IF go_alv_grid IS BOUND.
+        go_alv_grid->check_changed_data( ).
+      ENDIF.
+      LEAVE TO SCREEN 0.
+
+    WHEN 'BACK' OR 'EXIT' OR 'CANC'.
+      gv_multi_cancelled = abap_true.
+      LEAVE TO SCREEN 0.
+
+    WHEN 'SELALL'.
+      LOOP AT gt_lld_multi_obj ASSIGNING FIELD-SYMBOL(<fs_sel>).
+        <fs_sel>-checked = abap_true.
+      ENDLOOP.
+      PERFORM refresh_lld_alv_display.
+
+    WHEN 'DESELALL'.
+      LOOP AT gt_lld_multi_obj ASSIGNING FIELD-SYMBOL(<fs_desel>).
+        <fs_desel>-checked = abap_false.
+      ENDLOOP.
+      PERFORM refresh_lld_alv_display.
+  ENDCASE.
+ENDMODULE.

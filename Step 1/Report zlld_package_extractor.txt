@@ -64,6 +64,14 @@ TYPES: BEGIN OF ts_tr_hit,
        END OF ts_tr_hit,
        tt_tr_hit TYPE STANDARD TABLE OF ts_tr_hit WITH EMPTY KEY.
 
+" Named type needed because classic FORM/PERFORM parameter interfaces
+" require a single named type in a USING/CHANGING TYPE clause - an
+" inline anonymous constructor like "TYPE STANDARD TABLE OF e070-trkorr"
+" directly in a FORM signature is not valid there (only in TYPES/DATA
+" statements), and gets misparsed as extra formal parameters instead of
+" raising a clean type error.
+TYPES: tt_trkorr TYPE STANDARD TABLE OF e070-trkorr WITH EMPTY KEY.
+
 " One top-level LLD-extractable object identity: PROG (executable),
 " CLAS (class), or FUNC (function module - FUGR itself never appears
 " here, only its individual member FUNCs, since that's the granularity
@@ -607,7 +615,7 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 FORM gather_qualifying_transports USING iv_package  TYPE devclass
                                          iv_last_hwm TYPE e070-trkorr
-                                   CHANGING ct_touching_trkorr TYPE STANDARD TABLE OF e070-trkorr
+                                   CHANGING ct_touching_trkorr TYPE tt_trkorr
                                             cv_new_hwm         TYPE e070-trkorr.
   DATA: lv_hwm_date TYPE e070-as4date,
         lv_hwm_time TYPE e070-as4time.

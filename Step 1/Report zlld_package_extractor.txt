@@ -18,9 +18,9 @@ REPORT zlld_package_extractor.
 *  ZCR_AURA_CODE_EXTRACTOR verbatim or near-verbatim (marked "REUSED"
 *  below). Nothing about ZCR_AURA_CODE_EXTRACTOR's own behavior changes.
 *
-*  REQUIRES (create before activating - see DDIC_TABLES_TO_CREATE_LLD.txt):
-*    - Table ZLLD_SYNC_LOG
-*    - Table ZLLD_SYNC_OBJECTS
+*  REQUIRES (already created - see DDIC_TABLES_TO_CREATE_LLD.txt):
+*    - Table ZDCCRT_SYNC_LOG
+*    - Table ZDCCRT_SYNC_OBJ
 *
 *  SEVERAL FM CALLS BELOW ARE FLAGGED "VERIFY" - their exact parameter
 *  names/types are written from best recollection, not from a live
@@ -108,7 +108,7 @@ DATA: gt_e071        TYPE tt_e071,
       gv_error       TYPE abap_bool.
 
 DATA: gv_run_type          TYPE char4,
-      gs_sync_log          TYPE zlld_sync_log,
+      gs_sync_log          TYPE zdccrt_sync_log,
       gv_sync_found        TYPE abap_bool,
       gt_current_inventory TYPE tt_lld_obj,
       gt_removed_objects   TYPE tt_lld_obj,
@@ -910,9 +910,9 @@ FORM detect_removed_objects USING iv_package TYPE devclass
 
   CLEAR ct_removed.
 
-  SELECT obj_type, obj_name FROM zlld_sync_objects
+  SELECT obj_type, obj_name FROM zdccrt_sync_obj
     INTO TABLE @lt_stored
-    WHERE package = @iv_package.
+    WHERE zpackage = @iv_package.
 
   IF sy-subrc <> 0.
     RETURN.   " first run - nothing stored yet, nothing can be "removed"
@@ -1407,18 +1407,18 @@ FORM download_output_file.
 ENDFORM.
 
 *&=======================================================================*
-*& Sync-state persistence (ZLLD_SYNC_LOG / ZLLD_SYNC_OBJECTS)
+*& Sync-state persistence (ZDCCRT_SYNC_LOG / ZDCCRT_SYNC_OBJ)
 *&=======================================================================*
 
 *&---------------------------------------------------------------------*
 *&      Form  READ_SYNC_LOG
 *&---------------------------------------------------------------------*
 FORM read_sync_log USING iv_package TYPE devclass
-                    CHANGING es_log   TYPE zlld_sync_log
+                    CHANGING es_log   TYPE zdccrt_sync_log
                              ev_found TYPE abap_bool.
   CLEAR: es_log, ev_found.
 
-  SELECT SINGLE * FROM zlld_sync_log INTO es_log WHERE package = iv_package.
+  SELECT SINGLE * FROM zdccrt_sync_log INTO es_log WHERE zpackage = iv_package.
   IF sy-subrc = 0.
     ev_found = abap_true.
   ENDIF.
@@ -1432,19 +1432,19 @@ FORM update_sync_log USING iv_package      TYPE devclass
                             iv_hwm          TYPE e070-trkorr
                             iv_object_count TYPE i
                             iv_status       TYPE char10.
-  DATA: ls_log TYPE zlld_sync_log,
+  DATA: ls_log TYPE zdccrt_sync_log,
         lv_ts  TYPE timestampl.
 
   GET TIME STAMP FIELD lv_ts.
 
-  ls_log-package         = iv_package.
+  ls_log-zpackage        = iv_package.
   ls_log-last_sync_ts    = lv_ts.
   ls_log-last_trkorr_hwm = iv_hwm.
   ls_log-run_type        = iv_run_type.
   ls_log-object_count    = iv_object_count.
   ls_log-status          = iv_status.
 
-  MODIFY zlld_sync_log FROM ls_log.
+  MODIFY zdccrt_sync_log FROM ls_log.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
@@ -1457,22 +1457,22 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 FORM refresh_sync_objects USING iv_package TYPE devclass
                                  it_current TYPE tt_lld_obj.
-  DATA: lt_rows TYPE STANDARD TABLE OF zlld_sync_objects,
+  DATA: lt_rows TYPE STANDARD TABLE OF zdccrt_sync_obj,
         lv_ts   TYPE timestampl.
 
   GET TIME STAMP FIELD lv_ts.
 
-  DELETE FROM zlld_sync_objects WHERE package = iv_package.
+  DELETE FROM zdccrt_sync_obj WHERE zpackage = iv_package.
 
   LOOP AT it_current INTO DATA(ls_current).
-    APPEND VALUE #( package      = iv_package
+    APPEND VALUE #( zpackage     = iv_package
                      obj_type     = ls_current-obj_type
                      obj_name     = ls_current-obj_name
                      last_seen_ts = lv_ts ) TO lt_rows.
   ENDLOOP.
 
   IF lt_rows IS NOT INITIAL.
-    INSERT zlld_sync_objects FROM TABLE lt_rows.
+    INSERT zdccrt_sync_obj FROM TABLE lt_rows.
   ENDIF.
 ENDFORM.
 

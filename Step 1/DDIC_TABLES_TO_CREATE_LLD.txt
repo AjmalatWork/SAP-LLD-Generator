@@ -1,24 +1,24 @@
 DDIC tables for ZLLD_PACKAGE_EXTRACTOR (LLD tool, step 1)
 ===========================================================================
-STATUS: not yet created - create these two transparent tables in SE11
-before activating ZLLD_PACKAGE_EXTRACTOR. Field/type names below are
-final; adjust only if a naming conflict exists in your system.
+STATUS: created in the system, as ZDCCRT_SYNC_LOG / ZDCCRT_SYNC_OBJ (not the
+original ZLLD_* names below - PACKAGE was also renamed to ZPACKAGE, and
+OBJ_TYPE/OBJ_NAME use TROBJTYPE/TROBJ_NAME data elements instead of E071's
+own OBJECT/OBJ_NAME). ZLLD_PACKAGE_EXTRACTOR.txt has been updated to match
+these actual names/fields - see the field tables below for what was
+actually built.
 
-1) Table ZLLD_SYNC_LOG  ("one row per package, its sync state")
+1) Table ZDCCRT_SYNC_LOG  ("one row per package, its sync state")
    Short text: LLD Extractor - Package Sync Log
-   Delivery class: A (application table, customizing-like control data)
-   Data browser/table view maintenance: allowed (helpful for manual
-   inspection/reset during testing - e.g. deleting a package's row to
-   force a FULL re-run).
 
-   Field            Key   Data Element / Type      Notes
-   ---------------  ----  -----------------------  ----------------------------------
-   PACKAGE          X     DEVCLASS                 primary key
-   LAST_SYNC_TS           TIMESTAMPL (or TIMESTAMP) UTC timestamp of last successful run
-   LAST_TRKORR_HWM         E070-TRKORR (TRKORR)     highest released TR considered so far
-   RUN_TYPE                CHAR4                    'FULL' or 'INCR' (last run's type)
-   OBJECT_COUNT             INT4                     objects extracted in the last run
-   STATUS                   CHAR10                   'SUCCESS' / 'FAILED' / 'PARTIAL'
+   Field            Key   Data Element   Data Type   Length   Notes
+   ---------------  ----  -------------  ----------  -------  ----------------------------------
+   MANDT            X     MANDT          CLNT        3        client
+   ZPACKAGE         X     DEVCLASS       CHAR        30       package (renamed from PACKAGE)
+   LAST_SYNC_TS           TIMESTAMPL     DEC         21,7     UTC timestamp of last successful run
+   LAST_TRKORR_HWM         TRKORR         CHAR        20       highest released TR considered so far
+   RUN_TYPE                CHAR4          CHAR        4        'FULL' or 'INCR' (last run's type)
+   OBJECT_COUNT             INT4           INT4        10       objects extracted in the last run
+   STATUS                   CHAR10         CHAR        10       'SUCCESS' / 'FAILED' / 'PARTIAL'
 
    Notes:
    - Only ONE row per package - written/updated by UPDATE_SYNC_LOG after a
@@ -30,18 +30,17 @@ final; adjust only if a naming conflict exists in your system.
      FAILED run does not currently roll back or retry automatically; see
      LLD_EXTRACTOR_DESIGN_NOTES.md, "Known gaps," for this limitation.
 
-2) Table ZLLD_SYNC_OBJECTS  ("object list from the last successful run,
+2) Table ZDCCRT_SYNC_OBJ  ("object list from the last successful run,
    for deletion detection")
    Short text: LLD Extractor - Package Object Snapshot
-   Delivery class: A
-   Data browser/table view maintenance: allowed
 
-   Field         Key   Data Element / Type   Notes
-   ------------  ----  --------------------  --------------------------------------
-   PACKAGE       X     DEVCLASS              primary key part 1
-   OBJ_TYPE      X     E071-OBJECT (OBJECT)  primary key part 2 - values used: PROG/CLAS/FUNC only
-   OBJ_NAME      X     E071-OBJ_NAME         primary key part 3
-   LAST_SEEN_TS        TIMESTAMPL            when this row was last (re)written
+   Field         Key   Data Element  Data Type   Length   Notes
+   ------------  ----  ------------  ----------  -------  --------------------------------------
+   MANDT         X     MANDT         CLNT        3        client
+   ZPACKAGE      X     DEVCLASS      CHAR        30       package (renamed from PACKAGE)
+   OBJ_TYPE      X     TROBJTYPE     CHAR        4        primary key part - values used: PROG/CLAS/FUNC only
+   OBJ_NAME      X     TROBJ_NAME    CHAR        120      primary key part
+   LAST_SEEN_TS        TIMESTAMPL    DEC         21,7     when this row was last (re)written
 
    Notes:
    - Rows are at FUNCTION-MODULE granularity for function groups (a FUGR

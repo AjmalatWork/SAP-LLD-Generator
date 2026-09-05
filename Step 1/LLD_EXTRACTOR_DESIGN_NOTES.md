@@ -8,7 +8,10 @@ first draft to review and test in the real system, not a finished, verified deli
 
 ## What to do before activating
 
-1. Create `ZLLD_SYNC_LOG` and `ZLLD_SYNC_OBJECTS` per `DDIC_TABLES_TO_CREATE_LLD.txt`.
+1. ~~Create `ZDCCRT_SYNC_LOG` and `ZDCCRT_SYNC_OBJ`~~ — done. See
+   `DDIC_TABLES_TO_CREATE_LLD.txt` for the as-built field list (note: `PACKAGE`
+   was renamed to `ZPACKAGE` in both tables, and `OBJ_TYPE`/`OBJ_NAME` use
+   `TROBJTYPE`/`TROBJ_NAME` data elements — the report has been updated to match).
 2. Create screen 9000 (Custom Control `ALV_CONTAINER`) and GUI status `STATUS_9000`
    (function codes `EXEC`/`BACK`/`EXIT`/`CANC`/`SELALL`/`DESELALL`) in SE51/SE41 —
    reuse `ZCR_AURA_CODE_EXTRACTOR`'s own screen 9000 as a template, it's the same
@@ -112,10 +115,10 @@ inline in the code with a `VERIFY:` comment at the exact point it matters.
 
 ## Known gaps (flagged, not fixed here — see brief's own scope boundaries)
 
-- A `FAILED` sync run does not roll back or retry. `ZLLD_SYNC_LOG.STATUS` is
+- A `FAILED` sync run does not roll back or retry. `ZDCCRT_SYNC_LOG.STATUS` is
   written as `'SUCCESS'` by `UPDATE_SYNC_LOG` (called only after a run completes),
   but nothing currently writes `'FAILED'`/`'PARTIAL'` on a mid-run error, and
-  `ZLLD_SYNC_OBJECTS`/`LAST_TRKORR_HWM` are only touched by `FINALIZE_SYNC_STATE`,
+  `ZDCCRT_SYNC_OBJ`/`LAST_TRKORR_HWM` are only touched by `FINALIZE_SYNC_STATE`,
   which only runs after a successful write — so a crash mid-run should leave state
   untouched (safe), but there's no explicit `FAILED` bookkeeping for visibility.
   Not built here since the brief doesn't ask for it; worth a follow-up if partial
@@ -130,7 +133,7 @@ Run these against a real test package once activated:
 1. **First run, valid package with objects.** Expect: every PROG/CLAS/FUNC (incl.
    FUGR members) present in the ALV, `RUN_TYPE: FULL` in the output header, no
    `REMOVED_OBJECTS` (i.e. `NONE`), exactly one `--- DDIC ---` section, and a new
-   `ZLLD_SYNC_LOG` row for the package after EXEC.
+   `ZDCCRT_SYNC_LOG` row for the package after EXEC.
 2. **Second run, no new released transports.** Expect: empty ALV grid (not an
    error), and — since the brief's wording implies EXEC should still work on an
    empty grid — a header-only output file with `RUN_TYPE: INCREMENTAL`,

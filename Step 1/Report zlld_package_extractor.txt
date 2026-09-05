@@ -642,8 +642,10 @@ FORM gather_qualifying_transports USING iv_package  TYPE devclass
 
   PERFORM build_package_name_index USING iv_package.
 
+  DATA lv_touches TYPE abap_bool.
+
   LOOP AT lt_candidates INTO DATA(ls_cand).
-    PERFORM transport_touches_package USING ls_cand-trkorr CHANGING DATA(lv_touches).
+    PERFORM transport_touches_package USING ls_cand-trkorr CHANGING lv_touches.
     IF lv_touches = abap_true.
       APPEND ls_cand-trkorr TO ct_touching_trkorr.
     ENDIF.
@@ -660,9 +662,11 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 FORM transport_touches_package USING iv_trkorr TYPE e070-trkorr
                                 CHANGING cv_touches TYPE abap_bool.
-  DATA: lt_subtask TYPE STANDARD TABLE OF e070-trkorr,
-        lr_trkorr  TYPE RANGE OF e070-trkorr,
-        lt_e071    TYPE tt_e071.
+  DATA: lt_subtask     TYPE STANDARD TABLE OF e070-trkorr,
+        lr_trkorr      TYPE RANGE OF e070-trkorr,
+        lt_e071        TYPE tt_e071,
+        lv_owner_type  TYPE e071-object,
+        lv_owner_name  TYPE e071-obj_name.
 
   cv_touches = abap_false.
 
@@ -685,7 +689,7 @@ FORM transport_touches_package USING iv_trkorr TYPE e070-trkorr
                                            object = ls_hit-object
                                            obj_name = ls_hit-obj_name ).
     PERFORM determine_owner USING ls_hit_shape
-                             CHANGING DATA(lv_owner_type) DATA(lv_owner_name).
+                             CHANGING lv_owner_type lv_owner_name.
 
     CASE lv_owner_type.
       WHEN 'PROG'.
@@ -844,8 +848,10 @@ ENDFORM.
 *       dropped - they have no LLD object-block home.
 *&---------------------------------------------------------------------*
 FORM build_unique_lld_objects USING it_hits TYPE tt_tr_hit.
-  DATA: lt_unique TYPE tt_tr_hit,
-        ls_multi  TYPE ts_lld_multi_obj.
+  DATA: lt_unique     TYPE tt_tr_hit,
+        ls_multi      TYPE ts_lld_multi_obj,
+        lv_owner_type TYPE e071-object,
+        lv_owner_name TYPE e071-obj_name.
 
   CLEAR gt_lld_multi_obj.
 
@@ -854,7 +860,7 @@ FORM build_unique_lld_objects USING it_hits TYPE tt_tr_hit.
   DELETE ADJACENT DUPLICATES FROM lt_unique COMPARING object obj_name.
 
   LOOP AT lt_unique INTO DATA(ls_unique).
-    PERFORM determine_owner USING ls_unique CHANGING DATA(lv_owner_type) DATA(lv_owner_name).
+    PERFORM determine_owner USING ls_unique CHANGING lv_owner_type lv_owner_name.
     CHECK lv_owner_type IS NOT INITIAL.
 
     CLEAR ls_multi.

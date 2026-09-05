@@ -1019,9 +1019,10 @@ ENDFORM.
 *&      Form  GET_SOURCE_FOR_LLD_OBJECT
 *&---------------------------------------------------------------------*
 *       Current ACTIVE source only - no diff, no version selection.
-*       CLAS uses SEO_CLASS_GET_SOURCE (whole class pool in one call).
-*       PROG concatenates the main program + every include from
-*       RS_GET_ALL_INCLUDES (same FM ADD_PROGRAM_INCLUDES already uses).
+*       PROG and CLAS both go through READ_PROGRAM_AND_INCLUDES (main
+*       program + every RS_GET_ALL_INCLUDES result, same FM
+*       ADD_PROGRAM_INCLUDES already uses) - CLAS resolves its
+*       classpool's own program name first via CL_OO_CLASSNAME_SERVICE.
 *       FUNC resolves its own include via FUNCTION_INCLUDE_INFO (same
 *       technique the original BUILD_DEPENDENCY_INPUT uses) and reads
 *       just that one include.
@@ -1032,43 +1033,37 @@ FORM get_source_for_lld_object USING iv_owner_type TYPE e071-object
                                          cv_skip   TYPE abap_bool.
   DATA: lv_progname   TYPE progname,
         lv_clsname    TYPE seoclsname,
+        lv_classpool  TYPE progname,
         lv_fm_name    TYPE rs38l_fnam,
-        lv_fm_include TYPE progname,
-        lt_includes   TYPE STANDARD TABLE OF sy-repid.
+        lv_fm_include TYPE progname.
 
   CLEAR: ct_source, cv_skip.
 
   CASE iv_owner_type.
     WHEN 'PROG'.
       lv_progname = iv_owner_name.
-
-      PERFORM read_single_program_source USING lv_progname CHANGING ct_source cv_skip.
-      CHECK cv_skip = abap_false.
-
-      CALL FUNCTION 'RS_GET_ALL_INCLUDES'
-        EXPORTING
-          program      = lv_progname
-        TABLES
-          includetab   = lt_includes
-        EXCEPTIONS
-          not_existent = 1
-          no_program   = 2
-          OTHERS       = 3.
-
-      IF sy-subrc = 0.
-        LOOP AT lt_includes INTO DATA(lv_incl).
-          DATA(lt_incl_source) = VALUE tt_code_line( ).
-          DATA(lv_incl_skip)   = abap_false.
-          PERFORM read_single_program_source USING lv_incl CHANGING lt_incl_source lv_incl_skip.
-          IF lv_incl_skip = abap_false.
-            APPEND LINES OF lt_incl_source TO ct_source.
-          ENDIF.
-        ENDLOOP.
-      ENDIF.
+      PERFORM read_program_and_includes USING lv_progname CHANGING ct_source cv_skip.
 
     WHEN 'CLAS'.
       lv_clsname = iv_owner_name.
-      PERFORM read_class_source USING lv_clsname CHANGING ct_source cv_skip.
+
+      " A class's compiled "classpool" is itself a PROG-type object that
+      " INCLUDEs the definition, public/protected/private sections, and
+      " every method's own include - reading it the same way a PROG
+      " object is read (main program + every RS_GET_ALL_INCLUDES result)
+      " gives back the whole class source, without needing a
+      " class-source-specific FM (SEO_CLASS_GET_SOURCE does not exist on
+      " every release - confirmed absent on this system).
+      " VERIFY: CL_OO_CLASSNAME_SERVICE=>GET_CLASSPOOL_NAME is assumed to
+      " exist as a sibling of GET_PUBSEC_NAME/GET_PRISEC_NAME/
+      " GET_PROSEC_NAME/GET_CCDEF_NAME, which ZCR_AURA_CODE_EXTRACTOR's
+      " own BUILD_DEPENDENCY_INPUT already calls successfully on this
+      " system - if this specific method is also missing, RS_GET_ALL_
+      " INCLUDES can resolve the same classpool name another way (e.g.
+      " reading it off any one of the section include names it already
+      " returns via TRDIR/D010INC, since they all share one master).
+      lv_classpool = cl_oo_classname_service=>get_classpool_name( lv_clsname ).
+      PERFORM read_program_and_includes USING lv_classpool CHANGING ct_source cv_skip.
 
     WHEN 'FUNC'.
       lv_fm_name = iv_owner_name.
@@ -1095,6 +1090,49 @@ FORM get_source_for_lld_object USING iv_owner_type TYPE e071-object
     WHEN OTHERS.
       cv_skip = abap_true.
   ENDCASE.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  READ_PROGRAM_AND_INCLUDES
+*&---------------------------------------------------------------------*
+*       Reads a main program's own source plus every include
+*       RS_GET_ALL_INCLUDES returns for it, concatenated in that order.
+*       Used directly for PROG objects, and for CLAS objects via their
+*       resolved classpool name (see GET_SOURCE_FOR_LLD_OBJECT) - a
+*       class's compiled classpool program INCLUDEs its definition,
+*       public/protected/private sections, and every method's own
+*       include, so this one routine covers both object types.
+*&---------------------------------------------------------------------*
+FORM read_program_and_includes USING iv_progname TYPE progname
+                                CHANGING ct_source TYPE tt_code_line
+                                         cv_skip   TYPE abap_bool.
+  DATA lt_includes TYPE STANDARD TABLE OF sy-repid.
+
+  CLEAR: ct_source, cv_skip.
+
+  PERFORM read_single_program_source USING iv_progname CHANGING ct_source cv_skip.
+  CHECK cv_skip = abap_false.
+
+  CALL FUNCTION 'RS_GET_ALL_INCLUDES'
+    EXPORTING
+      program      = iv_progname
+    TABLES
+      includetab   = lt_includes
+    EXCEPTIONS
+      not_existent = 1
+      no_program   = 2
+      OTHERS       = 3.
+
+  IF sy-subrc = 0.
+    LOOP AT lt_includes INTO DATA(lv_incl).
+      DATA(lt_incl_source) = VALUE tt_code_line( ).
+      DATA(lv_incl_skip)   = abap_false.
+      PERFORM read_single_program_source USING lv_incl CHANGING lt_incl_source lv_incl_skip.
+      IF lv_incl_skip = abap_false.
+        APPEND LINES OF lt_incl_source TO ct_source.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
@@ -1142,42 +1180,7 @@ FORM read_single_program_source USING iv_progname TYPE progname
 ENDFORM.
 
 *&---------------------------------------------------------------------*
-*&      Form  READ_CLASS_SOURCE
-*&---------------------------------------------------------------------*
-*       VERIFY in SE37 before activating: SEO_CLASS_GET_SOURCE's exact
-*       parameter names/types vary by release. This assumes an
-*       importing CLSKEY (TYPE SEOCLSKEY) and an exporting SOURCE table
-*       of plain text lines. If your release's signature differs,
-*       adjust the CALL FUNCTION below only - callers of this FORM are
-*       unaffected either way.
-*&---------------------------------------------------------------------*
-FORM read_class_source USING iv_clsname TYPE seoclsname
-                        CHANGING ct_source TYPE tt_code_line
-                                 cv_skip   TYPE abap_bool.
-  DATA lt_class_src TYPE seop_source_string.
-
-  CLEAR: ct_source, cv_skip.
-
-  CALL FUNCTION 'SEO_CLASS_GET_SOURCE'
-    EXPORTING
-      clskey = VALUE seoclskey( clsname = iv_clsname )
-    IMPORTING
-      source = lt_class_src
-    EXCEPTIONS
-      OTHERS = 1.
-
-  IF sy-subrc <> 0.
-    cv_skip = abap_true.
-    RETURN.
-  ENDIF.
-
-  LOOP AT lt_class_src INTO DATA(lv_class_line).
-    APPEND VALUE #( line = lv_class_line ) TO ct_source.
-  ENDLOOP.
-ENDFORM.
-
-*&---------------------------------------------------------------------*
-*&      Form  BUILD_DEPENDENCY_FOR_LLD_OBJECT
+*&      Form  BUILD_DEPENDENCY_FOR_OBJECT
 *&---------------------------------------------------------------------*
 *       Calls ZCR_GET_DEPENDENCY_OBJ_NEW exactly as the existing report
 *       does, per object type:

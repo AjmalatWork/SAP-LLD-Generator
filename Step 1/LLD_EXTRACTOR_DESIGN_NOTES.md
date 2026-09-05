@@ -37,10 +37,17 @@ inline in the code with a `VERIFY:` comment at the exact point it matters.
    Written assuming a parameter behaving like `SOURCE_EXTENDED` with `STATE = 'A'`
    for "active version." Check the actual signature in SE37 — some releases name
    this differently or don't need an explicit state parameter at all.
-3. **`SEO_CLASS_GET_SOURCE`'s exact parameter names/types** (`READ_CLASS_SOURCE`).
-   Written assuming an importing `CLSKEY` (`TYPE SEOCLSKEY`) and an exporting
-   `SOURCE` table of plain text lines. Adjust the one `CALL FUNCTION` if your
-   release's signature differs — nothing else depends on the exact shape.
+3. ~~`SEO_CLASS_GET_SOURCE`'s exact parameter names/types~~ — moot: this FM does
+   not exist on the target system at all (confirmed). Replaced with
+   `CL_OO_CLASSNAME_SERVICE=>GET_CLASSPOOL_NAME` + the same `READ_PROGRAM_AND_INCLUDES`
+   routine already used for `PROG` objects (a class's compiled classpool is
+   itself a `PROG`-type object that `INCLUDE`s its definition, sections, and
+   every method's own include). **New assumption to verify**: `GET_CLASSPOOL_NAME`
+   exists as a sibling of `GET_PUBSEC_NAME`/`GET_PRISEC_NAME`/`GET_PROSEC_NAME`/
+   `GET_CCDEF_NAME` on `CL_OO_CLASSNAME_SERVICE` — those four are already called
+   successfully by `ZCR_AURA_CODE_EXTRACTOR`'s own `BUILD_DEPENDENCY_INPUT` on
+   this system, so the same utility class is confirmed present; only this one
+   additional method needs checking in SE24/SE37 before activating.
 4. **`REPOSITORY_ENVIRONMENT_RFC` on a main program's own name covers its includes'
    references too**, not just the top-level program's own lines. This is the basis
    for calling `ZCR_GET_DEPENDENCY_OBJ_NEW` with `obj_type='PROG'` once per whole

@@ -316,39 +316,54 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 FORM build_package_inventory USING iv_package TYPE devclass
                               CHANGING ct_inventory TYPE tt_lld_obj.
+  " Explicit flat-table declarations, not inline SELECT ... INTO TABLE
+  " @DATA(...) - a single-column inline SELECT always creates a table of
+  " a one-component STRUCTURE in ABAP, never a flat table of that scalar
+  " type, even though it looks like it should. Looping such a result
+  " into a plain variable and using it directly (e.g. in a string
+  " template) fails with "cannot be converted to a character-type
+  " value" - this is exactly that gotcha, fixed by declaring the target
+  " table's line type explicitly instead of letting it be inferred.
+  DATA: lt_prog       TYPE STANDARD TABLE OF tadir-obj_name,
+        lt_clas       TYPE STANDARD TABLE OF tadir-obj_name,
+        lt_func       TYPE STANDARD TABLE OF tadir-obj_name,
+        lt_fugr       TYPE STANDARD TABLE OF tadir-obj_name,
+        lt_fugr_funcs TYPE STANDARD TABLE OF tfdir-funcname,
+        lv_area       TYPE progname.
+
   CLEAR ct_inventory.
 
-  SELECT obj_name FROM tadir INTO TABLE @DATA(lt_prog)
-    WHERE pgmid = 'R3TR' AND object = 'PROG' AND devclass = @iv_package.
+  SELECT obj_name FROM tadir INTO TABLE lt_prog
+    WHERE pgmid = 'R3TR' AND object = 'PROG' AND devclass = iv_package.
   LOOP AT lt_prog INTO DATA(lv_prog_name).
     APPEND VALUE #( obj_type = 'PROG' obj_name = lv_prog_name ) TO ct_inventory.
   ENDLOOP.
 
-  SELECT obj_name FROM tadir INTO TABLE @DATA(lt_clas)
-    WHERE pgmid = 'R3TR' AND object = 'CLAS' AND devclass = @iv_package.
+  SELECT obj_name FROM tadir INTO TABLE lt_clas
+    WHERE pgmid = 'R3TR' AND object = 'CLAS' AND devclass = iv_package.
   LOOP AT lt_clas INTO DATA(lv_clas_name).
     APPEND VALUE #( obj_type = 'CLAS' obj_name = lv_clas_name ) TO ct_inventory.
   ENDLOOP.
 
-  SELECT obj_name FROM tadir INTO TABLE @DATA(lt_func)
-    WHERE pgmid = 'R3TR' AND object = 'FUNC' AND devclass = @iv_package.
+  SELECT obj_name FROM tadir INTO TABLE lt_func
+    WHERE pgmid = 'R3TR' AND object = 'FUNC' AND devclass = iv_package.
   LOOP AT lt_func INTO DATA(lv_func_name).
     APPEND VALUE #( obj_type = 'FUNC' obj_name = lv_func_name ) TO ct_inventory.
   ENDLOOP.
 
-  SELECT obj_name FROM tadir INTO TABLE @DATA(lt_fugr)
-    WHERE pgmid = 'R3TR' AND object = 'FUGR' AND devclass = @iv_package.
+  SELECT obj_name FROM tadir INTO TABLE lt_fugr
+    WHERE pgmid = 'R3TR' AND object = 'FUGR' AND devclass = iv_package.
   LOOP AT lt_fugr INTO DATA(lv_fugr_name).
-    DATA(lv_area) = |SAPL{ lv_fugr_name }|.
+    lv_area = |SAPL{ lv_fugr_name }|.
 
-    SELECT funcname FROM tfdir INTO TABLE @DATA(lt_fugr_funcs)
-      WHERE pname = @lv_area.
+    SELECT funcname FROM tfdir INTO TABLE lt_fugr_funcs
+      WHERE pname = lv_area.
 
-    LOOP AT lt_fugr_funcs INTO DATA(ls_fugr_func).
-      IF ls_fugr_func-funcname NP 'Z*' AND ls_fugr_func-funcname NP 'Y*'.
+    LOOP AT lt_fugr_funcs INTO DATA(lv_fugr_func_name).
+      IF lv_fugr_func_name NP 'Z*' AND lv_fugr_func_name NP 'Y*'.
         CONTINUE.
       ENDIF.
-      APPEND VALUE #( obj_type = 'FUNC' obj_name = ls_fugr_func-funcname ) TO ct_inventory.
+      APPEND VALUE #( obj_type = 'FUNC' obj_name = lv_fugr_func_name ) TO ct_inventory.
     ENDLOOP.
   ENDLOOP.
 
@@ -1488,8 +1503,15 @@ ENDFORM.
 *       they touch.
 *&---------------------------------------------------------------------*
 FORM determine_current_hwm CHANGING cv_hwm TYPE e070-trkorr.
+  " Explicit flat-table declaration - see the comment in
+  " BUILD_PACKAGE_INVENTORY for why this matters for a single-column
+  " SELECT (inline @DATA(...) would create a one-component structure
+  " table instead, which READ TABLE ... INTO cv_hwm could not then move
+  " into an elementary target).
+  DATA lt_recent TYPE STANDARD TABLE OF e070-trkorr.
+
   SELECT trkorr FROM e070
-    INTO TABLE @DATA(lt_recent)
+    INTO TABLE lt_recent
     WHERE trstatus = 'R'
     ORDER BY as4date DESCENDING, as4time DESCENDING.
 

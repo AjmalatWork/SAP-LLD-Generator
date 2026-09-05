@@ -33,10 +33,16 @@ inline in the code with a `VERIFY:` comment at the exact point it matters.
    used in `GATHER_QUALIFYING_TRANSPORTS` and `DETERMINE_CURRENT_HWM` to filter
    transports. If your landscape uses a different/additional status value for
    "released," both forms need that value added to the `WHERE` clause.
-2. **`RPY_PROGRAM_READ`'s exact `TABLES` parameter name/type** (`READ_SINGLE_PROGRAM_SOURCE`).
-   Written assuming a parameter behaving like `SOURCE_EXTENDED` with `STATE = 'A'`
-   for "active version." Check the actual signature in SE37 — some releases name
-   this differently or don't need an explicit state parameter at all.
+2. ~~`RPY_PROGRAM_READ`'s exact `TABLES` parameter name/type~~ — confirmed against
+   this system's actual signature (SE37 screenshots): `SOURCE_EXTENDED` (`LIKE
+   ABAPTXT255`) exists exactly as guessed, but there is no `STATE` parameter —
+   the real one is `READ_LATEST_VERSION` (`TYPE PROGDIR-STATE`, default `SPACE`).
+   Fixed to pass `read_latest_version = 'A'` (the standard SAP convention for
+   "active version") explicitly, rather than trust `SPACE`'s default behavior.
+   `ABAPTXT255`'s exact line type is still assumed (flat `C(255)`, matching
+   `TS_LINE_255` and the same convention `SVRS_GET_REPS_FROM_OBJECT`'s
+   `REPOS_TAB` already uses elsewhere in this codebase) — if extracted source
+   comes back garbled rather than just failing to activate, check this first.
 3. ~~`SEO_CLASS_GET_SOURCE`'s exact parameter names/types~~ — moot: this FM does
    not exist on the target system at all (confirmed). Replaced with
    `CL_OO_CLASSNAME_SERVICE=>GET_CLASSPOOL_NAME` + the same `READ_PROGRAM_AND_INCLUDES`

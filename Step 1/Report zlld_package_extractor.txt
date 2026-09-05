@@ -1138,17 +1138,18 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  READ_SINGLE_PROGRAM_SOURCE
 *&---------------------------------------------------------------------*
-*       VERIFY in SE37 before activating: RPY_PROGRAM_READ's exact
-*       TABLES parameter name and line type differ slightly by release.
-*       This assumes a parameter that behaves like SOURCE_EXTENDED,
-*       line-compatible with a flat text line. If your system's version
-*       instead returns TYPE STANDARD TABLE OF STRING directly, this
-*       still works unchanged (the LOOP...APPEND below just moves each
-*       line into CT_SOURCE's own STRING field either way) - what needs
-*       checking is only the TABLES parameter's NAME and whether STATE
-*       = 'A' is the right value for "active version" on your release
-*       (some releases use a different parameter for this, or default
-*       to active with no explicit state parameter at all).
+*       Confirmed against this system's actual RPY_PROGRAM_READ
+*       signature (SE37): no STATE parameter exists. READ_LATEST_VERSION
+*       (TYPE PROGDIR-STATE, default SPACE) is the real equivalent -
+*       'A' is the standard SAP convention for "active version," passed
+*       explicitly here since this report always wants current active
+*       source, never whatever SPACE's default behavior resolves to.
+*       SOURCE_EXTENDED (TABLES, LIKE ABAPTXT255) is confirmed to exist
+*       with that exact name; its line type is assumed flat C(255),
+*       matching TS_LINE_255 and the same convention already used
+*       elsewhere in this codebase for SVRS_GET_REPS_FROM_OBJECT's
+*       REPOS_TAB - if source comes back garbled, ABAPTXT255's real line
+*       type is the first thing to check.
 *&---------------------------------------------------------------------*
 FORM read_single_program_source USING iv_progname TYPE progname
                                  CHANGING ct_source TYPE tt_code_line
@@ -1159,15 +1160,15 @@ FORM read_single_program_source USING iv_progname TYPE progname
 
   CALL FUNCTION 'RPY_PROGRAM_READ'
     EXPORTING
-      program_name     = iv_progname
-      state             = 'A'
+      program_name        = iv_progname
+      read_latest_version = 'A'
     TABLES
-      source_extended   = lt_source_raw
+      source_extended     = lt_source_raw
     EXCEPTIONS
-      cancelled         = 1
-      not_found         = 2
-      permission_error  = 3
-      OTHERS            = 4.
+      cancelled           = 1
+      not_found           = 2
+      permission_error    = 3
+      OTHERS              = 4.
 
   IF sy-subrc <> 0.
     cv_skip = abap_true.

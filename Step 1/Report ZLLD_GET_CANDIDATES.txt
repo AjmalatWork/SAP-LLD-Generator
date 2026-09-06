@@ -197,7 +197,8 @@ DATA: gt_pack_names   TYPE STANDARD TABLE OF devclass WITH EMPTY KEY,
       gv_new_object_spread TYPE f,
       gv_likely_named_mult TYPE f,
       gv_likely_hop1_mult  TYPE f,
-      gv_unsure_named_mult TYPE f.
+      gv_unsure_named_mult TYPE f,
+      gv_requirement_text  TYPE string.
 
 *&---------------------------------------------------------------------*
 *& Selection Screen
@@ -213,12 +214,15 @@ TABLES: zdccrt_objects.
 * text-001: maintain via SE38 Text Elements, e.g. "Requirement Input"
 SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.
 SELECT-OPTIONS: s_pack FOR zdccrt_objects-zpackage OBLIGATORY NO INTERVALS.
-PARAMETERS: p_req  TYPE string OBLIGATORY LOWER CASE,
-            p_note TYPE string LOWER CASE,
+PARAMETERS: p_reqf TYPE string OBLIGATORY LOWER CASE,   " path to a local .txt file containing the requirement
+            p_note TYPE string LOWER CASE VISIBLE LENGTH 200,
             p_conf TYPE char7  AS LISTBOX VISIBLE LENGTH 20,   " blank / UNSURE / LIKELY / CERTAIN
             p_topn TYPE i DEFAULT 5,
             p_file TYPE string OBLIGATORY DEFAULT 'C:\temp\'.
 SELECTION-SCREEN END OF BLOCK b1.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_reqf.
+  PERFORM f4_requirement_file CHANGING p_reqf.
 
 AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
   PERFORM f4_output_folder CHANGING p_file.
@@ -266,6 +270,9 @@ START-OF-SELECTION.
 *&---------------------------------------------------------------------*
 FORM main.
   PERFORM validate_inputs.
+  CHECK gv_error = abap_false.
+
+  PERFORM load_requirement_text.
   CHECK gv_error = abap_false.
 
   PERFORM load_config_constants.
@@ -704,7 +711,7 @@ FORM compute_requirement_vector.
         lv_norm_sq TYPE f.
 
   CLEAR: gt_req_weighted, gv_req_norm.
-  PERFORM tokenize_text USING p_req CHANGING lt_req_tf.
+  PERFORM tokenize_text USING gv_requirement_text CHANGING lt_req_tf.
 
   LOOP AT lt_req_tf INTO DATA(ls_tf).
     READ TABLE gt_idf INTO DATA(ls_idf) WITH KEY token = ls_tf-token BINARY SEARCH.
@@ -1470,7 +1477,8 @@ FORM build_metadata_block CHANGING cv_metadata TYPE string.
   DATA lv_lines TYPE string_t.
 
   APPEND '=== RETRIEVAL METADATA ===' TO lv_lines.
-  APPEND |REQUIREMENT: { p_req }| TO lv_lines.
+  APPEND |REQUIREMENT_FILE: { p_reqf }| TO lv_lines.
+  APPEND |REQUIREMENT: { gv_requirement_text }| TO lv_lines.
   APPEND |PACKAGES: { concat_lines_of( table = gt_pack_names sep = `, ` ) }| TO lv_lines.
   APPEND |SCOPING_NOTE: { COND #( WHEN p_note IS NOT INITIAL THEN p_note ELSE '(none)' ) }| TO lv_lines.
   APPEND |CONFIDENCE: { COND #( WHEN p_conf IS NOT INITIAL THEN p_conf ELSE '(none)' ) }| TO lv_lines.
@@ -1483,6 +1491,110 @@ FORM build_metadata_block CHANGING cv_metadata TYPE string.
   APPEND '=== END RETRIEVAL METADATA ===' TO lv_lines.
 
   cv_metadata = concat_lines_of( table = lv_lines sep = |\n| ).
+ENDFORM.
+
+*&=======================================================================*
+*& Requirement file input (P_REQF points at a local .txt file holding
+*& the requirement text, instead of typing it into a single-line
+*& selection-screen field - a dynpro PARAMETER has a hard-limited
+*& visible/enterable width even when its ABAP type is STRING, so a
+*& file is the only way to give this an effectively unbounded length)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  F4_REQUIREMENT_FILE
+*&---------------------------------------------------------------------*
+*       File picker (not the folder picker P_FILE/F4_OUTPUT_FOLDER
+*       uses below) - cl_gui_frontend_services=>file_open_dialog is the
+*       standard counterpart to the already-confirmed-working
+*       directory_browse used for P_FILE.
+*&---------------------------------------------------------------------*
+FORM f4_requirement_file CHANGING cv_file TYPE string.
+  DATA: lt_files       TYPE filetable,
+        lv_rc          TYPE i,
+        ls_file        TYPE file_table.
+
+  cl_gui_frontend_services=>file_open_dialog(
+    EXPORTING
+      window_title      = 'Select Requirement Text File'
+      default_extension  = 'txt'
+      file_filter        = 'Text Files (*.txt)|*.txt|All Files (*.*)|*.*'
+      initial_directory  = 'C:\'
+    CHANGING
+      file_table         = lt_files
+      rc                 = lv_rc
+    EXCEPTIONS
+      file_open_dialog_failed = 1
+      cntl_error               = 2
+      error_no_gui              = 3
+      not_supported_by_gui      = 4
+      OTHERS                    = 5 ).
+
+  CHECK sy-subrc = 0 AND lv_rc > 0.
+
+  READ TABLE lt_files INTO ls_file INDEX 1.
+  IF sy-subrc = 0.
+    cv_file = ls_file-filename.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  LOAD_REQUIREMENT_TEXT
+*&---------------------------------------------------------------------*
+*       Reads P_REQF via GUI_UPLOAD and joins its lines (space-
+*       separated - the requirement is tokenized as one blob of text
+*       downstream, so line breaks in the source file carry no meaning
+*       here) into GV_REQUIREMENT_TEXT, which every downstream form
+*       reads instead of a selection-screen field directly.
+*&---------------------------------------------------------------------*
+FORM load_requirement_text.
+  TYPES: BEGIN OF ts_line,
+           line TYPE string,
+         END OF ts_line.
+  DATA lt_lines TYPE STANDARD TABLE OF ts_line WITH EMPTY KEY.
+
+  CLEAR: gv_requirement_text, gv_error.
+
+  CALL FUNCTION 'GUI_UPLOAD'
+    EXPORTING
+      filename                = p_reqf
+      filetype                = 'ASC'
+    TABLES
+      data_tab                = lt_lines
+    EXCEPTIONS
+      file_open_error         = 1
+      file_read_error         = 2
+      no_batch                = 3
+      gui_refuse_filetransfer = 4
+      invalid_type            = 5
+      no_authority            = 6
+      unknown_error           = 7
+      bad_data_format         = 8
+      header_not_allowed      = 9
+      separator_not_allowed   = 10
+      header_too_long         = 11
+      unknown_dp_error        = 12
+      access_denied           = 13
+      dp_out_of_memory        = 14
+      disk_full               = 15
+      dp_timeout              = 16
+      OTHERS                  = 17.
+
+  IF sy-subrc <> 0.
+    MESSAGE |Could not read requirement file '{ p_reqf }'.| TYPE 'S' DISPLAY LIKE 'E'.
+    gv_error = abap_true.
+    RETURN.
+  ENDIF.
+
+  LOOP AT lt_lines INTO DATA(ls_line).
+    gv_requirement_text = COND #( WHEN gv_requirement_text IS INITIAL THEN ls_line-line
+                                   ELSE gv_requirement_text && ' ' && ls_line-line ).
+  ENDLOOP.
+
+  IF gv_requirement_text IS INITIAL.
+    MESSAGE |Requirement file '{ p_reqf }' is empty.| TYPE 'S' DISPLAY LIKE 'E'.
+    gv_error = abap_true.
+  ENDIF.
 ENDFORM.
 
 *&=======================================================================*

@@ -1922,7 +1922,12 @@ FORM extract_json_string_field USING iv_json_obj TYPE string
 
   CLEAR cv_value.
 
-  lv_regex = |"{ iv_field }"\s*:\s*"((?:[^"\\]|\\.)*)"|.
+  " Built via && concatenation of classical single-quoted literals, not
+  " a |...| string template - a template's \ /{ /} /| characters are all
+  " escape-significant (need doubling to appear literally), which this
+  " regex is full of; single-quoted literals have no such special
+  " characters at all, so this is simpler and correct as written.
+  lv_regex = '"' && iv_field && '"\s*:\s*"((?:[^"\\]|\\.)*)"'.
 
   FIND REGEX lv_regex IN iv_json_obj SUBMATCHES lv_raw.
   CHECK sy-subrc = 0.
@@ -1955,7 +1960,9 @@ FORM extract_json_raw_field USING iv_json_obj TYPE string
 
   CLEAR cv_raw.
 
-  lv_regex = |"{ iv_field }"\s*:\s*|.
+  " Same reasoning as EXTRACT_JSON_STRING_FIELD's own LV_REGEX - built
+  " via && concatenation of classical literals, not a |...| template.
+  lv_regex = '"' && iv_field && '"\s*:\s*'.
   FIND REGEX lv_regex IN iv_json_obj MATCH OFFSET lv_key_end MATCH LENGTH lv_match_len.
   CHECK sy-subrc = 0.
 

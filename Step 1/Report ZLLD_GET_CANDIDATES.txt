@@ -289,10 +289,13 @@ FORM main.
   PERFORM compute_requirement_vector.
   PERFORM compute_semantic_scores.
 
+  " RESOLVE_NOTE_AND_NEIGHBORS must run before COMPUTE_SEED_STRUCT_SCORES
+  " so GT_NAMED is already populated when that FORM unions it into the
+  " structural seed list - see that FORM's own header comment for why.
+  PERFORM resolve_note_and_neighbors.
   PERFORM compute_seed_struct_scores.
   PERFORM compute_base_scores.
 
-  PERFORM resolve_note_and_neighbors.
   PERFORM build_unadjusted_ranking.
   PERFORM apply_tier_adjustment.
   PERFORM build_adjusted_ranking.
@@ -905,6 +908,19 @@ ENDFORM.
 *       regardless of how weak their real semantic match is, making
 *       likely_new_object mathematically unreachable). Structural score
 *       is max(hop-decay, table-sharing bonus), never summed.
+*
+*       GT_NAMED (the developer's resolved scoping note, if any) is
+*       UNIONED into the seed list, ungated by GV_SEED_MIN_SEMANTIC -
+*       confirmed live that without this, naming an object in the note
+*       had zero effect on structural scoring whenever that object's own
+*       semantic score happened to fall short of the gate, silently
+*       discarding a human's direct identification in favor of relying
+*       only on incidental text-similarity ranking. A developer naming
+*       an object is stronger evidence than a coincidental top-3 finish,
+*       not weaker, so it does not need to additionally clear the same
+*       gate designed to filter out weak automatic candidates. This
+*       requires RESOLVE_NOTE_AND_NEIGHBORS to run before this FORM (see
+*       MAIN) so GT_NAMED is already populated here.
 *&---------------------------------------------------------------------*
 FORM compute_seed_struct_scores.
   DATA: lt_sorted_by_semantic TYPE STANDARD TABLE OF ts_obj_score,
@@ -929,6 +945,9 @@ FORM compute_seed_struct_scores.
       APPEND lv_cand TO lt_seeds.
     ENDIF.
   ENDLOOP.
+
+  APPEND LINES OF gt_named TO lt_seeds.
+  SORT lt_seeds. DELETE ADJACENT DUPLICATES FROM lt_seeds.
 
   PERFORM bfs_hop_distances USING lt_seeds 2 CHANGING lt_dist.
 

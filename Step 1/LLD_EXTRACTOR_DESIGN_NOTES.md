@@ -434,3 +434,149 @@ module, its forms include, and the seed report all exist:
    ends up `'FAILED'` with a populated `ERROR_MESSAGE`, and that none of the
    final tables show a partially-loaded object from that run (the `ROLLBACK WORK`
    actually rolling back, not just the status flag saying so).
+
+## Native retrieval (`zlld_retrieve_candidates_brief.md`)
+
+**Written without SAP access, same caveat as everything above.** `ZLLD_RETRIEVE_CANDIDATES`
+is the third native piece — a direct port of `retrieval.py`'s `retrieve()`, read-only
+against the tables `ZLLD_EXTRACT_TO_DB` populates. No untouched-row concerns here.
+
+### The one substitution: TF-IDF cosine, not neural cosine
+
+Python's semantic score is cosine similarity between dense embedding vectors — bounded
+[0,1] and comparable across different queries by construction. Lexical TF-IDF has no
+such guarantee for *raw* scores, so this report instead computes cosine similarity over
+sparse TF-IDF-weighted term vectors (`COMPUTE_IDF_TABLE`/`COMPUTE_REQUIREMENT_VECTOR`/
+`COMPUTE_SEMANTIC_SCORES`) — mathematically the same bounded, cross-query-comparable
+operation, over a cheap ABAP-native lexical representation instead of a dense neural
+one. IDF is computed at query time (`LOG(total_chunk_count / doc_freq)`), scoped to the
+given package(s), per the brief's explicit "not materialized at load time" decision —
+this re-uses `ZLLD_CHUNK_TOKENS`'s own (`TOKEN`, `CHUNK_ID`) key: since each row already
+represents one distinct chunk containing that token, `doc_freq` is just a row count per
+token within the scoped chunk set, no extra `DISTINCT` needed.
+
+A requirement token that never appears in any scoped chunk gets weight 0 and is excluded
+from the requirement's own vector entirely (it can never match anything anyway, and
+including it would only inflate the requirement's norm for no reason) — a deliberate,
+documented choice, not an oversight.
+
+### What to do before activating
+
+1. Requires `ZLLD_EXTRACT_TO_DB` already run at least once against the target
+   package(s), and `ZLLD_CONFIG` seeded — run `ZLLD_SEED_CONFIG_TABLES.txt` (updated
+   for this brief with `SEMANTIC_WEIGHT`/`STRUCTURAL_WEIGHT`/three PLACEHOLDER score
+   thresholds/three tier multipliers).
+2. Maintain text element `text-001` (selection screen block title) via SE38 Text
+   Elements — e.g. "Requirement Input".
+3. **Run the calibration procedure below before trusting any real output.** The seeded
+   `SEED_MIN_SEMANTIC_SCORE`/`NEW_OBJECT_SCORE_FLOOR`/`NEW_OBJECT_SPREAD_THRESHOLD`
+   values are explicit placeholders (0.50/0.20/0.05), not calibrated numbers — this
+   project was built without SAP access, so there is no real lexical-score data yet to
+   calibrate against.
+
+### Calibration procedure (mandatory — run once activated, per the brief)
+
+1. Run the same 3 nonsense + 5 grounded/ambiguous requirement types used in the
+   original Python real-data validation (or close variants) through this report against
+   `ZZBA91`, and record the raw top-1 `SEMANTIC_SCORE` for each (visible in the exported
+   file's per-object header, or add a temporary `WRITE` in `COMPUTE_SEMANTIC_SCORES` for
+   the full ranked list while calibrating).
+2. Check for a clean, non-overlapping gap between the nonsense group's scores and the
+   grounded group's scores — the same way the original Python calibration did. **Do not
+   assume the gap will land anywhere near 0.67** — lexical cosine and neural cosine are
+   different mechanisms that happen to share the same [0,1] bound, nothing more. Set
+   `SEED_MIN_SEMANTIC_SCORE` (and re-derive `NEW_OBJECT_SCORE_FLOOR`, which operates on
+   the blended `base_score`, not the raw semantic score, so needs its own pass once
+   `SEED_MIN_SEMANTIC_SCORE` is fixed) from this real gap via SM30 on `ZLLD_CONFIG`.
+3. Once thresholds are set, re-run the same 8 real `ZZBA91` requirements (R1-R8) already
+   used for the Python-based gem validation and compare **decisions**, not raw scores,
+   against the already-known-correct answers (R1/R3/R4 correct top candidate, R2's
+   already-implemented case, R4's genuine ambiguity, R5's backend-only decline, R6-R8's
+   new-object flags). A meaningfully different decision on any of these is worth
+   investigating before trusting this report.
+4. Report all of this plainly, including a thin gap or mismatched decisions — an honest
+   calibration report is the deliverable, not a passing grade (see the brief's own
+   deliverable #4).
+
+### Hand-checkable TF-IDF example (deliverable #2 — verify before trusting real data)
+
+Before running against `ZZBA91`, verify `COMPUTE_SEMANTIC_SCORES` against a tiny,
+hand-computable case: stage (or temporarily insert) 2-3 short chunks with a known,
+distinct vocabulary (e.g. chunk A repeats "credit_limit" three times, chunk B is
+unrelated boilerplate), pick a requirement whose tokens overlap chunk A heavily, and
+hand-compute the expected TF-IDF vectors and cosine similarity for each chunk using the
+same formula this report implements (`IDF = LOG(total_chunks/doc_freq)`, weight =
+`tf * idf`, cosine = dot product / (norm × norm)). Confirm the report's own ranking and
+raw score match the hand calculation before trusting it on real, larger data — this is
+the brief's own explicit acceptance bar for the scoring implementation itself,
+independent of the separate real-data calibration above.
+
+### New assumptions to verify against the real system
+
+1. **Untested against a live system**, same as everything else built without SAP
+   access. The regex tokenizer (`TOKENIZE_TEXT`) is a byte-for-byte duplicate of
+   `ZLLD_EXTRACT_TO_DB`'s `ZLLD_TOKENIZE_CHUNK` — if the two ever drift out of sync
+   (e.g. one gets a bugfix the other doesn't), the requirement vector and the stored
+   chunk-token vectors stop sharing a vocabulary and every score becomes meaningless
+   without any error being raised. Keep them in lockstep deliberately, not by accident.
+2. **`LOG( )` as a native ABAP built-in numeric function** (natural log) — expected to
+   exist since a fairly old kernel release, but unconfirmed on this specific system. If
+   rejected, substitute a `TRY`/`CATCH`-wrapped call to a math utility class, or a
+   manual series approximation as a last resort (unlikely to be needed).
+3. **`SELECT-OPTIONS s_pack` restricted to single EQ entries only** — a deliberate
+   simplification (`VALIDATE_PACKAGES` rejects ranges/exclusions outright with a clear
+   message) rather than building general range-matching against `ZLLD_OBJECTS`, since
+   every real usage of this tool so far has meant "these specific one or two packages,"
+   never a pattern or exclusion.
+4. **`WHERE strlen( c~chunk_text ) >= @gc_min_chunk_length` in Open SQL** — `strlen()`
+   as a native SQL expression function inside a `WHERE` clause is standard AMDP/CDS-era
+   Open SQL syntax; confirm it's available on this system's kernel/DB combination. If
+   rejected, filter in ABAP after fetching instead (a `CHECK` inside the loop over the
+   raw result set).
+
+### Design decisions worth knowing about (not silently made)
+
+- **`ZLLD_OBJ_DDIC_REF` is NOT separately queried when reconstructing `DEPENDENCIES`** —
+  every DDIC-shaped dependency `ZLLD_EXTRACT_TO_DB` staged into `ZLLD_OBJ_DDIC_REF` was
+  also written to `ZLLD_OBJ_CALLS` at load time, so reading `ZLLD_OBJ_CALLS` alone
+  already includes every DDIC reference. This matches Python's own
+  `_build_real_dependencies_json`, which also reads only `object_calls`, never
+  `object_uses_table` — the brief's "from `ZLLD_OBJ_CALLS`... plus `ZLLD_OBJ_DDIC_REF`"
+  is read here as "everything needed already lives in one place," not as an instruction
+  to union two sources and risk duplicate entries.
+- **`SIGNATURE_JSON` is embedded verbatim, unescaped, into the exported DEPENDENCIES
+  JSON** — it is already a raw JSON object/array substring; re-escaping it as a JSON
+  string value would double-encode it into a shape the parser/gem does not expect. The
+  same "never parsed, never re-encoded" rule that applied when this data was staged
+  applies just as much on the way back out.
+- **The outer `DEPENDENCIES` entry's `TYPE` uses `ZLLD_OBJECTS.OBJECT_TYPE` directly** —
+  already the short code (`CLAS`/`PROG`/`FUNC`), unlike Python's `objects.type` column
+  which stores the long LLD-level name and needs a reverse-mapping dict
+  (`_LLD_TYPE_TO_DEPENDENCY_CODE`) that this report doesn't need at all.
+- **`MIN_CHUNK_LENGTH` (15 chars) is applied here even though the brief doesn't
+  explicitly call it out** — a judgment call, not a brief requirement: Python applied
+  it as defense in depth against trivial chunks even after later also fixing the
+  chunker itself, and `ZLLD_EXTRACT_TO_DB`'s own merge-based fix operates on *line*
+  count, not character count, so an edge case (e.g. one very long but low-signal line)
+  could theoretically still slip through. Cheap insurance, not a redesign.
+- **`GT_ADJACENCY`/`GT_ALLOWED`/etc. use plain string tables with linear or sorted-table
+  binary-search lookups**, not a Python-style hash-map equivalent — ABAP has no native
+  set/dict type; `SORTED TABLE ... WITH NON-UNIQUE KEY` on the adjacency table gets the
+  same effective lookup cost via the runtime's automatic binary-search optimization for
+  `LOOP AT ... WHERE` on a sorted table's key.
+
+## Acceptance criteria — native retrieval test plan
+
+Run these once `ZLLD_EXTRACT_TO_DB` has loaded `ZZBA91` and the config is seeded:
+
+1. **Hand-checkable TF-IDF example** (see above) — passes before anything else is
+   trusted.
+2. **Calibration procedure** (see above) — run in full, report the gap (or its
+   absence) honestly.
+3. **R1-R8 decision comparison** against the already-known-correct answers from the
+   Python/gem validation, once thresholds are calibrated.
+4. **Output file parses correctly through the existing gem instructions, unchanged** —
+   confirm the gem needs no instruction change, per the brief's explicit design goal.
+5. **At least one exported file run through the actual gem**, confirming the whole
+   native pipeline (extraction → DB load → retrieval → gem) works end to end — the same
+   validation standard already applied to the Python version.

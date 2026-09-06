@@ -4,15 +4,13 @@ REPORT zlld_seed_config_tables.
 *& ZLLD_SEED_CONFIG_TABLES
 *&---------------------------------------------------------------------*
 *  One-time (idempotent - safe to re-run) seeding of ZLLD_EDGE_KIND_MAP
-*  and ZLLD_CONFIG for ZLLD_EXTRACT_TO_DB, per
-*  step2_native_processing_brief.md ("seed it with the exact mapping
-*  already validated against real ZZBA91 data" / "seed with at minimum:
-*  the stopword list... and a placeholder for chunk-merge minimum
-*  length"). Run this ONCE after creating both tables in SE11, before
-*  the first ZLLD_EXTRACT_TO_DB call. Uses MODIFY throughout, so
-*  re-running it later (e.g. after adding a newly-observed
-*  DEPENDENCY_TYPE by editing the VALUE #( ... ) list below and
-*  re-running) is always safe.
+*  and ZLLD_CONFIG, covering both ZLLD_EXTRACT_TO_DB (per
+*  step2_native_processing_brief.md) and ZLLD_RETRIEVE_CANDIDATES (per
+*  zlld_retrieve_candidates_brief.md's deliverable #3 - scoring weights,
+*  score thresholds, tier multipliers). Run this ONCE after creating all
+*  the relevant tables in SE11, before the first ZLLD_EXTRACT_TO_DB or
+*  ZLLD_RETRIEVE_CANDIDATES run. Uses MODIFY throughout, so re-running it
+*  later (e.g. after editing a VALUE #( ... ) list below) is always safe.
 *
 *  Deliberately a table, not a hardcoded CASE - see ZLLD_EXTRACT_TO_DB's
 *  ZLLD_LOOKUP_EDGE_KIND form. Adding a row here for a newly-observed
@@ -77,11 +75,20 @@ ENDFORM.
 *       a placeholder default (3) - the brief flags it as a knob to
 *       tune, not a calibrated value from real-data evidence yet.
 *
-*       Deliberately NOT seeded here (per the brief): scoring weights,
-*       tier multipliers, or the seed-eligibility floor - those need
-*       their own recalibration exercise against real lexical score
-*       distributions, which don't exist yet, and belong to the future
-*       retrieval report's own brief.
+*       SEMANTIC_WEIGHT/STRUCTURAL_WEIGHT/SEED_MIN_SEMANTIC_SCORE/
+*       NEW_OBJECT_SCORE_FLOOR/NEW_OBJECT_SPREAD_THRESHOLD/tier
+*       multipliers below were added for ZLLD_RETRIEVE_CANDIDATES, per
+*       zlld_retrieve_candidates_brief.md's deliverable #3. The weights
+*       and multipliers are ported starting points (same values
+*       retrieval.py started with). The three score thresholds
+*       (SEED_MIN_SEMANTIC_SCORE/NEW_OBJECT_SCORE_FLOOR/
+*       NEW_OBJECT_SPREAD_THRESHOLD) are EXPLICIT PLACEHOLDERS, not
+*       calibrated values - see that report's own header comment and
+*       LLD_EXTRACTOR_DESIGN_NOTES.md's "Native retrieval" section for
+*       why Python's 0.67/0.35/0.05 cannot simply be ported (lexical
+*       cosine and neural cosine are both bounded [0,1] but are not
+*       the same scale) and for the calibration procedure to run for
+*       real values once this is activated against real data.
 *&---------------------------------------------------------------------*
 FORM seed_config.
   TYPES: tt_config_seed TYPE STANDARD TABLE OF zlld_config WITH EMPTY KEY.
@@ -94,6 +101,14 @@ FORM seed_config.
                    && 'standard,structure,changing,using,importing,exporting,returning,'
                    && 'optional,is,not,and,or,check,clear,move,append,read,write' )
     ( config_key = 'CHUNK_MERGE_MIN_LINES' config_value = '3' )
+    ( config_key = 'SEMANTIC_WEIGHT'   config_value = '0.30' )
+    ( config_key = 'STRUCTURAL_WEIGHT' config_value = '0.70' )
+    ( config_key = 'SEED_MIN_SEMANTIC_SCORE'      config_value = '0.50' )   " PLACEHOLDER - calibrate
+    ( config_key = 'NEW_OBJECT_SCORE_FLOOR'       config_value = '0.20' )   " PLACEHOLDER - calibrate
+    ( config_key = 'NEW_OBJECT_SPREAD_THRESHOLD'  config_value = '0.05' )   " PLACEHOLDER - calibrate
+    ( config_key = 'LIKELY_NAMED_MULTIPLIER' config_value = '1.5' )
+    ( config_key = 'LIKELY_HOP1_MULTIPLIER'  config_value = '1.2' )
+    ( config_key = 'UNSURE_NAMED_MULTIPLIER' config_value = '1.1' )
   ).
 
   LOOP AT lt_seed INTO DATA(ls_seed).

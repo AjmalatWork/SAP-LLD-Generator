@@ -1,0 +1,1508 @@
+REPORT zlld_retrieve_candidates.
+
+*&---------------------------------------------------------------------*
+*& ZLLD_RETRIEVE_CANDIDATES
+*&---------------------------------------------------------------------*
+*  Step 3, native: the report a developer runs day to day. Direct port
+*  of lld_step2/retrieval.py's retrieve() against the query-ready tables
+*  ZLLD_EXTRACT_TO_DB already built (ZLLD_OBJECTS, ZLLD_OBJ_CALLS,
+*  ZLLD_OBJ_DDIC_REF, ZLLD_DDIC_OBJECTS, ZLLD_CHUNKS, ZLLD_CHUNK_TOKENS,
+*  ZLLD_EDGE_KIND_MAP) - same tiering, same disagreement detection, same
+*  new-object flagging, writing the same candidate file format the gem
+*  already reads (no gem-instruction change needed).
+*
+*  READ-ONLY against those tables - never writes to ZLLD_OBJECTS/
+*  ZLLD_OBJ_CALLS/etc. No untouched-row concerns here, unlike the loader.
+*
+*  ONE LOAD-BEARING DESIGN CHANGE from the Python version: semantic
+*  scoring is TF-IDF cosine similarity over sparse lexical vectors, not
+*  neural embedding cosine similarity - see COMPUTE_IDF_TABLE/
+*  COMPUTE_SEMANTIC_SCORES below and the brief's own extensive rationale
+*  for why raw summed TF-IDF scores (or query-relative normalization)
+*  would silently break the seed-floor/new-object mechanisms. Both are
+*  bounded [0,1] cosine similarities over non-negative-weighted vectors,
+*  so they remain comparable in the way the constants below assume.
+*
+*  CALIBRATION IS NOT DONE HERE. ZLLD_CONFIG's SEED_MIN_SEMANTIC_SCORE/
+*  NEW_OBJECT_SCORE_FLOOR/NEW_OBJECT_SPREAD_THRESHOLD are seeded with
+*  clearly-flagged PLACEHOLDER values below (this project was built
+*  without SAP access, so there is no real lexical-score data to
+*  calibrate against yet) - see LLD_EXTRACTOR_DESIGN_NOTES.md's
+*  "Native retrieval" section for the exact calibration procedure to run
+*  once this is activated against real ZZBA91 data. Do not trust the
+*  seeded defaults for anything beyond the hand-checkable example this
+*  report's own header math is meant to satisfy.
+*
+*  VERIFY: this has not been created/tested in the system - written
+*  without SAP access, like every other piece of this project originally
+*  was.
+*&---------------------------------------------------------------------*
+
+*&---------------------------------------------------------------------*
+*& Local Types
+*&---------------------------------------------------------------------*
+TYPES: BEGIN OF ts_object,
+         name    TYPE seoclsname,
+         type    TYPE char4,
+         package TYPE devclass,
+       END OF ts_object,
+       tt_object TYPE SORTED TABLE OF ts_object WITH UNIQUE KEY name.
+
+TYPES: BEGIN OF ts_edge,
+         node     TYPE string,
+         neighbor TYPE string,
+       END OF ts_edge,
+       tt_edge TYPE SORTED TABLE OF ts_edge WITH NON-UNIQUE KEY node.
+
+TYPES: BEGIN OF ts_obj_table,
+         object_name TYPE string,
+         table_name  TYPE string,
+       END OF ts_obj_table,
+       tt_obj_table TYPE SORTED TABLE OF ts_obj_table WITH NON-UNIQUE KEY object_name.
+
+TYPES: BEGIN OF ts_token_tf,
+         token TYPE string,
+         tf    TYPE i,
+       END OF ts_token_tf,
+       tt_token_tf TYPE SORTED TABLE OF ts_token_tf WITH UNIQUE KEY token.
+
+TYPES: BEGIN OF ts_token_weight,
+         token  TYPE string,
+         weight TYPE f,
+       END OF ts_token_weight,
+       tt_token_weight TYPE SORTED TABLE OF ts_token_weight WITH UNIQUE KEY token.
+
+TYPES: BEGIN OF ts_idf,
+         token TYPE string,
+         idf   TYPE f,
+       END OF ts_idf,
+       tt_idf TYPE SORTED TABLE OF ts_idf WITH UNIQUE KEY token.
+
+TYPES: BEGIN OF ts_chunk_ref,
+         chunk_id    TYPE sysuuid_x16,
+         object_name TYPE string,
+       END OF ts_chunk_ref,
+       tt_chunk_ref TYPE STANDARD TABLE OF ts_chunk_ref WITH EMPTY KEY.
+
+TYPES: BEGIN OF ts_chunk_token_row,
+         token    TYPE string,
+         chunk_id TYPE sysuuid_x16,
+         tf       TYPE i,
+       END OF ts_chunk_token_row,
+       tt_chunk_token_row TYPE STANDARD TABLE OF ts_chunk_token_row WITH EMPTY KEY.
+
+TYPES: BEGIN OF ts_obj_score,
+         object_name TYPE string,
+         type        TYPE char4,
+         package     TYPE devclass,
+         semantic    TYPE f,
+         structural  TYPE f,
+         base_score  TYPE f,
+         final_score TYPE f,
+         tier_label  TYPE string,
+       END OF ts_obj_score,
+       tt_obj_score TYPE SORTED TABLE OF ts_obj_score WITH UNIQUE KEY object_name.
+
+TYPES: BEGIN OF ts_disagreement,
+         kind    TYPE string,
+         message TYPE string,
+       END OF ts_disagreement,
+       tt_disagreement TYPE STANDARD TABLE OF ts_disagreement WITH EMPTY KEY.
+
+TYPES: BEGIN OF ts_node_dist,
+         node TYPE string,
+         dist TYPE i,
+       END OF ts_node_dist,
+       tt_node_dist TYPE SORTED TABLE OF ts_node_dist WITH UNIQUE KEY node.
+
+TYPES: string_t TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+*&---------------------------------------------------------------------*
+*& Constants (ported from retrieval.py - see brief's deliverable #3 for
+*& which of these move to ZLLD_CONFIG instead; the rest stay plain
+*& constants here, matching Python's own choice to leave some of these
+*& as module constants rather than tunables)
+*&---------------------------------------------------------------------*
+CONSTANTS: gc_top_seed_objects        TYPE i VALUE 3,
+           gc_min_chunk_length        TYPE i VALUE 15,
+           gc_structural_seed        TYPE f VALUE '1.0',
+           gc_structural_1hop        TYPE f VALUE '0.6',
+           gc_structural_2hop        TYPE f VALUE '0.3',
+           gc_structural_shared_tbl  TYPE f VALUE '0.4',
+           gc_certain_hop_radius      TYPE i VALUE 1,
+           gc_certain_conflict_margin TYPE f VALUE '0.15',
+           gc_unadjusted_ranking_size TYPE i VALUE 5.
+
+*&---------------------------------------------------------------------*
+*& Global Data
+*&---------------------------------------------------------------------*
+DATA: gt_pack_names   TYPE STANDARD TABLE OF devclass WITH EMPTY KEY,
+      gv_error        TYPE abap_bool,
+      gt_objects      TYPE tt_object,
+      gt_object_names TYPE string_t,
+      gt_adjacency    TYPE tt_edge,
+      gt_obj_tables   TYPE tt_obj_table,
+      gt_stopwords    TYPE string_t,
+      gt_idf          TYPE tt_idf,
+      gv_total_chunks TYPE i,
+      gt_scope_chunks TYPE tt_chunk_ref,
+      gt_scope_tokens TYPE tt_chunk_token_row,
+      gt_req_weighted TYPE tt_token_weight,
+      gv_req_norm     TYPE f,
+      gt_obj_score    TYPE tt_obj_score,
+      gt_named        TYPE string_t,
+      gt_named_hop1   TYPE string_t,
+      gt_named_certain TYPE string_t,
+      gv_effective_confidence TYPE string,
+      gt_allowed      TYPE string_t,
+      gv_has_filter   TYPE abap_bool,
+      gt_unadjusted_sorted TYPE string_t,
+      gt_adjusted_sorted   TYPE string_t,
+      gt_disagreements TYPE tt_disagreement,
+      gv_likely_new_object TYPE abap_bool,
+      gv_new_object_reason TYPE string,
+      gv_filename     TYPE string,
+      gv_full_path    TYPE string,
+      gv_semantic_weight   TYPE f,
+      gv_structural_weight TYPE f,
+      gv_seed_min_semantic TYPE f,
+      gv_new_object_floor  TYPE f,
+      gv_new_object_spread TYPE f,
+      gv_likely_named_mult TYPE f,
+      gv_likely_hop1_mult  TYPE f,
+      gv_unsure_named_mult TYPE f.
+
+*&---------------------------------------------------------------------*
+*& Selection Screen
+*&---------------------------------------------------------------------*
+* text-001: maintain via SE38 Text Elements, e.g. "Requirement Input"
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.
+SELECT-OPTIONS: s_pack FOR zlld_objects-package OBLIGATORY.
+PARAMETERS: p_req  TYPE string OBLIGATORY LOWER CASE,
+            p_note TYPE string LOWER CASE,
+            p_conf TYPE char7  LOWER CASE,   " blank / UNSURE / LIKELY / CERTAIN
+            p_topn TYPE i DEFAULT 5,
+            p_file TYPE string OBLIGATORY DEFAULT 'C:\temp\'.
+SELECTION-SCREEN END OF BLOCK b1.
+
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
+  PERFORM f4_output_folder CHANGING p_file.
+
+*&---------------------------------------------------------------------*
+*& Main
+*&---------------------------------------------------------------------*
+START-OF-SELECTION.
+  PERFORM main.
+
+*&---------------------------------------------------------------------*
+*&      Form  MAIN
+*&---------------------------------------------------------------------*
+FORM main.
+  PERFORM validate_inputs.
+  CHECK gv_error = abap_false.
+
+  PERFORM load_config_constants.
+
+  PERFORM validate_packages.
+  CHECK gv_error = abap_false.
+
+  PERFORM fetch_all_objects.
+  PERFORM fetch_adjacency.
+  PERFORM fetch_object_tables.
+  PERFORM build_stopword_list.
+
+  PERFORM compute_idf_table.
+  PERFORM compute_requirement_vector.
+  PERFORM compute_semantic_scores.
+
+  PERFORM compute_seed_and_structural_scores.
+  PERFORM compute_base_scores.
+
+  PERFORM resolve_scoping_note_and_neighbors.
+  PERFORM build_unadjusted_ranking.
+  PERFORM apply_tier_adjustment.
+  PERFORM build_adjusted_ranking.
+
+  PERFORM detect_certain_hint_conflict.
+  PERFORM detect_tier_override.
+  PERFORM detect_new_object.
+
+  PERFORM export_candidates.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  VALIDATE_INPUTS
+*&---------------------------------------------------------------------*
+*       Mirrors retrieve()'s own upfront validation: a scoping note
+*       requires a tier and vice versa. P_CONF is normalized to
+*       uppercase; blank means "no tier" (Python's confidence=None).
+*&---------------------------------------------------------------------*
+FORM validate_inputs.
+  CLEAR gv_error.
+  p_conf = to_upper( p_conf ).
+
+  IF p_note IS NOT INITIAL AND p_conf IS INITIAL.
+    MESSAGE 'CONFIDENCE is required when a scoping note is given.' TYPE 'S' DISPLAY LIKE 'E'.
+    gv_error = abap_true.
+    RETURN.
+  ENDIF.
+
+  IF p_note IS INITIAL AND p_conf IS NOT INITIAL.
+    MESSAGE 'CONFIDENCE must be blank when no scoping note is given.' TYPE 'S' DISPLAY LIKE 'E'.
+    gv_error = abap_true.
+    RETURN.
+  ENDIF.
+
+  IF p_conf IS NOT INITIAL
+     AND p_conf <> 'UNSURE' AND p_conf <> 'LIKELY' AND p_conf <> 'CERTAIN'.
+    MESSAGE |CONFIDENCE must be UNSURE, LIKELY, or CERTAIN (blank if no scoping note) - got '{ p_conf }'.|
+      TYPE 'S' DISPLAY LIKE 'E'.
+    gv_error = abap_true.
+    RETURN.
+  ENDIF.
+
+  IF p_topn <= 0.
+    MESSAGE 'TOP N must be a positive number.' TYPE 'S' DISPLAY LIKE 'E'.
+    gv_error = abap_true.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  LOAD_CONFIG_CONSTANTS
+*&---------------------------------------------------------------------*
+*       SEMANTIC_WEIGHT/STRUCTURAL_WEIGHT/SEED_MIN_SEMANTIC_SCORE/
+*       NEW_OBJECT_SCORE_FLOOR/NEW_OBJECT_SPREAD_THRESHOLD/tier
+*       multipliers all live in ZLLD_CONFIG, per the brief's deliverable
+*       #3 - editable without a transport. Defaults below are PORTED
+*       STARTING POINTS (weights) or EXPLICIT PLACEHOLDERS (the three
+*       score thresholds) - see this report's own header comment and
+*       LLD_EXTRACTOR_DESIGN_NOTES.md for why the thresholds cannot
+*       simply reuse Python's 0.67/0.35/0.05.
+*&---------------------------------------------------------------------*
+FORM load_config_constants.
+  DATA lv_str TYPE string.
+
+  PERFORM get_config_value USING 'SEMANTIC_WEIGHT' '0.30' CHANGING lv_str.
+  gv_semantic_weight = lv_str.
+
+  PERFORM get_config_value USING 'STRUCTURAL_WEIGHT' '0.70' CHANGING lv_str.
+  gv_structural_weight = lv_str.
+
+  " PLACEHOLDER - see calibration procedure. Not calibrated against real
+  " lexical-score data; do not trust these three until that's been run.
+  PERFORM get_config_value USING 'SEED_MIN_SEMANTIC_SCORE' '0.50' CHANGING lv_str.
+  gv_seed_min_semantic = lv_str.
+
+  PERFORM get_config_value USING 'NEW_OBJECT_SCORE_FLOOR' '0.20' CHANGING lv_str.
+  gv_new_object_floor = lv_str.
+
+  PERFORM get_config_value USING 'NEW_OBJECT_SPREAD_THRESHOLD' '0.05' CHANGING lv_str.
+  gv_new_object_spread = lv_str.
+
+  PERFORM get_config_value USING 'LIKELY_NAMED_MULTIPLIER' '1.5' CHANGING lv_str.
+  gv_likely_named_mult = lv_str.
+
+  PERFORM get_config_value USING 'LIKELY_HOP1_MULTIPLIER' '1.2' CHANGING lv_str.
+  gv_likely_hop1_mult = lv_str.
+
+  PERFORM get_config_value USING 'UNSURE_NAMED_MULTIPLIER' '1.1' CHANGING lv_str.
+  gv_unsure_named_mult = lv_str.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  GET_CONFIG_VALUE
+*&---------------------------------------------------------------------*
+FORM get_config_value USING iv_key TYPE string iv_default TYPE string
+                       CHANGING cv_value TYPE string.
+  CLEAR cv_value.
+  SELECT SINGLE config_value FROM zlld_config INTO cv_value WHERE config_key = iv_key.
+  IF sy-subrc <> 0.
+    cv_value = iv_default.
+  ENDIF.
+ENDFORM.
+
+*&=======================================================================*
+*& Package validation (hard error on any unknown package - see
+*& _validate_packages in retrieval.py)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  VALIDATE_PACKAGES
+*&---------------------------------------------------------------------*
+*       Only single-value EQ entries in S_PACK are supported (a
+*       deliberate simplification, not a range-processing gap) - each
+*       named package is checked individually against ZLLD_OBJECTS, so
+*       a typo'd package is a hard, immediate error rather than a
+*       silently empty candidate set (matching Python's own reasoning:
+*       a typo could otherwise produce a false LIKELY_NEW_OBJECT).
+*&---------------------------------------------------------------------*
+FORM validate_packages.
+  DATA: lt_known TYPE STANDARD TABLE OF devclass,
+        lv_found TYPE abap_bool.
+
+  CLEAR: gt_pack_names, gv_error.
+
+  LOOP AT s_pack INTO DATA(ls_pack).
+    IF ls_pack-sign <> 'I' OR ls_pack-option <> 'EQ'.
+      MESSAGE |Only single package names (no ranges/exclusions) are supported - '{ ls_pack-low }' is not.|
+        TYPE 'S' DISPLAY LIKE 'E'.
+      gv_error = abap_true.
+      RETURN.
+    ENDIF.
+    APPEND ls_pack-low TO gt_pack_names.
+  ENDLOOP.
+
+  SORT gt_pack_names.
+  DELETE ADJACENT DUPLICATES FROM gt_pack_names.
+
+  SELECT DISTINCT package FROM zlld_objects INTO TABLE lt_known.
+
+  LOOP AT gt_pack_names INTO DATA(lv_pack).
+    lv_found = abap_false.
+    READ TABLE lt_known TRANSPORTING NO FIELDS WITH KEY table_line = lv_pack.
+    IF sy-subrc = 0.
+      lv_found = abap_true.
+    ENDIF.
+    IF lv_found = abap_false.
+      MESSAGE |Unknown package '{ lv_pack }' - no rows in ZLLD_OBJECTS. Known packages: { concat_lines_of( table = lt_known sep = ', ' ) }.|
+        TYPE 'S' DISPLAY LIKE 'E'.
+      gv_error = abap_true.
+      RETURN.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+*&=======================================================================*
+*& Object / graph fetching (all package-scoped)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  FETCH_ALL_OBJECTS
+*&---------------------------------------------------------------------*
+FORM fetch_all_objects.
+  DATA: lt_raw  TYPE STANDARD TABLE OF zlld_objects,
+        lr_pack TYPE RANGE OF devclass.
+
+  CLEAR: gt_objects, gt_object_names.
+  PERFORM gt_pack_names_range CHANGING lr_pack.
+
+  SELECT * FROM zlld_objects INTO TABLE @lt_raw WHERE package IN @lr_pack.
+
+  LOOP AT lt_raw INTO DATA(ls_raw).
+    APPEND VALUE #( name = ls_raw-object_name type = ls_raw-object_type package = ls_raw-package ) TO gt_objects.
+    APPEND ls_raw-object_name TO gt_object_names.
+  ENDLOOP.
+
+  SORT gt_object_names.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  GT_PACK_NAMES_RANGE
+*&---------------------------------------------------------------------*
+*       Helper: builds an IN-range table from GT_PACK_NAMES for use in
+*       Open SQL WHERE ... IN clauses. Written as a FORM (not a
+*       functional method) to stay consistent with this codebase's
+*       existing classic-ABAP style - called via the inline functional
+*       call syntax where a value, not a CHANGING parameter, is needed.
+*&---------------------------------------------------------------------*
+FORM gt_pack_names_range CHANGING rt_range TYPE RANGE OF devclass.
+  CLEAR rt_range.
+  LOOP AT gt_pack_names INTO DATA(lv_pack).
+    APPEND VALUE #( sign = 'I' option = 'EQ' low = lv_pack ) TO rt_range.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  FETCH_ADJACENCY
+*&---------------------------------------------------------------------*
+*       Bidirectional adjacency over ZLLD_OBJ_CALLS, restricted to
+*       edges between two objects BOTH in the given package scope, and
+*       to IS_CALL_LIKE edge kinds only (joined via ZLLD_EDGE_KIND_MAP,
+*       not by filtering on the stored EDGE_KIND text directly, so a
+*       future change to which edge kinds count as call-like needs only
+*       a ZLLD_EDGE_KIND_MAP data change - see
+*       _fetch_bidirectional_adjacency in retrieval.py, ported unchanged
+*       except for the package-scope join replacing a Python dict
+*       membership check).
+*&---------------------------------------------------------------------*
+FORM fetch_adjacency.
+  DATA: lt_raw TYPE STANDARD TABLE OF ts_edge,
+        lr_pack TYPE RANGE OF devclass.
+
+  CLEAR gt_adjacency.
+  PERFORM gt_pack_names_range CHANGING lr_pack.
+
+  SELECT oc~source_object AS node, oc~target_object AS neighbor
+    FROM zlld_obj_calls AS oc
+    INNER JOIN zlld_objects AS o1 ON o1~object_name = oc~source_object
+    INNER JOIN zlld_objects AS o2 ON o2~object_name = oc~target_object
+    INNER JOIN zlld_edge_kind_map AS ekm ON ekm~dependency_type = oc~dependency_type
+    INTO TABLE @lt_raw
+    WHERE ekm~is_call_like = @abap_true
+      AND o1~package IN @lr_pack
+      AND o2~package IN @lr_pack.
+
+  LOOP AT lt_raw INTO DATA(ls_edge).
+    INSERT VALUE #( node = ls_edge-node neighbor = ls_edge-neighbor ) INTO TABLE gt_adjacency.
+    INSERT VALUE #( node = ls_edge-neighbor neighbor = ls_edge-node ) INTO TABLE gt_adjacency.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  FETCH_OBJECT_TABLES
+*&---------------------------------------------------------------------*
+*       Object -> DDIC TABLE names, scoped to DDIC_TYPE = 'TABL' only
+*       (not STRU/DTEL) - the table-sharing bonus's scope is explicitly
+*       NOT widened here, per the brief.
+*&---------------------------------------------------------------------*
+FORM fetch_object_tables.
+  DATA: lt_raw TYPE STANDARD TABLE OF ts_obj_table,
+        lr_pack TYPE RANGE OF devclass.
+
+  CLEAR gt_obj_tables.
+  PERFORM gt_pack_names_range CHANGING lr_pack.
+
+  SELECT dr~object_name, dr~ddic_object_name AS table_name
+    FROM zlld_obj_ddic_ref AS dr
+    INNER JOIN zlld_objects AS o ON o~object_name = dr~object_name
+    INTO TABLE @lt_raw
+    WHERE dr~ddic_type = 'TABL'
+      AND o~package IN @lr_pack.
+
+  LOOP AT lt_raw INTO DATA(ls_row).
+    INSERT ls_row INTO TABLE gt_obj_tables.
+  ENDLOOP.
+ENDFORM.
+
+*&=======================================================================*
+*& Tokenization (must match ZLLD_EXTRACT_TO_DB's tokenizer exactly, or
+*& the requirement vector and stored chunk-token vectors live in
+*& different vocabularies and cosine similarity is meaningless)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_STOPWORD_LIST
+*&---------------------------------------------------------------------*
+FORM build_stopword_list.
+  DATA: lv_csv TYPE string,
+        lt_raw TYPE string_t.
+
+  CLEAR gt_stopwords.
+  PERFORM get_config_value USING 'STOPWORDS' '' CHANGING lv_csv.
+  SPLIT lv_csv AT ',' INTO TABLE lt_raw.
+
+  LOOP AT lt_raw INTO DATA(lv_word).
+    lv_word = to_lower( shift_left( val = lv_word sub = space ) ).
+    CONDENSE lv_word.
+    IF lv_word IS NOT INITIAL.
+      APPEND lv_word TO gt_stopwords.
+    ENDIF.
+  ENDLOOP.
+
+  SORT gt_stopwords.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  TOKENIZE_TEXT
+*&---------------------------------------------------------------------*
+*       Same regex/lowercase/stopword-filter/term-frequency logic as
+*       ZLLD_EXTRACT_TO_DB's ZLLD_TOKENIZE_CHUNK - deliberately
+*       duplicated here rather than shared, since this report and the
+*       function module's forms include are separate ABAP program units
+*       (same "near-duplicate forms across independently-triggered
+*       units" precedent already established between file/DB mode in
+*       ZLLD_PACKAGE_EXTRACTOR). Keep both in sync if the tokenization
+*       rule ever changes - they MUST agree, or scores become meaningless.
+*&---------------------------------------------------------------------*
+FORM tokenize_text USING iv_text TYPE string
+                    CHANGING ct_tf TYPE tt_token_tf.
+  DATA: lt_matches TYPE match_result_tab,
+        lv_token   TYPE string.
+
+  CLEAR ct_tf.
+  FIND ALL OCCURRENCES OF REGEX '[A-Za-z0-9]+' IN iv_text RESULTS lt_matches.
+
+  LOOP AT lt_matches INTO DATA(ls_match).
+    lv_token = to_lower( substring( val = iv_text off = ls_match-offset len = ls_match-length ) ).
+
+    READ TABLE gt_stopwords TRANSPORTING NO FIELDS WITH KEY table_line = lv_token BINARY SEARCH.
+    IF sy-subrc = 0.
+      CONTINUE.
+    ENDIF.
+
+    READ TABLE ct_tf ASSIGNING FIELD-SYMBOL(<fs>) WITH KEY token = lv_token.
+    IF sy-subrc = 0.
+      <fs>-tf = <fs>-tf + 1.
+    ELSE.
+      INSERT VALUE #( token = lv_token tf = 1 ) INTO TABLE ct_tf.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+*&=======================================================================*
+*& TF-IDF cosine similarity - the brief's central design decision
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  COMPUTE_IDF_TABLE
+*&---------------------------------------------------------------------*
+*       IDF(token) = LOG(total_chunk_count / distinct_chunk_count
+*       containing token), computed at query time over ZLLD_CHUNK_TOKENS/
+*       ZLLD_CHUNKS scoped to the given package(s) - per the brief's
+*       explicit "not materialized at load time" decision.
+*       ZLLD_CHUNK_TOKENS's key is already (TOKEN, CHUNK_ID), so each
+*       row IS one distinct (token, chunk) pair - counting rows per
+*       token within the scoped chunk set already gives doc_freq
+*       directly, no extra DISTINCT needed. Also builds GT_SCOPE_TOKENS
+*       (every token row for every scoped chunk) and GT_SCOPE_CHUNKS -
+*       both reused by COMPUTE_SEMANTIC_SCORES so the token data is only
+*       fetched once.
+*
+*       Chunks shorter than GC_MIN_CHUNK_LENGTH characters are excluded
+*       from the scoring corpus entirely (same MIN_CHUNK_LENGTH filter
+*       Python applied) - defense in depth alongside
+*       ZLLD_EXTRACT_TO_DB's own chunk-merge fix, not a substitute for it.
+*&---------------------------------------------------------------------*
+FORM compute_idf_table.
+  DATA: lt_chunks_raw TYPE tt_chunk_ref,
+        lt_tokens_raw TYPE STANDARD TABLE OF zlld_chunk_tokens,
+        lt_chunk_ids  TYPE STANDARD TABLE OF sysuuid_x16,
+        lr_pack       TYPE RANGE OF devclass,
+        lv_doc_freq   TYPE i.
+
+  CLEAR: gt_idf, gv_total_chunks, gt_scope_chunks, gt_scope_tokens.
+  PERFORM gt_pack_names_range CHANGING lr_pack.
+
+  SELECT c~chunk_id, c~object_name
+    FROM zlld_chunks AS c
+    INNER JOIN zlld_objects AS o ON o~object_name = c~object_name
+    INTO TABLE @lt_chunks_raw
+    WHERE o~package IN @lr_pack
+      AND strlen( c~chunk_text ) >= @gc_min_chunk_length.
+
+  LOOP AT lt_chunks_raw INTO DATA(ls_c).
+    APPEND VALUE #( chunk_id = ls_c-chunk_id object_name = ls_c-object_name ) TO gt_scope_chunks.
+    APPEND ls_c-chunk_id TO lt_chunk_ids.
+  ENDLOOP.
+  gv_total_chunks = lines( gt_scope_chunks ).
+
+  CHECK lt_chunk_ids IS NOT INITIAL.
+
+  SELECT * FROM zlld_chunk_tokens INTO TABLE @lt_tokens_raw
+    FOR ALL ENTRIES IN @lt_chunk_ids
+    WHERE chunk_id = @lt_chunk_ids-table_line.
+
+  LOOP AT lt_tokens_raw INTO DATA(ls_tok).
+    APPEND VALUE #( token = ls_tok-token chunk_id = ls_tok-chunk_id tf = ls_tok-term_frequency ) TO gt_scope_tokens.
+  ENDLOOP.
+
+  SORT gt_scope_tokens BY token.
+  lv_doc_freq = 0.
+  LOOP AT gt_scope_tokens INTO DATA(ls_scan).
+    AT NEW token.
+      lv_doc_freq = 0.
+    ENDAT.
+    lv_doc_freq = lv_doc_freq + 1.
+    AT END OF token.
+      INSERT VALUE #( token = ls_scan-token
+                       idf   = COND #( WHEN lv_doc_freq > 0 AND gv_total_chunks > 0
+                                        THEN log( gv_total_chunks / lv_doc_freq )
+                                        ELSE 0 ) )
+        INTO TABLE gt_idf.
+    ENDAT.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  COMPUTE_REQUIREMENT_VECTOR
+*&---------------------------------------------------------------------*
+*       Requirement tokens with no IDF at all (never appear in any
+*       scoped chunk) get weight 0 and are excluded from the requirement
+*       vector entirely - such a token can never match anything anyway,
+*       and including it with an undefined/zero IDF would only inflate
+*       the requirement's own norm for no reason. GV_REQ_NORM is the
+*       requirement vector's Euclidean norm, computed once and reused
+*       for every chunk's cosine denominator.
+*&---------------------------------------------------------------------*
+FORM compute_requirement_vector.
+  DATA: lt_req_tf  TYPE tt_token_tf,
+        lv_idf     TYPE f,
+        lv_norm_sq TYPE f.
+
+  CLEAR: gt_req_weighted, gv_req_norm.
+  PERFORM tokenize_text USING p_req CHANGING lt_req_tf.
+
+  LOOP AT lt_req_tf INTO DATA(ls_tf).
+    READ TABLE gt_idf INTO DATA(ls_idf) WITH KEY token = ls_tf-token BINARY SEARCH.
+    IF sy-subrc = 0.
+      lv_idf = ls_idf-idf.
+    ELSE.
+      CONTINUE.
+    ENDIF.
+
+    DATA(lv_weight) = ls_tf-tf * lv_idf.
+    INSERT VALUE #( token = ls_tf-token weight = lv_weight ) INTO TABLE gt_req_weighted.
+    lv_norm_sq = lv_norm_sq + lv_weight * lv_weight.
+  ENDLOOP.
+
+  gv_req_norm = sqrt( lv_norm_sq ).
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  COMPUTE_SEMANTIC_SCORES
+*&---------------------------------------------------------------------*
+*       Max cosine similarity across an object's chunks (same "max not
+*       mean" reasoning as Python's compute_semantic_scores - one strong
+*       matching chunk in a large object is real signal). GT_SCOPE_TOKENS
+*       is sorted by CHUNK_ID here (was sorted by TOKEN for the IDF pass
+*       above) so each chunk's full token set can be walked in one
+*       contiguous group via AT NEW/AT END OF CHUNK_ID - this gives both
+*       the chunk's own vector norm (over ALL its tokens) and its dot
+*       product with the requirement vector (only the tokens the two
+*       share contribute) in a single pass per chunk, which is what a
+*       correct cosine similarity (not a masked/partial one) requires.
+*&---------------------------------------------------------------------*
+FORM compute_semantic_scores.
+  DATA: lv_dot        TYPE f,
+        lv_norm_sq    TYPE f,
+        lv_idf        TYPE f,
+        lv_weight     TYPE f,
+        lv_cosine     TYPE f,
+        lv_chunk_norm TYPE f,
+        lt_best       TYPE tt_score.
+
+  CLEAR gt_obj_score.
+
+  SORT gt_scope_tokens BY chunk_id.
+  DATA lv_cur_chunk_id TYPE sysuuid_x16.
+  DATA lv_cur_object   TYPE string.
+
+  LOOP AT gt_scope_tokens INTO DATA(ls_row).
+    AT NEW chunk_id.
+      lv_dot = 0.
+      lv_norm_sq = 0.
+      READ TABLE gt_scope_chunks INTO DATA(ls_chunk_lookup) WITH KEY chunk_id = ls_row-chunk_id.
+      lv_cur_object = COND #( WHEN sy-subrc = 0 THEN ls_chunk_lookup-object_name ELSE '' ).
+    ENDAT.
+
+    READ TABLE gt_idf INTO DATA(ls_idf) WITH KEY token = ls_row-token BINARY SEARCH.
+    lv_idf = COND #( WHEN sy-subrc = 0 THEN ls_idf-idf ELSE 0 ).
+    lv_weight = ls_row-tf * lv_idf.
+    lv_norm_sq = lv_norm_sq + lv_weight * lv_weight.
+
+    READ TABLE gt_req_weighted INTO DATA(ls_req) WITH KEY token = ls_row-token BINARY SEARCH.
+    IF sy-subrc = 0.
+      lv_dot = lv_dot + lv_weight * ls_req-weight.
+    ENDIF.
+
+    AT END OF chunk_id.
+      lv_chunk_norm = sqrt( lv_norm_sq ).
+      lv_cosine = COND #( WHEN gv_req_norm > 0 AND lv_chunk_norm > 0
+                           THEN lv_dot / ( gv_req_norm * lv_chunk_norm )
+                           ELSE 0 ).
+
+      IF lv_cur_object IS NOT INITIAL.
+        READ TABLE lt_best ASSIGNING FIELD-SYMBOL(<fs_best>) WITH KEY object_name = lv_cur_object.
+        IF sy-subrc = 0.
+          IF lv_cosine > <fs_best>-score.
+            <fs_best>-score = lv_cosine.
+          ENDIF.
+        ELSE.
+          INSERT VALUE #( object_name = lv_cur_object score = lv_cosine ) INTO TABLE lt_best.
+        ENDIF.
+      ENDIF.
+    ENDAT.
+  ENDLOOP.
+
+  " Seed GT_OBJ_SCORE with every object in scope (score 0 for objects
+  " with no surviving chunks at all), then overlay the best cosine found.
+  LOOP AT gt_objects INTO DATA(ls_obj).
+    INSERT VALUE #( object_name = ls_obj-name type = ls_obj-type package = ls_obj-package semantic = 0 )
+      INTO TABLE gt_obj_score.
+  ENDLOOP.
+
+  LOOP AT lt_best INTO DATA(ls_best).
+    READ TABLE gt_obj_score ASSIGNING FIELD-SYMBOL(<fs_os>) WITH KEY object_name = ls_best-object_name.
+    IF sy-subrc = 0.
+      <fs_os>-semantic = ls_best-score.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+*&=======================================================================*
+*& Structural scoring (BFS + table-sharing bonus)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  BFS_HOP_DISTANCES
+*&---------------------------------------------------------------------*
+*       Multi-source BFS over GT_ADJACENCY. Returns {node: hop_distance}
+*       for every node reached within IV_MAX_DEPTH hops of any seed,
+*       seeds themselves at 0 - direct port of _bfs_hop_distances.
+*&---------------------------------------------------------------------*
+FORM bfs_hop_distances USING it_seeds TYPE string_t iv_max_depth TYPE i
+                        CHANGING ct_dist TYPE tt_node_dist.
+  DATA: lt_frontier      TYPE string_t,
+        lt_next_frontier TYPE string_t,
+        lv_depth         TYPE i.
+
+  CLEAR ct_dist.
+
+  LOOP AT it_seeds INTO DATA(lv_seed).
+    INSERT VALUE #( node = lv_seed dist = 0 ) INTO TABLE ct_dist.
+  ENDLOOP.
+  lt_frontier = it_seeds.
+
+  DO iv_max_depth TIMES.
+    lv_depth = sy-index.
+    CLEAR lt_next_frontier.
+
+    LOOP AT lt_frontier INTO DATA(lv_node).
+      LOOP AT gt_adjacency INTO DATA(ls_edge) WHERE node = lv_node.
+        READ TABLE ct_dist TRANSPORTING NO FIELDS WITH KEY node = ls_edge-neighbor.
+        IF sy-subrc <> 0.
+          INSERT VALUE #( node = ls_edge-neighbor dist = lv_depth ) INTO TABLE ct_dist.
+          APPEND ls_edge-neighbor TO lt_next_frontier.
+        ENDIF.
+      ENDLOOP.
+    ENDLOOP.
+
+    lt_frontier = lt_next_frontier.
+    IF lt_frontier IS INITIAL.
+      EXIT.
+    ENDIF.
+  ENDDO.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  COMPUTE_SEED_AND_STRUCTURAL_SCORES
+*&---------------------------------------------------------------------*
+*       Top-3 by semantic score, gated by GV_SEED_MIN_SEMANTIC (the same
+*       "additional gate on top of the top-3 selection" fix already made
+*       in retrieval.py - see SEED_MIN_SEMANTIC_SCORE's own comment
+*       there for the bug this prevents: without the gate, the top-3
+*       objects always get structural_score=1.0 via self-membership
+*       regardless of how weak their real semantic match is, making
+*       likely_new_object mathematically unreachable). Structural score
+*       is max(hop-decay, table-sharing bonus), never summed.
+*&---------------------------------------------------------------------*
+FORM compute_seed_and_structural_scores.
+  DATA: lt_sorted_by_semantic TYPE STANDARD TABLE OF ts_obj_score,
+        lt_top3               TYPE string_t,
+        lt_seeds              TYPE string_t,
+        lt_seed_tables        TYPE string_t,
+        lt_dist               TYPE tt_node_dist,
+        lv_hop_score          TYPE f,
+        lv_table_score        TYPE f,
+        lv_shares_table       TYPE abap_bool.
+
+  lt_sorted_by_semantic = gt_obj_score.
+  SORT lt_sorted_by_semantic BY semantic DESCENDING object_name ASCENDING.
+
+  LOOP AT lt_sorted_by_semantic INTO DATA(ls_top) TO gc_top_seed_objects.
+    APPEND ls_top-object_name TO lt_top3.
+  ENDLOOP.
+
+  LOOP AT lt_top3 INTO DATA(lv_cand).
+    READ TABLE gt_obj_score INTO DATA(ls_score) WITH KEY object_name = lv_cand.
+    IF sy-subrc = 0 AND ls_score-semantic >= gv_seed_min_semantic.
+      APPEND lv_cand TO lt_seeds.
+    ENDIF.
+  ENDLOOP.
+
+  PERFORM bfs_hop_distances USING lt_seeds 2 CHANGING lt_dist.
+
+  " Seed tables: union of every seed's own DDIC TABLE references.
+  LOOP AT lt_seeds INTO DATA(lv_seed_name).
+    LOOP AT gt_obj_tables INTO DATA(ls_st) WHERE object_name = lv_seed_name.
+      APPEND ls_st-table_name TO lt_seed_tables.
+    ENDLOOP.
+  ENDLOOP.
+  SORT lt_seed_tables.
+  DELETE ADJACENT DUPLICATES FROM lt_seed_tables.
+
+  LOOP AT gt_obj_score ASSIGNING FIELD-SYMBOL(<fs_os>).
+    READ TABLE lt_seeds TRANSPORTING NO FIELDS WITH KEY table_line = <fs_os>-object_name.
+    IF sy-subrc = 0.
+      lv_hop_score = gc_structural_seed.
+    ELSE.
+      READ TABLE lt_dist INTO DATA(ls_dist) WITH KEY node = <fs_os>-object_name.
+      IF sy-subrc = 0.
+        CASE ls_dist-dist.
+          WHEN 1. lv_hop_score = gc_structural_1hop.
+          WHEN 2. lv_hop_score = gc_structural_2hop.
+          WHEN OTHERS. lv_hop_score = 0.
+        ENDCASE.
+      ELSE.
+        lv_hop_score = 0.
+      ENDIF.
+    ENDIF.
+
+    lv_shares_table = abap_false.
+    LOOP AT gt_obj_tables INTO DATA(ls_ot) WHERE object_name = <fs_os>-object_name.
+      READ TABLE lt_seed_tables TRANSPORTING NO FIELDS WITH KEY table_line = ls_ot-table_name.
+      IF sy-subrc = 0.
+        lv_shares_table = abap_true.
+        EXIT.
+      ENDIF.
+    ENDLOOP.
+    lv_table_score = COND #( WHEN lv_shares_table = abap_true THEN gc_structural_shared_tbl ELSE 0 ).
+
+    <fs_os>-structural = nmax( val1 = lv_hop_score val2 = lv_table_score ).
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  COMPUTE_BASE_SCORES
+*&---------------------------------------------------------------------*
+FORM compute_base_scores.
+  LOOP AT gt_obj_score ASSIGNING FIELD-SYMBOL(<fs_os>).
+    <fs_os>-base_score = gv_semantic_weight * <fs_os>-semantic + gv_structural_weight * <fs_os>-structural.
+  ENDLOOP.
+ENDFORM.
+
+*&=======================================================================*
+*& Scoping note resolution, tier adjustment, ranking
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  RESOLVE_SCOPING_NOTE_AND_NEIGHBORS
+*&---------------------------------------------------------------------*
+*       Exact match first, then case-insensitive, then substring (either
+*       direction) - direct port of resolve_scoping_note. An unresolved
+*       note is recorded as a disagreement, not an error (per the brief:
+*       useful signal, not failure) - GV_EFFECTIVE_CONFIDENCE stays
+*       blank in that case (nothing to anchor a tier adjustment to).
+*&---------------------------------------------------------------------*
+FORM resolve_scoping_note_and_neighbors.
+  DATA: lt_exact TYPE string_t,
+        lt_ci    TYPE string_t,
+        lt_sub   TYPE string_t,
+        lv_note_lower TYPE string,
+        lt_dist  TYPE tt_node_dist.
+
+  CLEAR: gt_named, gt_named_hop1, gt_named_certain, gv_effective_confidence.
+
+  IF p_note IS NOT INITIAL.
+    LOOP AT gt_object_names INTO DATA(lv_name).
+      IF lv_name = p_note.
+        APPEND lv_name TO lt_exact.
+      ENDIF.
+    ENDLOOP.
+
+    IF lt_exact IS INITIAL.
+      lv_note_lower = to_lower( p_note ).
+      LOOP AT gt_object_names INTO lv_name.
+        IF to_lower( lv_name ) = lv_note_lower.
+          APPEND lv_name TO lt_ci.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+
+    IF lt_exact IS INITIAL AND lt_ci IS INITIAL.
+      lv_note_lower = to_lower( p_note ).
+      LOOP AT gt_object_names INTO lv_name.
+        IF to_lower( lv_name ) CS lv_note_lower OR lv_note_lower CS to_lower( lv_name ).
+          APPEND lv_name TO lt_sub.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+
+    IF lt_exact IS NOT INITIAL.
+      gt_named = lt_exact.
+    ELSEIF lt_ci IS NOT INITIAL.
+      gt_named = lt_ci.
+    ELSE.
+      gt_named = lt_sub.
+    ENDIF.
+    SORT gt_named. DELETE ADJACENT DUPLICATES FROM gt_named.
+  ENDIF.
+
+  IF p_note IS NOT INITIAL AND gt_named IS INITIAL.
+    INSERT VALUE #(
+      kind = 'unresolvable_scoping_note'
+      message = |Scoping note '{ p_note }' did not match any known object (checked exact, | &&
+                |case-insensitive, and substring match). This may mean the developer has an | &&
+                |object in mind that is outside the extracted package(s).| )
+      INTO TABLE gt_disagreements INDEX 1.
+  ENDIF.
+
+  gv_effective_confidence = COND #( WHEN gt_named IS NOT INITIAL THEN p_conf ELSE '' ).
+
+  CHECK gt_named IS NOT INITIAL.
+
+  " Exactly 1 hop (direct adjacency only), used by the LIKELY tier's
+  " hop-1 multiplier - independent of the separately-configurable
+  " certain-filter radius below (both happen to be 1 by default).
+  LOOP AT gt_named INTO DATA(lv_named).
+    LOOP AT gt_adjacency INTO DATA(ls_edge) WHERE node = lv_named.
+      APPEND ls_edge-neighbor TO gt_named_hop1.
+    ENDLOOP.
+  ENDLOOP.
+  SORT gt_named_hop1. DELETE ADJACENT DUPLICATES FROM gt_named_hop1.
+  LOOP AT gt_named INTO lv_named.
+    DELETE gt_named_hop1 WHERE table_line = lv_named.
+  ENDLOOP.
+
+  PERFORM bfs_hop_distances USING gt_named gc_certain_hop_radius CHANGING lt_dist.
+  LOOP AT lt_dist INTO DATA(ls_d).
+    APPEND ls_d-node TO gt_named_certain.
+  ENDLOOP.
+  LOOP AT gt_named INTO lv_named.
+    DELETE gt_named_certain WHERE table_line = lv_named.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_UNADJUSTED_RANKING
+*&---------------------------------------------------------------------*
+*       Pure BASE_SCORE ranking, always over every object in scope -
+*       used both as the top-5 "unadjusted_ranking" output and as the
+*       comparison baseline for disagreement detection.
+*&---------------------------------------------------------------------*
+FORM build_unadjusted_ranking.
+  DATA lt_sorted TYPE tt_obj_score.
+
+  CLEAR gt_unadjusted_sorted.
+  lt_sorted = gt_obj_score.
+  SORT lt_sorted BY base_score DESCENDING object_name ASCENDING.
+
+  LOOP AT lt_sorted INTO DATA(ls_row).
+    APPEND ls_row-object_name TO gt_unadjusted_sorted.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  APPLY_TIER_ADJUSTMENT
+*&---------------------------------------------------------------------*
+*       Direct port of retrieve()'s tier-adjustment block: CERTAIN is a
+*       hard filter (no multiplier, GT_ALLOWED restricts the candidate
+*       universe); LIKELY/UNSURE apply multipliers without filtering;
+*       no tier leaves FINAL_SCORE = BASE_SCORE for everyone.
+*&---------------------------------------------------------------------*
+FORM apply_tier_adjustment.
+  CLEAR: gt_allowed, gv_has_filter.
+
+  CASE gv_effective_confidence.
+    WHEN 'CERTAIN'.
+      gv_has_filter = abap_true.
+      gt_allowed = gt_named.
+      APPEND LINES OF gt_named_certain TO gt_allowed.
+      SORT gt_allowed. DELETE ADJACENT DUPLICATES FROM gt_allowed.
+
+      LOOP AT gt_obj_score ASSIGNING FIELD-SYMBOL(<fs>).
+        <fs>-final_score = <fs>-base_score.
+        READ TABLE gt_named TRANSPORTING NO FIELDS WITH KEY table_line = <fs>-object_name.
+        IF sy-subrc = 0.
+          <fs>-tier_label = 'certain: in filter (named object)'.
+        ELSE.
+          READ TABLE gt_named_certain TRANSPORTING NO FIELDS WITH KEY table_line = <fs>-object_name.
+          IF sy-subrc = 0.
+            <fs>-tier_label = |certain: in filter (within { gc_certain_hop_radius } hop(s) of named)|.
+          ELSE.
+            <fs>-tier_label = 'certain: excluded (outside filter)'.
+          ENDIF.
+        ENDIF.
+      ENDLOOP.
+
+    WHEN 'LIKELY'.
+      LOOP AT gt_obj_score ASSIGNING FIELD-SYMBOL(<fs2>).
+        READ TABLE gt_named TRANSPORTING NO FIELDS WITH KEY table_line = <fs2>-object_name.
+        IF sy-subrc = 0.
+          <fs2>-final_score = <fs2>-base_score * gv_likely_named_mult.
+          <fs2>-tier_label  = |likely: x{ gv_likely_named_mult } (named object)|.
+        ELSE.
+          READ TABLE gt_named_hop1 TRANSPORTING NO FIELDS WITH KEY table_line = <fs2>-object_name.
+          IF sy-subrc = 0.
+            <fs2>-final_score = <fs2>-base_score * gv_likely_hop1_mult.
+            <fs2>-tier_label  = |likely: x{ gv_likely_hop1_mult } (1-hop of named)|.
+          ELSE.
+            <fs2>-final_score = <fs2>-base_score.
+            <fs2>-tier_label  = 'likely: no boost'.
+          ENDIF.
+        ENDIF.
+      ENDLOOP.
+
+    WHEN 'UNSURE'.
+      LOOP AT gt_obj_score ASSIGNING FIELD-SYMBOL(<fs3>).
+        READ TABLE gt_named TRANSPORTING NO FIELDS WITH KEY table_line = <fs3>-object_name.
+        IF sy-subrc = 0.
+          <fs3>-final_score = <fs3>-base_score * gv_unsure_named_mult.
+          <fs3>-tier_label  = |unsure: x{ gv_unsure_named_mult } (named object)|.
+        ELSE.
+          <fs3>-final_score = <fs3>-base_score.
+          <fs3>-tier_label  = 'unsure: no boost'.
+        ENDIF.
+      ENDLOOP.
+
+    WHEN OTHERS.
+      LOOP AT gt_obj_score ASSIGNING FIELD-SYMBOL(<fs4>).
+        <fs4>-final_score = <fs4>-base_score.
+        <fs4>-tier_label  = 'none'.
+      ENDLOOP.
+  ENDCASE.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_ADJUSTED_RANKING
+*&---------------------------------------------------------------------*
+*       GT_ADJUSTED_SORTED is the FULL sorted candidate universe (all
+*       objects, or just GT_ALLOWED under CERTAIN) - used both for the
+*       exported top-N candidates and, unsliced, for new-object
+*       detection's top/5th-candidate spread check.
+*&---------------------------------------------------------------------*
+FORM build_adjusted_ranking.
+  DATA: lt_universe TYPE tt_obj_score,
+        lt_sorted   TYPE tt_obj_score.
+
+  CLEAR gt_adjusted_sorted.
+
+  IF gv_has_filter = abap_true.
+    LOOP AT gt_obj_score INTO DATA(ls_row).
+      READ TABLE gt_allowed TRANSPORTING NO FIELDS WITH KEY table_line = ls_row-object_name.
+      IF sy-subrc = 0.
+        INSERT ls_row INTO TABLE lt_universe.
+      ENDIF.
+    ENDLOOP.
+  ELSE.
+    lt_universe = gt_obj_score.
+  ENDIF.
+
+  lt_sorted = lt_universe.
+  SORT lt_sorted BY final_score DESCENDING object_name ASCENDING.
+
+  LOOP AT lt_sorted INTO DATA(ls_sorted).
+    APPEND ls_sorted-object_name TO gt_adjusted_sorted.
+  ENDLOOP.
+ENDFORM.
+
+*&=======================================================================*
+*& Disagreement detection (direct port, both rules)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  DETECT_CERTAIN_HINT_CONFLICT
+*&---------------------------------------------------------------------*
+FORM detect_certain_hint_conflict.
+  DATA: lv_best_in_filter TYPE f,
+        lv_top_unadjusted TYPE string,
+        lv_gap            TYPE f.
+
+  CHECK gv_effective_confidence = 'CERTAIN' AND gv_has_filter = abap_true.
+
+  LOOP AT gt_obj_score INTO DATA(ls_row).
+    READ TABLE gt_allowed TRANSPORTING NO FIELDS WITH KEY table_line = ls_row-object_name.
+    IF sy-subrc = 0 AND ls_row-base_score > lv_best_in_filter.
+      lv_best_in_filter = ls_row-base_score.
+    ENDIF.
+  ENDLOOP.
+
+  READ TABLE gt_unadjusted_sorted INTO lv_top_unadjusted INDEX 1.
+  CHECK sy-subrc = 0.
+
+  READ TABLE gt_allowed TRANSPORTING NO FIELDS WITH KEY table_line = lv_top_unadjusted.
+  CHECK sy-subrc <> 0.  " top unadjusted object is NOT in the filter
+
+  READ TABLE gt_obj_score INTO DATA(ls_top) WITH KEY object_name = lv_top_unadjusted.
+  CHECK sy-subrc = 0.
+
+  lv_gap = ls_top-base_score - lv_best_in_filter.
+  CHECK lv_gap > gc_certain_conflict_margin.
+
+  INSERT VALUE #(
+    kind = 'certain_hint_conflict'
+    message = |Certain scoping note restricts results to { concat_lines_of( table = gt_allowed sep = ', ' ) }, | &&
+              |but '{ lv_top_unadjusted }' (base_score={ ls_top-base_score DECIMALS = 3 }) scores | &&
+              |{ lv_gap DECIMALS = 3 } higher than the best in-filter object | &&
+              |(base_score={ lv_best_in_filter DECIMALS = 3 }). The hard filter may be hiding the real answer.| )
+    INTO TABLE gt_disagreements.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  DETECT_TIER_OVERRIDE
+*&---------------------------------------------------------------------*
+FORM detect_tier_override.
+  DATA: lv_top_adjusted   TYPE string,
+        lv_top_unadjusted TYPE string.
+
+  CHECK gv_effective_confidence = 'LIKELY' OR gv_effective_confidence = 'UNSURE'.
+
+  READ TABLE gt_adjusted_sorted INTO lv_top_adjusted INDEX 1.
+  READ TABLE gt_unadjusted_sorted INTO lv_top_unadjusted INDEX 1.
+  CHECK lv_top_adjusted <> lv_top_unadjusted.
+
+  READ TABLE gt_obj_score INTO DATA(ls_adj) WITH KEY object_name = lv_top_adjusted.
+  READ TABLE gt_obj_score INTO DATA(ls_unadj) WITH KEY object_name = lv_top_unadjusted.
+
+  INSERT VALUE #(
+    kind = |{ to_lower( gv_effective_confidence ) }_override|
+    message = |With the { to_lower( gv_effective_confidence ) } scoping hint applied, the top result is | &&
+              |'{ lv_top_adjusted }' (final_score={ ls_adj-final_score DECIMALS = 3 }), but the top | &&
+              |independent match without the hint is '{ lv_top_unadjusted }' | &&
+              |(base_score={ ls_unadj-base_score DECIMALS = 3 }). The hint changed the top rank.| )
+    INTO TABLE gt_disagreements.
+ENDFORM.
+
+*&=======================================================================*
+*& New-object detection (uses BASE_SCORE, not FINAL_SCORE - see brief)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  DETECT_NEW_OBJECT
+*&---------------------------------------------------------------------*
+FORM detect_new_object.
+  DATA: lv_count      TYPE i,
+        lv_top_base   TYPE f,
+        lv_fifth_idx  TYPE i,
+        lv_fifth_base TYPE f,
+        lv_spread     TYPE f,
+        lv_pack_list  TYPE string.
+
+  CLEAR: gv_likely_new_object, gv_new_object_reason.
+  lv_pack_list = concat_lines_of( table = gt_pack_names sep = ', ' ).
+
+  lv_count = lines( gt_adjusted_sorted ).
+  IF lv_count = 0.
+    gv_likely_new_object = abap_true.
+    gv_new_object_reason = |No candidates available at all in package(s) { lv_pack_list }.|.
+    RETURN.
+  ENDIF.
+
+  READ TABLE gt_adjusted_sorted INTO DATA(lv_top_name) INDEX 1.
+  READ TABLE gt_obj_score INTO DATA(ls_top) WITH KEY object_name = lv_top_name.
+  lv_top_base = ls_top-base_score.
+
+  lv_fifth_idx = nmin( val1 = 5 val2 = lv_count ).
+  READ TABLE gt_adjusted_sorted INTO DATA(lv_fifth_name) INDEX lv_fifth_idx.
+  READ TABLE gt_obj_score INTO DATA(ls_fifth) WITH KEY object_name = lv_fifth_name.
+  lv_fifth_base = ls_fifth-base_score.
+
+  lv_spread = lv_top_base - lv_fifth_base.
+
+  IF lv_top_base < gv_new_object_floor.
+    gv_likely_new_object = abap_true.
+    gv_new_object_reason = |Top candidate's base_score ({ lv_top_base DECIMALS = 3 }) is below the floor | &&
+                            |({ gv_new_object_floor }) in package(s) { lv_pack_list }. This may be new work, | &&
+                            |or it may belong to a package outside the given scope.|.
+  ELSEIF lv_count >= 2 AND lv_spread < gv_new_object_spread.
+    gv_likely_new_object = abap_true.
+    gv_new_object_reason = |Spread between top and #{ lv_fifth_idx } candidate base_score | &&
+                            |({ lv_spread DECIMALS = 3 }) is below threshold ({ gv_new_object_spread }) in | &&
+                            |package(s) { lv_pack_list } - nothing stands out. This may be new work, or it | &&
+                            |may belong to a package outside the given scope.|.
+  ENDIF.
+ENDFORM.
+
+*&=======================================================================*
+*& Export - same file contract lld_step2.parser/the gem already read;
+*& no gem-instruction change needed (see brief)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  JSON_ESCAPE_STRING
+*&---------------------------------------------------------------------*
+FORM json_escape_string USING iv_raw TYPE string CHANGING cv_escaped TYPE string.
+  cv_escaped = iv_raw.
+  REPLACE ALL OCCURRENCES OF '\' IN cv_escaped WITH '\\'.
+  REPLACE ALL OCCURRENCES OF '"' IN cv_escaped WITH '\"'.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_DEPENDENCIES_JSON
+*&---------------------------------------------------------------------*
+*       Reconstructs the real, flat {"TYPE","NAME","SIGNATURE"} shape
+*       from ZLLD_OBJ_CALLS (raw DEPENDENCY_TYPE, not EDGE_KIND - the
+*       gem's evidence rule was written against the real ABAP type
+*       vocabulary). SIGNATURE_JSON is embedded VERBATIM, unescaped -
+*       it is already a raw JSON object/array substring copied straight
+*       through by ZLLD_EXTRACT_TO_DB, so re-escaping it as a JSON
+*       string value would double-encode it and produce a shape the
+*       parser/gem does not expect (see ZLLD_OBJ_CALLS's own field
+*       comment - "never parsed here" applies just as much on the way
+*       back out as it did on the way in). Outer TYPE uses this table's
+*       own short OBJECT_TYPE code directly - unlike Python, which had
+*       to reverse-map its long LLD-level type name back to the short
+*       code, ZLLD_OBJECTS already stores the short code, so no mapping
+*       is needed here.
+*
+*       ZLLD_OBJ_DDIC_REF is NOT separately unioned in here: every
+*       DDIC-shaped dependency ZLLD_EXTRACT_TO_DB staged into
+*       ZLLD_OBJ_DDIC_REF was ALSO written to ZLLD_OBJ_CALLS (see that
+*       function's ZLLD_LOAD_ONE_OBJECT form) - reading ZLLD_OBJ_CALLS
+*       alone already includes every DDIC reference, matching Python's
+*       own _build_real_dependencies_json exactly (which also reads
+*       only object_calls, not object_uses_table).
+*&---------------------------------------------------------------------*
+FORM build_dependencies_json USING iv_object_name TYPE string iv_object_type TYPE char4
+                              CHANGING cv_json TYPE string.
+  DATA: lt_calls    TYPE STANDARD TABLE OF zlld_obj_calls,
+        lt_entries  TYPE string_t,
+        lv_type_esc TYPE string,
+        lv_name_esc TYPE string,
+        lv_entry    TYPE string,
+        lv_outer_type_esc TYPE string,
+        lv_outer_name_esc TYPE string.
+
+  SELECT * FROM zlld_obj_calls INTO TABLE lt_calls
+    WHERE source_object = iv_object_name
+    ORDER BY target_object.
+
+  LOOP AT lt_calls INTO DATA(ls_call).
+    PERFORM json_escape_string USING ls_call-dependency_type CHANGING lv_type_esc.
+    PERFORM json_escape_string USING ls_call-target_object CHANGING lv_name_esc.
+
+    lv_entry = |\{"TYPE":"{ lv_type_esc }","NAME":"{ lv_name_esc }"|.
+    IF ls_call-signature_json IS NOT INITIAL.
+      lv_entry = |{ lv_entry },"SIGNATURE":{ ls_call-signature_json }|.
+    ENDIF.
+    lv_entry = |{ lv_entry }\}|.
+    APPEND lv_entry TO lt_entries.
+  ENDLOOP.
+
+  PERFORM json_escape_string USING iv_object_type CHANGING lv_outer_type_esc.
+  PERFORM json_escape_string USING iv_object_name CHANGING lv_outer_name_esc.
+
+  cv_json = |[\{"TYPE":"{ lv_outer_type_esc }","NAME":"{ lv_outer_name_esc }","DEPENDENCIES":[| &&
+            |{ concat_lines_of( table = lt_entries sep = `,` ) }]\}]|.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_SOURCE_TEXT
+*&---------------------------------------------------------------------*
+*       Full source reconstruction by concatenating ZLLD_CHUNKS rows in
+*       CHUNK_INDEX order - NOT just the matching chunk. This matters
+*       concretely: the gem's correct "already implemented" catch on the
+*       real R2 case depended on seeing the entire method body, not only
+*       the top-scoring fragment (see brief). Joined with a blank line
+*       between chunks, matching retrieval.py's "\n\n".join(chunk_texts).
+*&---------------------------------------------------------------------*
+FORM build_source_text USING iv_object_name TYPE string CHANGING cv_source TYPE string.
+  DATA lt_texts TYPE string_t.
+
+  SELECT chunk_text FROM zlld_chunks INTO TABLE lt_texts
+    WHERE object_name = iv_object_name
+    ORDER BY chunk_index.
+
+  cv_source = concat_lines_of( table = lt_texts sep = |\n\n| ).
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  EXPORT_CANDIDATES
+*&---------------------------------------------------------------------*
+FORM export_candidates.
+  DATA: lt_blocks       TYPE string_t,
+        lv_metadata     TYPE string,
+        lv_header       TYPE string,
+        lv_package      TYPE devclass,
+        lv_source       TYPE string,
+        lv_dep_json     TYPE string,
+        lv_block        TYPE string,
+        lt_top_names    TYPE string_t,
+        lv_proceed      TYPE abap_bool.
+
+  CLEAR lt_top_names.
+  LOOP AT gt_adjusted_sorted INTO DATA(lv_name) TO p_topn.
+    APPEND lv_name TO lt_top_names.
+  ENDLOOP.
+
+  PERFORM build_metadata_block CHANGING lv_metadata.
+
+  IF lt_top_names IS NOT INITIAL.
+    READ TABLE gt_obj_score INTO DATA(ls_first) WITH KEY object_name = lt_top_names[ 1 ].
+    lv_package = ls_first-package.
+  ELSE.
+    lv_package = 'UNKNOWN'.
+  ENDIF.
+
+  lv_header = |RUN_TYPE: INCREMENTAL\n| &&
+              |PACKAGE: { lv_package }\n| &&
+              |EXTRACTED_AT: { sy-datum DATE = ISO } { sy-uzeit TIME = ISO }\n| &&
+              |REMOVED_OBJECTS: NONE\n| &&
+              |\n| &&
+              |--- DDIC ---\n| &&
+              |\{"PACKAGES":[]\}|.
+
+  APPEND lv_metadata TO lt_blocks.
+  APPEND lv_header TO lt_blocks.
+
+  LOOP AT lt_top_names INTO lv_name.
+    READ TABLE gt_obj_score INTO DATA(ls_cand) WITH KEY object_name = lv_name.
+    CHECK sy-subrc = 0.
+
+    PERFORM build_source_text USING lv_name CHANGING lv_source.
+    PERFORM build_dependencies_json USING lv_name ls_cand-type CHANGING lv_dep_json.
+
+    lv_block = |=== OBJECT: { lv_name } ===\n| &&
+               |TYPE: { ls_cand-type }\n| &&
+               |PACKAGE: { ls_cand-package }\n| &&
+               |FINAL_SCORE: { ls_cand-final_score DECIMALS = 4 }\n| &&
+               |SEMANTIC_SCORE: { ls_cand-semantic DECIMALS = 4 }\n| &&
+               |STRUCTURAL_SCORE: { ls_cand-structural DECIMALS = 4 }\n| &&
+               |TIER_ADJUSTMENT_APPLIED: { ls_cand-tier_label }\n| &&
+               |\n| &&
+               |--- SOURCE ---\n| &&
+               |{ lv_source }\n| &&
+               |\n| &&
+               |--- DEPENDENCIES ---\n| &&
+               |{ lv_dep_json }\n| &&
+               |=== END OBJECT ===|.
+
+    APPEND lv_block TO lt_blocks.
+  ENDLOOP.
+
+  gv_filename = |LLD_CANDIDATES_{ concat_lines_of( table = gt_pack_names sep = `_` ) }.TXT|.
+  PERFORM build_full_path.
+
+  PERFORM confirm_overwrite_if_exists CHANGING lv_proceed.
+  IF lv_proceed = abap_false.
+    WRITE: / 'Export cancelled - existing file was not overwritten.'.
+    RETURN.
+  ENDIF.
+
+  DATA(lv_full_content) = concat_lines_of( table = lt_blocks sep = |\n\n| ).
+  PERFORM download_output_file USING lv_full_content.
+
+  WRITE: / 'Candidate file written to:', gv_full_path.
+  WRITE: / 'Candidates exported:', lines( lt_top_names ).
+  WRITE: / 'Likely new object:', gv_likely_new_object.
+  IF gv_new_object_reason IS NOT INITIAL.
+    WRITE: / 'Reason:', gv_new_object_reason.
+  ENDIF.
+  WRITE: / 'Disagreements:', lines( gt_disagreements ).
+  LOOP AT gt_disagreements INTO DATA(ls_dis).
+    WRITE: / '  -', ls_dis-kind, ':', ls_dis-message.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_METADATA_BLOCK
+*&---------------------------------------------------------------------*
+FORM build_metadata_block CHANGING cv_metadata TYPE string.
+  DATA lv_lines TYPE string_t.
+
+  APPEND '=== RETRIEVAL METADATA ===' TO lv_lines.
+  APPEND |REQUIREMENT: { p_req }| TO lv_lines.
+  APPEND |PACKAGES: { concat_lines_of( table = gt_pack_names sep = `, ` ) }| TO lv_lines.
+  APPEND |SCOPING_NOTE: { COND #( WHEN p_note IS NOT INITIAL THEN p_note ELSE '(none)' ) }| TO lv_lines.
+  APPEND |CONFIDENCE: { COND #( WHEN p_conf IS NOT INITIAL THEN p_conf ELSE '(none)' ) }| TO lv_lines.
+  APPEND |LIKELY_NEW_OBJECT: { gv_likely_new_object }| TO lv_lines.
+  APPEND |LIKELY_NEW_OBJECT_REASON: { COND #( WHEN gv_new_object_reason IS NOT INITIAL THEN gv_new_object_reason ELSE '(none)' ) }| TO lv_lines.
+  APPEND |DISAGREEMENTS: { lines( gt_disagreements ) }| TO lv_lines.
+  LOOP AT gt_disagreements INTO DATA(ls_dis).
+    APPEND |  - [{ ls_dis-kind }] { ls_dis-message }| TO lv_lines.
+  ENDLOOP.
+  APPEND '=== END RETRIEVAL METADATA ===' TO lv_lines.
+
+  cv_metadata = concat_lines_of( table = lv_lines sep = |\n| ).
+ENDFORM.
+
+*&=======================================================================*
+*& File writer (same GUI_DOWNLOAD/folder-picker pattern used elsewhere
+*& in this toolset - near-duplicate of ZLLD_PACKAGE_EXTRACTOR's own
+*& F4_OUTPUT_FOLDER/BUILD_FULL_PATH/CONFIRM_OVERWRITE_IF_EXISTS/
+*& DOWNLOAD_OUTPUT_FILE, since the two are separate REPORTs with no
+*& shared include)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  F4_OUTPUT_FOLDER
+*&---------------------------------------------------------------------*
+FORM f4_output_folder CHANGING cv_file TYPE string.
+  DATA lv_selected_folder TYPE string.
+
+  cl_gui_frontend_services=>directory_browse(
+    EXPORTING
+      window_title          = 'Select Output Folder'
+      initial_folder        = 'C:\'
+    CHANGING
+      selected_folder       = lv_selected_folder
+    EXCEPTIONS
+      cntl_error            = 1
+      error_no_gui          = 2
+      not_supported_by_gui  = 3
+      OTHERS                = 4 ).
+
+  IF sy-subrc = 0 AND lv_selected_folder IS NOT INITIAL.
+    cv_file = lv_selected_folder.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_FULL_PATH
+*&---------------------------------------------------------------------*
+FORM build_full_path.
+  gv_full_path = p_file.
+  IF substring( val = gv_full_path off = strlen( gv_full_path ) - 1 ) <> '\'.
+    gv_full_path = gv_full_path && '\'.
+  ENDIF.
+  gv_full_path = gv_full_path && gv_filename.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  CONFIRM_OVERWRITE_IF_EXISTS
+*&---------------------------------------------------------------------*
+FORM confirm_overwrite_if_exists CHANGING cv_proceed TYPE abap_bool.
+  DATA: lv_exists TYPE abap_bool,
+        lv_answer TYPE c LENGTH 1.
+
+  cv_proceed = abap_true.
+
+  cl_gui_frontend_services=>file_exist(
+    EXPORTING
+      file   = gv_full_path
+    RECEIVING
+      result = lv_exists
+    EXCEPTIONS
+      OTHERS = 1 ).
+
+  CHECK lv_exists = abap_true.
+
+  CALL FUNCTION 'POPUP_TO_CONFIRM'
+    EXPORTING
+      titlebar       = 'File Already Exists'
+      text_question  = |{ gv_full_path } already exists. Overwrite it?|
+      text_button_1  = 'Yes'
+      text_button_2  = 'No'
+      default_button = '2'
+    IMPORTING
+      answer         = lv_answer
+    EXCEPTIONS
+      text_not_found = 1
+      OTHERS         = 2.
+
+  IF lv_answer <> '1'.
+    cv_proceed = abap_false.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  DOWNLOAD_OUTPUT_FILE
+*&---------------------------------------------------------------------*
+*       IV_CONTENT is the whole export text, one string - split on
+*       newline into GUI_DOWNLOAD's line-table shape (the same shape
+*       ZLLD_PACKAGE_EXTRACTOR's own GT_OUTPUT already uses).
+*&---------------------------------------------------------------------*
+FORM download_output_file USING iv_content TYPE string.
+  TYPES: BEGIN OF ts_line, line TYPE string, END OF ts_line.
+  DATA lt_output TYPE STANDARD TABLE OF ts_line WITH EMPTY KEY.
+  DATA lt_raw TYPE string_t.
+
+  SPLIT iv_content AT cl_abap_char_utilities=>newline INTO TABLE lt_raw.
+  LOOP AT lt_raw INTO DATA(lv_line).
+    APPEND VALUE #( line = lv_line ) TO lt_output.
+  ENDLOOP.
+
+  CALL FUNCTION 'GUI_DOWNLOAD'
+    EXPORTING
+      filename         = gv_full_path
+      filetype         = 'ASC'
+    TABLES
+      data_tab         = lt_output
+    EXCEPTIONS
+      file_write_error = 1
+      OTHERS           = 2.
+
+  IF sy-subrc <> 0.
+    WRITE: / 'Error downloading file. Check if the file path is valid.'.
+  ENDIF.
+ENDFORM.

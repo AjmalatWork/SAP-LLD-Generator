@@ -1762,10 +1762,17 @@ FORM download_output_file USING iv_content TYPE string.
     APPEND VALUE #( line = lv_line ) TO lt_output.
   ENDLOOP.
 
+  " CODEPAGE = '4110' (UTF-8), matching LOAD_REQUIREMENT_TEXT's
+  " GUI_UPLOAD - the requirement text (and source code comments/
+  " literals) can carry non-ASCII characters (smart quotes, etc.);
+  " without an explicit codepage GUI_DOWNLOAD's default ASC-mode write
+  " uses a codepage that cannot represent them and substitutes garbage,
+  " even though they were read correctly into memory on the way in.
   CALL FUNCTION 'GUI_DOWNLOAD'
     EXPORTING
       filename         = gv_full_path
       filetype         = 'ASC'
+      codepage         = '4110'
     TABLES
       data_tab         = lt_output
     EXCEPTIONS

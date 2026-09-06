@@ -243,7 +243,7 @@ SELECTION-SCREEN END OF BLOCK b1.
 
 * text-002: maintain via SE38 Text Elements, e.g. "Package & Output"
 SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE text-002.
-PARAMETERS: p_pack TYPE devclass OBLIGATORY,
+PARAMETERS: p_pack TYPE devclass,
             p_file TYPE string  DEFAULT 'C:\temp\' MODIF ID fil.
 SELECTION-SCREEN END OF BLOCK b2.
 
@@ -371,6 +371,18 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 FORM validate_package.
   CLEAR gv_error.
+
+  " P_PACK is NOT marked OBLIGATORY (removed for the same reason as
+  " P_FILE - see that field's own comment: OBLIGATORY's mandatory-field
+  " PAI check interfered with the hide/show round-trip triggered by
+  " P_MDB's USER-COMMAND). A blank check here replaces that validation
+  " instead, with its own clear message rather than falling through to
+  " "Package does not exist" with an empty name in it.
+  IF p_pack IS INITIAL.
+    MESSAGE 'Package is required.' TYPE 'S' DISPLAY LIKE 'E'.
+    gv_error = abap_true.
+    RETURN.
+  ENDIF.
 
   SELECT SINGLE devclass FROM tdevc INTO @DATA(lv_dummy) WHERE devclass = @p_pack.
   IF sy-subrc <> 0.

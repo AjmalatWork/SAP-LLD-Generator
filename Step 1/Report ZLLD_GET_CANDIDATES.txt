@@ -580,7 +580,7 @@ ENDFORM.
 *       ZLLD_EXTRACT_TO_DB's own chunk-merge fix, not a substitute for it.
 *&---------------------------------------------------------------------*
 FORM compute_idf_table.
-  DATA: lt_chunks_raw TYPE tt_chunk_ref,
+  DATA: lt_chunks_raw TYPE STANDARD TABLE OF zdccrt_chunks,
         lt_tokens_raw TYPE STANDARD TABLE OF zdccrt_chunk_tok,
         lt_chunk_ids  TYPE STANDARD TABLE OF sysuuid_x16,
         lr_pack       TYPE tt_devclass_range,
@@ -589,15 +589,22 @@ FORM compute_idf_table.
   CLEAR: gt_idf, gv_total_chunks, gt_scope_chunks, gt_scope_tokens.
   PERFORM gt_pack_names_range CHANGING lr_pack.
 
-  SELECT c~chunk_id, c~obj_name AS object_name
+  " STRLEN() is not usable inside this system's Open SQL WHERE clause
+  " (confirmed: "strlen is unknown" on activation) - fetch every chunk
+  " in scope via plain Open SQL, then apply the MIN_CHUNK_LENGTH filter
+  " as a normal ABAP expression in the loop below instead (STRLEN() as
+  " a plain ABAP function, outside Open SQL, is unaffected and already
+  " confirmed working elsewhere in this project - see
+  " ZLLD_PACKAGE_EXTRACTOR's own BUILD_FULL_PATH).
+  SELECT c~*
     FROM zdccrt_chunks AS c
     INNER JOIN zdccrt_objects AS o ON o~obj_name = c~obj_name
     INTO TABLE @lt_chunks_raw
-    WHERE o~zpackage IN @lr_pack
-      AND strlen( c~chunk_text ) >= @gc_min_chunk_length.
+    WHERE o~zpackage IN @lr_pack.
 
   LOOP AT lt_chunks_raw INTO DATA(ls_c).
-    APPEND VALUE #( chunk_id = ls_c-chunk_id object_name = ls_c-object_name ) TO gt_scope_chunks.
+    CHECK strlen( ls_c-chunk_text ) >= gc_min_chunk_length.
+    APPEND VALUE #( chunk_id = ls_c-chunk_id object_name = ls_c-obj_name ) TO gt_scope_chunks.
     APPEND ls_c-chunk_id TO lt_chunk_ids.
   ENDLOOP.
   gv_total_chunks = lines( gt_scope_chunks ).

@@ -562,11 +562,12 @@ independent of the separate real-data calibration above.
    message) rather than building general range-matching against `ZLLD_OBJECTS`, since
    every real usage of this tool so far has meant "these specific one or two packages,"
    never a pattern or exclusion.
-4. **`WHERE strlen( c~chunk_text ) >= @gc_min_chunk_length` in Open SQL** — `strlen()`
-   as a native SQL expression function inside a `WHERE` clause is standard AMDP/CDS-era
-   Open SQL syntax; confirm it's available on this system's kernel/DB combination. If
-   rejected, filter in ABAP after fetching instead (a `CHECK` inside the loop over the
-   raw result set).
+4. ~~`WHERE strlen( c~chunk_text ) >= @gc_min_chunk_length` in Open SQL~~ — **confirmed
+   rejected** ("strlen is unknown" on activation). Fixed: `COMPUTE_IDF_TABLE` now fetches
+   every chunk in scope via plain Open SQL (no length filter in the `WHERE` clause) and
+   applies `MIN_CHUNK_LENGTH` as a normal ABAP `strlen()` expression in a `CHECK` inside
+   the loop instead — `STRLEN()` outside Open SQL is unaffected by this restriction and
+   already confirmed working elsewhere (`ZLLD_PACKAGE_EXTRACTOR`'s `BUILD_FULL_PATH`).
 
 ### Design decisions worth knowing about (not silently made)
 

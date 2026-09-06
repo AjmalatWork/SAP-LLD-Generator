@@ -1617,10 +1617,17 @@ FORM load_requirement_text.
 
   CLEAR: gv_requirement_text, gv_error.
 
+  " CODEPAGE = '4110' (UTF-8) - without it, GUI_UPLOAD's default ASC-mode
+  " read assumes a single-byte codepage, which corrupts multi-byte UTF-8
+  " characters (smart quotes, em-dashes, etc. commonly present in
+  " requirement text pasted from Word/PDF) into mojibake. Confirmed live:
+  " a first run without this produced "Get system" instead of the
+  " source file's curly-quoted "Get system".
   CALL FUNCTION 'GUI_UPLOAD'
     EXPORTING
       filename                = p_reqf
       filetype                = 'ASC'
+      codepage                = '4110'
     TABLES
       data_tab                = lt_lines
     EXCEPTIONS

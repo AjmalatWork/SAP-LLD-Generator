@@ -720,6 +720,17 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
     IF ls_dep-dependency_type = 'DOMA' OR ls_dep-dependency_type = 'DTEL'
     OR ls_dep-dependency_type = 'TABL' OR ls_dep-dependency_type = 'STRU'
     OR ls_dep-dependency_type = 'TTYP'.
+      " MODIFY, not INSERT, DELIBERATELY - despite every field here
+      " being part of the key. The same (OBJ_NAME, DDIC_TYPE,
+      " DDIC_OBJECT_NAME) triple can legitimately repeat within one
+      " object's dependency list (e.g. a class referencing the same
+      " table from several method signatures produces several
+      " DEPENDENCY_SEQ rows with identical TYPE/NAME) - LT_DEPS is
+      " never deduped by (type, name) before this loop. INSERT would
+      " raise a duplicate-key SQL error on the second occurrence;
+      " MODIFY is a harmless no-op since there's no non-key payload to
+      " actually overwrite - exactly the "insert if not already
+      " there" behavior this junction table needs.
       DATA(ls_ddref) = VALUE zdccrt_obj_ddref( obj_name         = iv_obj_name
                                                 ddic_type        = ls_dep-dependency_type
                                                 ddic_object_name = ls_dep-dependency_name ).

@@ -364,7 +364,7 @@ FORM load_config_constants.
 
   " PLACEHOLDER - see calibration procedure. Not calibrated against real
   " lexical-score data; do not trust these three until that's been run.
-  PERFORM get_config_value USING 'SEED_MIN_SEMANTIC_SCORE' '0.50' CHANGING lv_str.
+  PERFORM get_config_value USING 'SEED_MIN_SEMANTIC_SCORE' '0.30' CHANGING lv_str.
   gv_seed_min_semantic = lv_str.
 
   PERFORM get_config_value USING 'NEW_OBJECT_SCORE_FLOOR' '0.20' CHANGING lv_str.

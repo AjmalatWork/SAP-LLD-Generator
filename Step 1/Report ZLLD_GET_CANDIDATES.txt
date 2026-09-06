@@ -103,6 +103,19 @@ TYPES: BEGIN OF ts_obj_score,
        END OF ts_obj_score,
        tt_obj_score TYPE SORTED TABLE OF ts_obj_score WITH UNIQUE KEY object_name.
 
+* Minimal (object_name, score) lookup table - used by
+* COMPUTE_SEMANTIC_SCORES to track each object's best (max) cosine
+* similarity across its chunks before that single number gets merged
+* into GT_OBJ_SCORE-SEMANTIC. Not the same shape as TS_OBJ_SCORE (which
+* carries every score component plus type/package/tier_label) - this
+* was a missing declaration (TT_SCORE was referenced without ever being
+* declared), not an alias for TT_OBJ_SCORE.
+TYPES: BEGIN OF ts_score,
+         object_name TYPE string,
+         score       TYPE f,
+       END OF ts_score,
+       tt_score TYPE SORTED TABLE OF ts_score WITH UNIQUE KEY object_name.
+
 TYPES: BEGIN OF ts_disagreement,
          kind    TYPE string,
          message TYPE string,

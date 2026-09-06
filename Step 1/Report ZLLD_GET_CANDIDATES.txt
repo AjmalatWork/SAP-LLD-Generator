@@ -1,7 +1,7 @@
-REPORT zlld_retrieve_candidates.
+REPORT zlld_get_candidates.
 
 *&---------------------------------------------------------------------*
-*& ZLLD_RETRIEVE_CANDIDATES
+*& ZLLD_GET_CANDIDATES (renamed from ZLLD_RETRIEVE_CANDIDATES)
 *&---------------------------------------------------------------------*
 *  Step 3, native: the report a developer runs day to day. Direct port
 *  of lld_step2/retrieval.py's retrieve() against the query-ready tables
@@ -175,6 +175,14 @@ DATA: gt_pack_names   TYPE STANDARD TABLE OF devclass WITH EMPTY KEY,
 *&---------------------------------------------------------------------*
 *& Selection Screen
 *&---------------------------------------------------------------------*
+* TABLES is required here (not just a modern dictionary-structure
+* reference) - this system rejects "SELECT-OPTIONS ... FOR
+* zdccrt_objects-zpackage" with "zdccrt_objects is unknown" unless the
+* table has first been pulled into the program via a classic TABLES
+* statement, which declares it as a global work area the selection
+* screen can then look up FOR/LIKE references against.
+TABLES: zdccrt_objects.
+
 * text-001: maintain via SE38 Text Elements, e.g. "Requirement Input"
 SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.
 SELECT-OPTIONS: s_pack FOR zdccrt_objects-zpackage OBLIGATORY.

@@ -341,7 +341,8 @@ right where the function-module call used to be.
 `ZDCCRT_CHUNK_TOK`, `ZDCCRT_EKIND_MAP`, `ZDCCRT_CONFIG`) — see
 `DDIC_TABLES_TO_CREATE_LLD.txt`'s "Native processing" section for the exact
 old-name → new-name/field map. `Include ZLLD_EXTRACT_TO_DB_F01.txt` and
-`ZLLD_RETRIEVE_CANDIDATES.txt` have both been updated to the as-built names.
+`ZLLD_GET_CANDIDATES.txt` (renamed from `ZLLD_RETRIEVE_CANDIDATES.txt`) have both
+been updated to the as-built names.
 `ZDCCRT_STG_DDIC`'s `DETAIL_JSON` field (`TYPE Z_STRING`) — **confirmed added**,
 non-key.
 
@@ -469,9 +470,10 @@ module, its forms include, and the seed report all exist:
 
 ## Native retrieval (`zlld_retrieve_candidates_brief.md`)
 
-**Written without SAP access, same caveat as everything above.** `ZLLD_RETRIEVE_CANDIDATES`
-is the third native piece — a direct port of `retrieval.py`'s `retrieve()`, read-only
-against the tables `ZLLD_EXTRACT_TO_DB` populates. No untouched-row concerns here.
+**Written without SAP access, same caveat as everything above.** `ZLLD_GET_CANDIDATES`
+(renamed from `ZLLD_RETRIEVE_CANDIDATES`) is the third native piece — a direct port
+of `retrieval.py`'s `retrieve()`, read-only against the tables `ZLLD_EXTRACT_TO_DB`
+populates. No untouched-row concerns here.
 
 ### The one substitution: TF-IDF cosine, not neural cosine
 

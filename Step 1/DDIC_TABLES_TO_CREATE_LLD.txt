@@ -140,7 +140,8 @@ STATUS: created, as-built names below
 Built for EXTRACT_TO_DB, a FORM folded directly into ZLLD_PACKAGE_EXTRACTOR
 via "INCLUDE zlld_extract_to_db_f01." (no separate function module - see
 Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt). These are the tables
-ZLLD_RETRIEVE_CANDIDATES queries - none of them are staging tables.
+ZLLD_GET_CANDIDATES (renamed from ZLLD_RETRIEVE_CANDIDATES) queries - none
+of them are staging tables.
 
 Renamed the same way as the DB-mode tables above: ZLLD_ prefix -> ZDCCRT_,
 plus OBJECT_NAME -> OBJ_NAME (ZDCCRT_OBJECTS, ZDCCRT_CHUNKS), OBJECT_TYPE ->
@@ -148,7 +149,7 @@ OBJ_TYPE (ZDCCRT_OBJECTS), PACKAGE -> ZPACKAGE (ZDCCRT_OBJECTS,
 ZDCCRT_DDIC_OBJ), and NAME -> DDIC_NAME (ZDCCRT_DDIC_OBJ). ZLLD_OBJ_DDIC_REF
 -> ZDCCRT_OBJ_DDREF and ZLLD_DDIC_OBJECTS -> ZDCCRT_DDIC_OBJ shortened the
 table name itself too. Both ZLLD_PACKAGE_EXTRACTOR.txt's EXTRACT_TO_DB
-include and ZLLD_RETRIEVE_CANDIDATES.txt have been updated to the as-built
+include and ZLLD_GET_CANDIDATES.txt have been updated to the as-built
 names/fields below.
 
 7) Table ZDCCRT_OBJECTS ("one row per final, query-ready object")
@@ -255,7 +256,7 @@ names/fields below.
     Field            Key   Data Element   Data Type   Length   Notes
     ---------------  ----  -------------  ----------  -------  ----------------------------------
     MANDT            X     MANDT          CLNT        3        client
-    DEPENDENCY_TYPE  X     CHAR10         CHAR        10       raw type (METH/OM/CLAS/TABL/etc.) - matches ZDCCRT_OBJ_CALLS-DEPENDENCY_TYPE's type exactly (see above), which matters since ZLLD_RETRIEVE_CANDIDATES joins the two
+    DEPENDENCY_TYPE  X     CHAR10         CHAR        10       raw type (METH/OM/CLAS/TABL/etc.) - matches ZDCCRT_OBJ_CALLS-DEPENDENCY_TYPE's type exactly (see above), which matters since ZLLD_GET_CANDIDATES joins the two
     EDGE_KIND              Z_STRING (STRING)  STRING  -        normalized category (calls_method/class_ref/table_ref/etc.)
     IS_CALL_LIKE            FLAG           CHAR        1        built with the FLAG data element rather than ABAP_BOOL - functionally identical (both CHAR1, 'X'/space), no code impact since ABAP compares against the abap_true constant either way
 

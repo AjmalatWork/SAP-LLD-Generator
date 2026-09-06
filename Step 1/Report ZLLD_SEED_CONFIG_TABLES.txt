@@ -7,11 +7,12 @@ REPORT zlld_seed_config_tables.
 *  (as-built name for the originally-proposed ZLLD_EDGE_KIND_MAP - see
 *  DDIC_TABLES_TO_CREATE_LLD.txt) and ZDCCRT_CONFIG (as-built name for
 *  ZLLD_CONFIG), covering both ZLLD_EXTRACT_TO_DB (per
-*  step2_native_processing_brief.md) and ZLLD_RETRIEVE_CANDIDATES (per
-*  zlld_retrieve_candidates_brief.md's deliverable #3 - scoring weights,
-*  score thresholds, tier multipliers). Run this ONCE after creating all
-*  the relevant tables in SE11, before the first ZLLD_EXTRACT_TO_DB or
-*  ZLLD_RETRIEVE_CANDIDATES run. Uses MODIFY throughout, so re-running it
+*  step2_native_processing_brief.md) and ZLLD_GET_CANDIDATES (renamed from
+*  ZLLD_RETRIEVE_CANDIDATES - per zlld_retrieve_candidates_brief.md's
+*  deliverable #3 - scoring weights, score thresholds, tier multipliers).
+*  Run this ONCE after creating all the relevant tables in SE11, before
+*  the first ZLLD_EXTRACT_TO_DB or ZLLD_GET_CANDIDATES run. Uses MODIFY
+*  throughout, so re-running it
 *  later (e.g. after editing a VALUE #( ... ) list below) is always safe.
 *
 *  Deliberately a table, not a hardcoded CASE - see ZLLD_EXTRACT_TO_DB's
@@ -79,7 +80,7 @@ ENDFORM.
 *
 *       SEMANTIC_WEIGHT/STRUCTURAL_WEIGHT/SEED_MIN_SEMANTIC_SCORE/
 *       NEW_OBJECT_SCORE_FLOOR/NEW_OBJECT_SPREAD_THRESHOLD/tier
-*       multipliers below were added for ZLLD_RETRIEVE_CANDIDATES, per
+*       multipliers below were added for ZLLD_GET_CANDIDATES, per
 *       zlld_retrieve_candidates_brief.md's deliverable #3. The weights
 *       and multipliers are ported starting points (same values
 *       retrieval.py started with). The three score thresholds

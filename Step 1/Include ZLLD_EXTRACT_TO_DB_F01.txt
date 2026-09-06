@@ -566,12 +566,12 @@ ENDFORM.
 *       and counts term frequency per distinct token. No IDF/document-
 *       frequency weighting computed here - that's a corpus-wide
 *       statistic left as a query-time aggregate for the retrieval
-*       report (ZLLD_RETRIEVE_CANDIDATES), per the brief (materializing
+*       report (ZLLD_GET_CANDIDATES), per the brief (materializing
 *       it here would need re-deriving on every incremental change - the
 *       same class of staleness risk the untouched-row guarantee already
 *       exists to avoid elsewhere on this project).
 *
-*       IMPORTANT: ZLLD_RETRIEVE_CANDIDATES duplicates this exact
+*       IMPORTANT: ZLLD_GET_CANDIDATES duplicates this exact
 *       tokenizer (its own TOKENIZE_TEXT form) so the requirement vector
 *       and these stored chunk-token vectors share one vocabulary - keep
 *       both in lockstep if this ever changes.

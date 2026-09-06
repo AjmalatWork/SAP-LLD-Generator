@@ -245,10 +245,12 @@ FORM set_confidence_listbox.
   ls_value-key = 'LIKELY'.  ls_value-text = 'LIKELY'.  APPEND ls_value TO lt_values.
   ls_value-key = 'CERTAIN'. ls_value-text = 'CERTAIN'. APPEND ls_value TO lt_values.
 
+  " On this system VRM_SET_VALUES has only two IMPORTING parameters
+  " (ID TYPE VRM_ID, VALUES TYPE VRM_VALUES) - no TABLES parameters at
+  " all, unlike the classic TABLES-based signature.
   CALL FUNCTION 'VRM_SET_VALUES'
     EXPORTING
       id     = 'P_CONF'
-    TABLES
       values = lt_values.
 ENDFORM.
 

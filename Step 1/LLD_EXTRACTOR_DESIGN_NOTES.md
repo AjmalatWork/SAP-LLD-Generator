@@ -184,6 +184,7 @@ Run these against a real test package once activated:
 | `APPEND_FILE_HEADER` | lightly refactored (removed-objects-list logic extracted to `BUILD_REMOVED_OBJECTS_LIST`) - output unchanged, see "DB output mode" below |
 | `MAIN` | lightly modified - output-mode branching added after `CALL SCREEN 9000` returns, file path unchanged, see "DB output mode" below |
 | DB-mode staging + JSON walker forms (`GENERATE_RUN_ID` through `DISPLAY_DB_MODE_RESULT`) | new, see "DB output mode" below |
+| `CALL_PROCESS_EXTRACTION_RUN` | renamed to `CALL_EXTRACT_TO_DB`, calls `ZLLD_EXTRACT_TO_DB` (real logic) instead of the old stub - see "Native processing" below |
 
 ## DB output mode (`step1_db_mode_brief.md`)
 
@@ -195,8 +196,11 @@ section has been syntax-checked, activated, or run.
 1. Create the four staging tables (`ZLLD_STG_RUN`/`_OBJECT`/`_DEPENDENCY`/`_DDIC`) —
    see `DDIC_TABLES_TO_CREATE_LLD.txt`'s new section. **Not created yet** — File mode
    needs none of this and works exactly as before regardless.
-2. Create function module `ZLLD_PROCESS_EXTRACTION_RUN` in SE37 matching
-   `Function Module ZLLD_PROCESS_EXTRACTION_RUN.txt`'s interface exactly.
+2. ~~Create function module `ZLLD_PROCESS_EXTRACTION_RUN` in SE37~~ — superseded:
+   this stub was renamed to `ZLLD_EXTRACT_TO_DB` and given real logic by
+   `step2_native_processing_brief.md` before ever being built in the system — see
+   "Native processing" below, and build `ZLLD_EXTRACT_TO_DB` directly rather than
+   the stub described here.
 3. Maintain text element `text-002` (the new selection-screen block title) via SE38
    Text Elements — e.g. "Output Mode".
 4. Work through "New assumptions to verify" below before trusting DB-mode output.
@@ -295,3 +299,138 @@ Run these against a real test package once the four tables and the stub FM exist
    confirm both a DB-mode result screen AND a downloaded file appear, and that the
    file's content matches what a plain File-mode run against the same package would
    produce (same caveat as #1 — `EXTRACTED_AT` aside).
+
+## Native processing (`step2_native_processing_brief.md`)
+
+**Written without SAP access, same caveat as everything above.** Supersedes the
+`ZLLD_PROCESS_EXTRACTION_RUN` stub — renamed to `ZLLD_EXTRACT_TO_DB`, now with real
+logic, per the brief's explicit "rename it... rather than leaving both around."
+
+### What to do before activating
+
+1. Create the eight new final/config tables (`ZLLD_OBJECTS`, `ZLLD_OBJ_CALLS`,
+   `ZLLD_OBJ_DDIC_REF`, `ZLLD_DDIC_OBJECTS`, `ZLLD_CHUNKS`, `ZLLD_CHUNK_TOKENS`,
+   `ZLLD_EDGE_KIND_MAP`, `ZLLD_CONFIG`) — see `DDIC_TABLES_TO_CREATE_LLD.txt`'s new
+   section. **Not created yet.**
+2. Add the `ERROR_MESSAGE` field (`TYPE STRING`) to the already-created
+   `ZLLD_STG_RUN` table.
+3. Rename the existing `ZLLD_PROCESS_EXTRACTION_RUN` function module to
+   `ZLLD_EXTRACT_TO_DB` (or delete it and create fresh under the new name — SE37
+   doesn't support in-place renaming of a function module, only of its function
+   group) and replace its body with
+   `Step 1/Function Module ZLLD_EXTRACT_TO_DB.txt`.
+4. Create a new include (e.g. `LZ<fgrp>F01`) in that function module's function
+   group containing `Step 1/Include LZLLD_EXTR_F01 (forms for
+   ZLLD_EXTRACT_TO_DB).txt`'s content, and add it to the group's top include (or
+   via SE80's "Create > Include" on the function group) so the `PERFORM`s in
+   `ZLLD_EXTRACT_TO_DB` resolve. **This is a real ABAP constraint, not a project
+   convention**: a function module's own source cannot contain `FORM`/`ENDFORM`
+   directly.
+5. Run `Report ZLLD_SEED_CONFIG_TABLES.txt` once, after the tables exist, to seed
+   `ZLLD_EDGE_KIND_MAP` (18 rows) and `ZLLD_CONFIG` (stopwords +
+   `CHUNK_MERGE_MIN_LINES`). Safe to re-run later (uses `MODIFY`).
+6. Work through "New assumptions to verify" below before trusting the loaded
+   tables.
+
+### New assumptions to verify against the real system
+
+1. **The whole thing is untested against a live system**, same as everything else
+   built without SAP access. The riskiest single piece is the chunk-boundary
+   scanner (`ZLLD_CHUNK_SOURCE`/`ZLLD_FIRST_TOKEN`) — it assumes `METHOD`/`FORM`/
+   `FUNCTION` always appear as the first whitespace-delimited token on their own
+   line (standard ABAP pretty-printer formatting), which held for the Python
+   chunker's equivalent regex-based approach but has never been exercised against
+   this exact line-by-line ABAP scanner.
+2. **`FIND ALL OCCURRENCES OF REGEX ... RESULTS lt_matches` (`MATCH_RESULT_TAB`)
+   syntax** is standard since a fairly old kernel release, but unconfirmed on this
+   specific system — if it's rejected, `ZLLD_TOKENIZE_CHUNK` needs rewriting with
+   an explicit offset-scanning loop instead (the same lower-level technique
+   `ZLLD_PACKAGE_EXTRACTOR`'s own JSON walker already uses, so a working pattern
+   exists in this codebase to fall back to).
+3. **`ZLLD_STG_DEPENDENCY`/`ZLLD_STG_DDIC` are already correctly populated** by
+   `ZLLD_PACKAGE_EXTRACTOR`'s own JSON walker (a separate, also-untested piece from
+   the prior brief) — `ZLLD_EXTRACT_TO_DB` trusts those columns completely and does
+   no JSON parsing of its own. If the staged `DEPENDENCY_TYPE`/`DEPENDENCY_NAME`
+   columns are wrong, that's a bug in the *staging* JSON walker, not in this native
+   processing step — check there first if `ZLLD_OBJ_CALLS` looks wrong.
+4. **A DDIC-type dependency's `DEPENDENCY_NAME` always names a real DDIC object** —
+   `ZLLD_OBJ_DDIC_REF` is populated straight from `ZLLD_STG_DEPENDENCY` rows whose
+   `DEPENDENCY_TYPE` is one of `DOMA`/`DTEL`/`TABL`/`STRU`/`TTYP`, with no
+   cross-check against `ZLLD_DDIC_OBJECTS` (a dependency could theoretically
+   reference a DDIC object outside the package's own TADIR scope, which
+   `ZLLD_DDIC_OBJECTS` never stages — that's expected and fine, `ZLLD_OBJ_DDIC_REF`
+   deliberately has no FK, same open-vocabulary approach as `ZLLD_OBJ_CALLS`).
+
+### Design decisions worth knowing about (not silently made)
+
+- **`ZLLD_EDGE_KIND_MAP` is a maintainable table, not a hardcoded `CASE`** — per
+  the brief, because the real `DEPENDENCY_TYPE` vocabulary has already proven
+  larger than expected (18 types on `ZZBA91` alone). Any unrecognized type
+  defaults to `edge_kind = 'reference'`, `is_call_like = false` rather than
+  erroring — same open-vocabulary philosophy as everywhere else in this project.
+- **The trailing-`ENDCLASS.`-only-chunk problem is fixed at the source**, not
+  patched after the fact: `ZLLD_MERGE_SMALL_CHUNKS` merges any chunk under
+  `CHUNK_MERGE_MIN_LINES` into its predecessor (or into its successor if it's the
+  very first chunk with nothing before it). This means the chunk count for
+  `ZZBA91` will legitimately differ from the Python-side count (479) — the brief
+  explicitly says not to expect an exact match, only "not wildly different."
+- **No IDF/document-frequency weighting is computed or stored anywhere.**
+  `ZLLD_CHUNK_TOKENS` stores only raw per-chunk term frequency. This is a
+  deliberate scope boundary from the brief, not an oversight — materializing IDF
+  at load time would need re-deriving it on every incremental change, the exact
+  class of staleness bug the untouched-row guarantee elsewhere on this project
+  exists to avoid. The future retrieval report computes it at query time instead.
+- **`ZLLD_OBJ_DDIC_REF` is populated for every DDIC-shaped dependency type**
+  (`DOMA`/`DTEL`/`TABL`/`STRU`/`TTYP`), not just `TABL` — even though the
+  table-sharing bonus itself is not widened beyond `TABL` in this build. This lets
+  a future retrieval report widen that scope with a query change only, never a
+  schema change. Whether it *should* widen it is explicitly left undecided here,
+  per the brief.
+- **`ZLLD_OBJ_CALLS`'s key (`SOURCE_OBJECT`, `TARGET_OBJECT`, `DEPENDENCY_TYPE`)
+  can silently collapse two staged dependency rows into one** if an object has two
+  distinct calls to the same target of the same type with different
+  `SIGNATURE_JSON` (e.g. two textually-different call sites that both resolve to
+  the same method) — `MODIFY` keeps whichever one is processed last. This is the
+  brief's own specified key shape, not something introduced here; flagged because
+  it's the most likely reason the `ZZBA91` acceptance-criteria row count (474)
+  might come back slightly under, if it ever does.
+- **`ZLLD_DDIC_OBJECTS` is always a full package-wide replace, on every run type**
+  — unlike the object-scoped tables, there's no meaningful per-object "untouched
+  row" concept for it, since `ZLLD_STG_DDIC` itself is always a fresh full-package
+  snapshot regardless of `FULL`/`INCR` (see `ZLLD_PACKAGE_EXTRACTOR`'s
+  `STAGE_PACKAGE_DDIC`, called unconditionally).
+- **Failure handling uses a plain `cv_failed`/`cv_error_message` CHANGING-parameter
+  convention**, not ABAP exception classes — consistent with this project's
+  established style (e.g. `cv_skip` throughout `ZLLD_PACKAGE_EXTRACTOR`) rather
+  than introducing a new pattern for this one piece.
+
+## Acceptance criteria — native processing test plan
+
+Run these against a real test package once the eight tables, the renamed function
+module, its forms include, and the seed report all exist:
+
+1. **`FULL` DB-mode extraction of `ZZBA91` end to end** (staging, then
+   `ZLLD_EXTRACT_TO_DB`). Confirm: 23 objects in `ZLLD_OBJECTS`; 474 rows in
+   `ZLLD_OBJ_CALLS` (total row count, not a call-like-only subset); the
+   `EDGE_KIND` distribution matches the brief's table exactly (`METH`→197,
+   `OM`→57, `CLAS`→43, `STRU`→35, `MESS`→36, `OA`→26, `DTEL`→19, `INCL`→12,
+   `FUNC`→7, `INTF`→7, `DGT`→7, `FUGR`→6, `PROG`→6, `TABL`→6, `MSAG`→3, `TTYP`→3,
+   `TYPE`→3, `TRAN`→1); 263 rows in `ZLLD_DDIC_OBJECTS`; chunk count in
+   `ZLLD_CHUNKS` close to (not necessarily exactly) the Python figure of 479 —
+   investigate before calling it done if it's wildly higher or lower, not just
+   "not exactly 479."
+2. **Subsequent `INCREMENTAL` run.** Confirm `REMOVED_OBJECTS` processing deletes
+   exactly those objects' rows and only those, and — the one this brief calls out
+   as mandatory, not optional — snapshot every column of at least one object *not*
+   mentioned in that run's staged data before the load, then assert byte-for-byte
+   identical values after it. Do not consider this brief done without this
+   specific check passing.
+3. **Re-run the same `FULL` load twice.** Confirm identical row counts both times
+   (idempotency) — the `MODIFY`-based writers plus `ZLLD_DELETE_PACKAGE_ROWS`'s
+   full clear-then-reload should already guarantee this, but confirm it directly
+   rather than trusting the design.
+4. **A deliberately broken run** (e.g. temporarily corrupt one staged row so
+   `ZLLD_LOAD_ONE_OBJECT` fails partway through). Confirm `ZLLD_STG_RUN.STATUS`
+   ends up `'FAILED'` with a populated `ERROR_MESSAGE`, and that none of the
+   final tables show a partially-loaded object from that run (the `ROLLBACK WORK`
+   actually rolling back, not just the status flag saying so).

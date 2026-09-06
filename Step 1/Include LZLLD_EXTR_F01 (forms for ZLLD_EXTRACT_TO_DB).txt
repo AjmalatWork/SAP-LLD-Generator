@@ -1,0 +1,583 @@
+*&---------------------------------------------------------------------*
+*& Include LZLLD_EXTR_F01 (name is a placeholder - VERIFY the real
+*& generated include name for whichever function group
+*& ZLLD_EXTRACT_TO_DB lives in, and rename this file/include to match)
+*&---------------------------------------------------------------------*
+*  FORM subroutines for ZLLD_EXTRACT_TO_DB. A function module's own
+*  source text cannot contain FORM/ENDFORM directly (an ABAP language
+*  restriction) - these must live in a separate include assigned to the
+*  function group (SE80: function group -> right-click -> Create ->
+*  Include, or the function group's Attributes screen), added to the
+*  group's top include via a line like:
+*    INCLUDE lzlld_extr_f01.
+*  before ZLLD_EXTRACT_TO_DB's own generated include so the PERFORM
+*  calls in that function resolve. TYPES declared at this include's top
+*  level become visible to every function module in the group, same as
+*  the group's own top-include TYPES/DATA would be.
+*
+*  VERIFY: none of this has been created/tested in the system.
+*&---------------------------------------------------------------------*
+
+*&---------------------------------------------------------------------*
+*& Local Types
+*&---------------------------------------------------------------------*
+TYPES: BEGIN OF zlld_ts_obj_key,
+         obj_type TYPE char4,
+         obj_name TYPE string,
+       END OF zlld_ts_obj_key,
+       zlld_tt_obj_key TYPE STANDARD TABLE OF zlld_ts_obj_key WITH EMPTY KEY.
+
+TYPES: zlld_tt_line TYPE STANDARD TABLE OF string WITH EMPTY KEY.
+
+TYPES: BEGIN OF zlld_ts_chunk,
+         chunk_index TYPE i,
+         chunk_text  TYPE string,
+         line_count  TYPE i,
+       END OF zlld_ts_chunk,
+       zlld_tt_chunk TYPE STANDARD TABLE OF zlld_ts_chunk WITH EMPTY KEY.
+
+TYPES: BEGIN OF zlld_ts_token_count,
+         token TYPE string,
+         tf    TYPE i,
+       END OF zlld_ts_token_count,
+       zlld_tt_token_count TYPE STANDARD TABLE OF zlld_ts_token_count WITH EMPTY KEY.
+
+TYPES: zlld_tt_edge_map TYPE STANDARD TABLE OF zlld_edge_kind_map WITH EMPTY KEY.
+
+*&=======================================================================*
+*& Staged-run reading / parsing
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_READ_STG_RUN
+*&---------------------------------------------------------------------*
+FORM zlld_read_stg_run USING iv_run_id TYPE sysuuid_x16
+                        CHANGING es_stg_run TYPE zlld_stg_run
+                                 cv_found   TYPE abap_bool.
+  CLEAR: es_stg_run, cv_found.
+
+  SELECT SINGLE * FROM zlld_stg_run INTO es_stg_run WHERE run_id = iv_run_id.
+  IF sy-subrc = 0.
+    cv_found = abap_true.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_PARSE_REMOVED_LIST
+*&---------------------------------------------------------------------*
+*       Parses the SAME "TYPE:NAME, TYPE:NAME" / "NONE" format
+*       ZLLD_PACKAGE_EXTRACTOR's BUILD_REMOVED_OBJECTS_LIST produces
+*       (ZLLD_STG_RUN-REMOVED_OBJECTS is staged in that exact format) -
+*       this is its inverse.
+*&---------------------------------------------------------------------*
+FORM zlld_parse_removed_list USING iv_list TYPE string
+                              CHANGING ct_objs TYPE zlld_tt_obj_key.
+  DATA: lt_entries TYPE string_table,
+        lv_type    TYPE string,
+        lv_name    TYPE string.
+
+  CLEAR ct_objs.
+  CHECK iv_list IS NOT INITIAL AND iv_list <> 'NONE'.
+
+  SPLIT iv_list AT ',' INTO TABLE lt_entries.
+
+  LOOP AT lt_entries INTO DATA(lv_entry).
+    lv_entry = shift_left( val = lv_entry sub = space ).
+    CONDENSE lv_entry.
+    SPLIT lv_entry AT ':' INTO lv_type lv_name.
+    IF lv_name IS NOT INITIAL.
+      APPEND VALUE #( obj_type = lv_type obj_name = lv_name ) TO ct_objs.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_GET_CONFIG_VALUE
+*&---------------------------------------------------------------------*
+*       Never errors on a missing key - falls back to IV_DEFAULT,
+*       matching this project's open-vocabulary/no-hard-fail philosophy
+*       for anything tunable via a maintainable table.
+*&---------------------------------------------------------------------*
+FORM zlld_get_config_value USING iv_key TYPE string
+                                  iv_default TYPE string
+                            CHANGING cv_value TYPE string.
+  CLEAR cv_value.
+
+  SELECT SINGLE config_value FROM zlld_config INTO cv_value WHERE config_key = iv_key.
+  IF sy-subrc <> 0.
+    cv_value = iv_default.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_PARSE_STOPWORDS
+*&---------------------------------------------------------------------*
+FORM zlld_parse_stopwords USING iv_csv TYPE string
+                           CHANGING ct_stopwords TYPE string_table.
+  DATA lt_raw TYPE string_table.
+
+  CLEAR ct_stopwords.
+  SPLIT iv_csv AT ',' INTO TABLE lt_raw.
+
+  LOOP AT lt_raw INTO DATA(lv_word).
+    lv_word = to_lower( shift_left( val = lv_word sub = space ) ).
+    CONDENSE lv_word.
+    IF lv_word IS NOT INITIAL.
+      APPEND lv_word TO ct_stopwords.
+    ENDIF.
+  ENDLOOP.
+
+  SORT ct_stopwords.
+ENDFORM.
+
+*&=======================================================================*
+*& Edge-kind lookup (ZLLD_EDGE_KIND_MAP)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_LOAD_EDGE_KIND_MAP
+*&---------------------------------------------------------------------*
+FORM zlld_load_edge_kind_map CHANGING ct_map TYPE zlld_tt_edge_map.
+  CLEAR ct_map.
+  SELECT * FROM zlld_edge_kind_map INTO TABLE ct_map.
+  SORT ct_map BY dependency_type.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_LOOKUP_EDGE_KIND
+*&---------------------------------------------------------------------*
+*       Any DEPENDENCY_TYPE with no matching row defaults to
+*       edge_kind = 'reference', is_call_like = false - never errors on
+*       an unrecognized type, per the brief (the real vocabulary has
+*       already proven larger than expected - 18 types on one package
+*       alone).
+*&---------------------------------------------------------------------*
+FORM zlld_lookup_edge_kind USING iv_dep_type TYPE string
+                                  it_map TYPE zlld_tt_edge_map
+                            CHANGING cv_edge_kind TYPE string
+                                     cv_is_call_like TYPE abap_bool.
+  READ TABLE it_map INTO DATA(ls_map) WITH KEY dependency_type = iv_dep_type BINARY SEARCH.
+  IF sy-subrc = 0.
+    cv_edge_kind    = ls_map-edge_kind.
+    cv_is_call_like = ls_map-is_call_like.
+  ELSE.
+    cv_edge_kind    = 'reference'.
+    cv_is_call_like = abap_false.
+  ENDIF.
+ENDFORM.
+
+*&=======================================================================*
+*& Chunking (splits an object's SOURCE into query-ready chunks)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_FIRST_TOKEN
+*&---------------------------------------------------------------------*
+*       Uppercased first whitespace-delimited word of a line, with a
+*       single trailing period stripped (so "ENDMETHOD." on its own
+*       line and "METHOD" followed by a name both normalize the same
+*       way for boundary matching).
+*&---------------------------------------------------------------------*
+FORM zlld_first_token USING iv_line TYPE string
+                       CHANGING cv_token TYPE string.
+  DATA: lv_trimmed TYPE string,
+        lv_rest    TYPE string.
+
+  CLEAR cv_token.
+  lv_trimmed = shift_left( val = iv_line sub = space ).
+  SPLIT lv_trimmed AT space INTO cv_token lv_rest.
+
+  IF strlen( cv_token ) > 0
+     AND substring( val = cv_token off = strlen( cv_token ) - 1 len = 1 ) = '.'.
+    cv_token = substring( val = cv_token off = 0 len = strlen( cv_token ) - 1 ).
+  ENDIF.
+
+  cv_token = to_upper( cv_token ).
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_FLUSH_CHUNK_BUFFER
+*&---------------------------------------------------------------------*
+FORM zlld_flush_chunk_buffer USING it_buffer TYPE zlld_tt_line
+                              CHANGING ct_raw TYPE zlld_tt_chunk.
+  DATA: ls_chunk TYPE zlld_ts_chunk,
+        lv_first TYPE abap_bool VALUE abap_true.
+
+  CHECK it_buffer IS NOT INITIAL.
+  CLEAR ls_chunk.
+
+  LOOP AT it_buffer INTO DATA(lv_l).
+    IF lv_first = abap_true.
+      ls_chunk-chunk_text = lv_l.
+      lv_first = abap_false.
+    ELSE.
+      ls_chunk-chunk_text = |{ ls_chunk-chunk_text }{ cl_abap_char_utilities=>newline }{ lv_l }|.
+    ENDIF.
+    ls_chunk-line_count = ls_chunk-line_count + 1.
+  ENDLOOP.
+
+  APPEND ls_chunk TO ct_raw.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_MERGE_SMALL_CHUNKS
+*&---------------------------------------------------------------------*
+*       Deliberate improvement over the Python chunker (which always
+*       produced a trailing "ENDCLASS."-only chunk per class, confirmed
+*       to pollute similarity scoring - see the brief): any chunk under
+*       IV_MIN_LINES merges into its preceding chunk; the very first
+*       chunk (no predecessor) merges FORWARD into the next one instead,
+*       so nothing is ever silently dropped. A single-chunk result is
+*       left as-is regardless of length (nothing to merge into).
+*&---------------------------------------------------------------------*
+FORM zlld_merge_small_chunks USING it_raw TYPE zlld_tt_chunk
+                                    iv_min_lines TYPE i
+                              CHANGING ct_final TYPE zlld_tt_chunk.
+  DATA: lt_work TYPE zlld_tt_chunk,
+        lv_idx  TYPE i.
+
+  lt_work = it_raw.
+
+  lv_idx = 1.
+  WHILE lv_idx <= lines( lt_work ).
+    READ TABLE lt_work INTO DATA(ls_cur) INDEX lv_idx.
+
+    IF ls_cur-line_count < iv_min_lines AND lines( lt_work ) > 1.
+      IF lv_idx = 1.
+        READ TABLE lt_work INTO DATA(ls_next) INDEX lv_idx + 1.
+        ls_next-chunk_text = |{ ls_cur-chunk_text }{ cl_abap_char_utilities=>newline }{ ls_next-chunk_text }|.
+        ls_next-line_count = ls_cur-line_count + ls_next-line_count.
+        MODIFY lt_work FROM ls_next INDEX lv_idx + 1.
+        DELETE lt_work INDEX lv_idx.
+        " stay at lv_idx - the merged-forward result is now at this
+        " position and has already been re-checked as ls_next above.
+      ELSE.
+        READ TABLE lt_work INTO DATA(ls_prev) INDEX lv_idx - 1.
+        ls_prev-chunk_text = |{ ls_prev-chunk_text }{ cl_abap_char_utilities=>newline }{ ls_cur-chunk_text }|.
+        ls_prev-line_count = ls_prev-line_count + ls_cur-line_count.
+        MODIFY lt_work FROM ls_prev INDEX lv_idx - 1.
+        DELETE lt_work INDEX lv_idx.
+        lv_idx = lv_idx - 1.
+      ENDIF.
+    ELSE.
+      lv_idx = lv_idx + 1.
+    ENDIF.
+  ENDWHILE.
+
+  CLEAR ct_final.
+  lv_idx = 0.
+  LOOP AT lt_work INTO DATA(ls_final).
+    ls_final-chunk_index = lv_idx.
+    APPEND ls_final TO ct_final.
+    lv_idx = lv_idx + 1.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_CHUNK_SOURCE
+*&---------------------------------------------------------------------*
+*       Splits on METHOD/ENDMETHOD, FORM/ENDFORM, FUNCTION/ENDFUNCTION
+*       boundaries (same heuristic as the Python chunker); falls back to
+*       fixed ~100-line chunks if no such boundary appears anywhere in
+*       the source at all. Lines outside any boundary block (CLASS/
+*       ENDCLASS wrapper, top-level DATA/TYPES, includes with only
+*       declarations) accumulate into their own loose chunk(s) between
+*       boundary blocks, then go through the same min-length merge pass.
+*&---------------------------------------------------------------------*
+FORM zlld_chunk_source USING iv_source TYPE string
+                              iv_min_lines TYPE i
+                        CHANGING ct_chunks TYPE zlld_tt_chunk.
+  DATA: lt_lines        TYPE zlld_tt_line,
+        lt_buffer       TYPE zlld_tt_line,
+        lv_first_word   TYPE string,
+        lv_expect_end   TYPE string,
+        lv_in_block     TYPE abap_bool,
+        lv_has_boundary TYPE abap_bool,
+        lt_raw          TYPE zlld_tt_chunk,
+        lv_count        TYPE i.
+
+  CLEAR ct_chunks.
+  SPLIT iv_source AT cl_abap_char_utilities=>newline INTO TABLE lt_lines.
+  CHECK lt_lines IS NOT INITIAL.
+
+  LOOP AT lt_lines INTO DATA(lv_scan_line).
+    PERFORM zlld_first_token USING lv_scan_line CHANGING lv_first_word.
+    IF lv_first_word = 'METHOD' OR lv_first_word = 'FORM' OR lv_first_word = 'FUNCTION'.
+      lv_has_boundary = abap_true.
+      EXIT.
+    ENDIF.
+  ENDLOOP.
+
+  IF lv_has_boundary = abap_false.
+    CLEAR: lt_buffer, lv_count.
+    LOOP AT lt_lines INTO DATA(lv_fixed_line).
+      APPEND lv_fixed_line TO lt_buffer.
+      lv_count = lv_count + 1.
+      IF lv_count >= 100.
+        PERFORM zlld_flush_chunk_buffer USING lt_buffer CHANGING lt_raw.
+        CLEAR: lt_buffer, lv_count.
+      ENDIF.
+    ENDLOOP.
+    PERFORM zlld_flush_chunk_buffer USING lt_buffer CHANGING lt_raw.
+
+  ELSE.
+    CLEAR: lt_buffer, lv_in_block, lv_expect_end.
+
+    LOOP AT lt_lines INTO DATA(lv_line).
+      PERFORM zlld_first_token USING lv_line CHANGING lv_first_word.
+
+      IF lv_in_block = abap_false
+         AND ( lv_first_word = 'METHOD' OR lv_first_word = 'FORM' OR lv_first_word = 'FUNCTION' ).
+        PERFORM zlld_flush_chunk_buffer USING lt_buffer CHANGING lt_raw.
+        CLEAR lt_buffer.
+
+        lv_in_block = abap_true.
+        CASE lv_first_word.
+          WHEN 'METHOD'.   lv_expect_end = 'ENDMETHOD'.
+          WHEN 'FORM'.     lv_expect_end = 'ENDFORM'.
+          WHEN 'FUNCTION'. lv_expect_end = 'ENDFUNCTION'.
+        ENDCASE.
+        APPEND lv_line TO lt_buffer.
+
+      ELSEIF lv_in_block = abap_true.
+        APPEND lv_line TO lt_buffer.
+        IF lv_first_word = lv_expect_end.
+          PERFORM zlld_flush_chunk_buffer USING lt_buffer CHANGING lt_raw.
+          CLEAR: lt_buffer, lv_in_block, lv_expect_end.
+        ENDIF.
+
+      ELSE.
+        APPEND lv_line TO lt_buffer.
+      ENDIF.
+    ENDLOOP.
+
+    PERFORM zlld_flush_chunk_buffer USING lt_buffer CHANGING lt_raw.
+  ENDIF.
+
+  PERFORM zlld_merge_small_chunks USING lt_raw iv_min_lines CHANGING ct_chunks.
+ENDFORM.
+
+*&=======================================================================*
+*& Tokenization (replaces embedding generation)
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_TOKENIZE_CHUNK
+*&---------------------------------------------------------------------*
+*       Splits on non-alphanumeric characters AND underscores (ABAP
+*       identifiers like GET_USER_AC_PROGRAM are naturally underscore-
+*       delimited into meaningful words - a free signal specific to this
+*       codebase's naming convention), lowercases, filters IT_STOPWORDS,
+*       and counts term frequency per distinct token. No IDF/document-
+*       frequency weighting computed here - that's a corpus-wide
+*       statistic left as a query-time aggregate for the future
+*       retrieval report, per the brief (materializing it here would
+*       need re-deriving on every incremental change - the same class of
+*       staleness risk the untouched-row guarantee already exists to
+*       avoid elsewhere on this project).
+*&---------------------------------------------------------------------*
+FORM zlld_tokenize_chunk USING iv_text TYPE string
+                                it_stopwords TYPE string_table
+                          CHANGING ct_tokens TYPE zlld_tt_token_count.
+  DATA: lt_matches TYPE match_result_tab,
+        lv_token   TYPE string.
+
+  CLEAR ct_tokens.
+  FIND ALL OCCURRENCES OF REGEX '[A-Za-z0-9]+' IN iv_text RESULTS lt_matches.
+
+  LOOP AT lt_matches INTO DATA(ls_match).
+    lv_token = to_lower( substring( val = iv_text off = ls_match-offset len = ls_match-length ) ).
+
+    READ TABLE it_stopwords TRANSPORTING NO FIELDS WITH KEY table_line = lv_token BINARY SEARCH.
+    IF sy-subrc = 0.
+      CONTINUE.
+    ENDIF.
+
+    READ TABLE ct_tokens ASSIGNING FIELD-SYMBOL(<fs_tok>) WITH KEY token = lv_token.
+    IF sy-subrc = 0.
+      <fs_tok>-tf = <fs_tok>-tf + 1.
+    ELSE.
+      APPEND VALUE #( token = lv_token tf = 1 ) TO ct_tokens.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+*&=======================================================================*
+*& Final-table writers
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_GENERATE_UUID
+*&---------------------------------------------------------------------*
+FORM zlld_generate_uuid CHANGING cv_uuid TYPE sysuuid_x16.
+  TRY.
+      cv_uuid = cl_system_uuid=>create_uuid_x16_static( ).
+    CATCH cx_uuid_error.
+      CLEAR cv_uuid.
+  ENDTRY.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_DELETE_OBJECT_ROWS
+*&---------------------------------------------------------------------*
+*       Deletes one object's rows across every final table it can
+*       appear in - used both for REMOVED_OBJECTS (INCR) and as the
+*       delete-then-reinsert half of updating a touched object (INCR),
+*       and indirectly (via ZLLD_DELETE_PACKAGE_ROWS) for FULL. Chunk
+*       tokens are deleted first, keyed off this object's own chunk IDs,
+*       since ZLLD_CHUNK_TOKENS has no OBJECT_NAME of its own.
+*&---------------------------------------------------------------------*
+FORM zlld_delete_object_rows USING iv_obj_name TYPE string.
+  DATA lt_chunk_ids TYPE STANDARD TABLE OF sysuuid_x16.
+
+  SELECT chunk_id FROM zlld_chunks INTO TABLE lt_chunk_ids WHERE object_name = iv_obj_name.
+
+  LOOP AT lt_chunk_ids INTO DATA(lv_cid).
+    DELETE FROM zlld_chunk_tokens WHERE chunk_id = lv_cid.
+  ENDLOOP.
+
+  DELETE FROM zlld_chunks WHERE object_name = iv_obj_name.
+  DELETE FROM zlld_obj_ddic_ref WHERE object_name = iv_obj_name.
+  DELETE FROM zlld_obj_calls WHERE source_object = iv_obj_name.
+  DELETE FROM zlld_objects WHERE object_name = iv_obj_name.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_DELETE_PACKAGE_ROWS
+*&---------------------------------------------------------------------*
+*       FULL-run reset: every object currently in ZLLD_OBJECTS for this
+*       package, plus the package's own DDIC snapshot.
+*&---------------------------------------------------------------------*
+FORM zlld_delete_package_rows USING iv_package TYPE devclass.
+  DATA lt_names TYPE STANDARD TABLE OF seoclsname.
+
+  SELECT object_name FROM zlld_objects INTO TABLE lt_names WHERE package = iv_package.
+
+  LOOP AT lt_names INTO DATA(lv_name).
+    PERFORM zlld_delete_object_rows USING lv_name.
+  ENDLOOP.
+
+  DELETE FROM zlld_ddic_objects WHERE package = iv_package.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_LOAD_ONE_OBJECT
+*&---------------------------------------------------------------------*
+*       Loads one staged object into ZLLD_OBJECTS, its dependencies into
+*       ZLLD_OBJ_CALLS (every row, regardless of type - matches the
+*       staged row count, not a call-like-only subset) plus
+*       ZLLD_OBJ_DDIC_REF for the DDIC-shaped dependency types, and its
+*       chunked/tokenized source into ZLLD_CHUNKS/ZLLD_CHUNK_TOKENS.
+*       CV_FAILED/CV_ERROR_MESSAGE are the failure-signaling convention
+*       already used elsewhere in this codebase (CHANGING cv_skip) -
+*       plain flags instead of exception classes, consistent with the
+*       rest of this project's style.
+*&---------------------------------------------------------------------*
+FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
+                                  iv_obj_name TYPE string
+                                  iv_obj_type TYPE char4
+                                  iv_package TYPE devclass
+                                  it_edge_map TYPE zlld_tt_edge_map
+                                  iv_min_chunk_lines TYPE i
+                                  it_stopwords TYPE string_table
+                            CHANGING cv_failed TYPE abap_bool
+                                     cv_error_message TYPE string.
+  DATA: ls_stg_object TYPE zlld_stg_object,
+        lt_deps       TYPE STANDARD TABLE OF zlld_stg_dependency,
+        lt_chunks     TYPE zlld_tt_chunk,
+        lt_tokens     TYPE zlld_tt_token_count,
+        lv_edge_kind  TYPE string,
+        lv_call_like  TYPE abap_bool,
+        lv_chunk_id   TYPE sysuuid_x16.
+
+  CLEAR: cv_failed, cv_error_message.
+
+  SELECT SINGLE * FROM zlld_stg_object INTO ls_stg_object
+    WHERE run_id = iv_run_id AND object_name = iv_obj_name.
+  IF sy-subrc <> 0.
+    cv_failed = abap_true.
+    cv_error_message = |No staged source found for { iv_obj_name } (run { iv_run_id }).|.
+    RETURN.
+  ENDIF.
+
+  MODIFY zlld_objects FROM VALUE #( object_name = iv_obj_name
+                                     object_type = iv_obj_type
+                                     package     = iv_package ).
+  IF sy-subrc <> 0.
+    cv_failed = abap_true.
+    cv_error_message = |Failed writing ZLLD_OBJECTS for { iv_obj_name }.|.
+    RETURN.
+  ENDIF.
+
+  SELECT * FROM zlld_stg_dependency INTO TABLE lt_deps
+    WHERE run_id = iv_run_id AND object_name = iv_obj_name
+    ORDER BY dependency_seq.
+
+  LOOP AT lt_deps INTO DATA(ls_dep).
+    CHECK ls_dep-dependency_name IS NOT INITIAL.
+
+    PERFORM zlld_lookup_edge_kind USING ls_dep-dependency_type it_edge_map
+                                   CHANGING lv_edge_kind lv_call_like.
+
+    MODIFY zlld_obj_calls FROM VALUE #( source_object   = iv_obj_name
+                                         target_object   = ls_dep-dependency_name
+                                         dependency_type = ls_dep-dependency_type
+                                         edge_kind       = lv_edge_kind
+                                         signature_json  = ls_dep-signature_json ).
+
+    " DDIC-shaped dependency types also get a structured secondary index
+    " in ZLLD_OBJ_DDIC_REF, covering every DDIC type (not just TABL) -
+    " per the brief, this table supports either table-sharing-bonus
+    " scope going forward without a schema change; which DDIC_TYPE(s)
+    " actually count toward that bonus is the future retrieval report's
+    " own, separately evidence-backed decision, not made here.
+    IF ls_dep-dependency_type = 'DOMA' OR ls_dep-dependency_type = 'DTEL'
+    OR ls_dep-dependency_type = 'TABL' OR ls_dep-dependency_type = 'STRU'
+    OR ls_dep-dependency_type = 'TTYP'.
+      MODIFY zlld_obj_ddic_ref FROM VALUE #( object_name      = iv_obj_name
+                                              ddic_type        = ls_dep-dependency_type
+                                              ddic_object_name = ls_dep-dependency_name ).
+    ENDIF.
+  ENDLOOP.
+
+  PERFORM zlld_chunk_source USING ls_stg_object-source iv_min_chunk_lines CHANGING lt_chunks.
+
+  LOOP AT lt_chunks INTO DATA(ls_chunk).
+    PERFORM zlld_generate_uuid CHANGING lv_chunk_id.
+
+    INSERT zlld_chunks FROM VALUE #( chunk_id    = lv_chunk_id
+                                      object_name = iv_obj_name
+                                      chunk_index = ls_chunk-chunk_index
+                                      chunk_text  = ls_chunk-chunk_text ).
+
+    PERFORM zlld_tokenize_chunk USING ls_chunk-chunk_text it_stopwords CHANGING lt_tokens.
+
+    LOOP AT lt_tokens INTO DATA(ls_tok).
+      MODIFY zlld_chunk_tokens FROM VALUE #( token          = ls_tok-token
+                                              chunk_id       = lv_chunk_id
+                                              term_frequency = ls_tok-tf ).
+    ENDLOOP.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ZLLD_LOAD_DDIC_SNAPSHOT
+*&---------------------------------------------------------------------*
+*       Package-wide DDIC snapshot, always fully replaced regardless of
+*       FULL/INCR - see this form's caller for why.
+*&---------------------------------------------------------------------*
+FORM zlld_load_ddic_snapshot USING iv_run_id TYPE sysuuid_x16
+                                     iv_package TYPE devclass.
+  DATA lt_stg_ddic TYPE STANDARD TABLE OF zlld_stg_ddic.
+
+  DELETE FROM zlld_ddic_objects WHERE package = iv_package.
+
+  SELECT * FROM zlld_stg_ddic INTO TABLE lt_stg_ddic WHERE run_id = iv_run_id.
+
+  LOOP AT lt_stg_ddic INTO DATA(ls_ddic).
+    MODIFY zlld_ddic_objects FROM VALUE #( package     = iv_package
+                                            ddic_type   = ls_ddic-ddic_type
+                                            name        = ls_ddic-ddic_name
+                                            detail_json = ls_ddic-detail_json ).
+  ENDLOOP.
+ENDFORM.

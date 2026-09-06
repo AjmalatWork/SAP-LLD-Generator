@@ -1,0 +1,178 @@
+FUNCTION ZLLD_EXTRACT_TO_DB.
+*"----------------------------------------------------------------------
+*"*"Local Interface:
+*"  IMPORTING
+*"     VALUE(IV_RUN_ID) TYPE  SYSUUID_X16
+*"  EXPORTING
+*"     VALUE(EV_STATUS) TYPE  CHAR12
+*"     VALUE(EV_MESSAGE) TYPE  STRING
+*"----------------------------------------------------------------------
+
+*&---------------------------------------------------------------------*
+*& ZLLD_EXTRACT_TO_DB
+*&---------------------------------------------------------------------*
+*  REPLACES the ZLLD_PROCESS_EXTRACTION_RUN stub - renamed per
+*  step2_native_processing_brief.md ("supersedes the stub built in the
+*  previous brief... rename it... rather than leaving both around").
+*  ZLLD_PACKAGE_EXTRACTOR's CALL_EXTRACT_TO_DB form (was
+*  CALL_PROCESS_EXTRACTION_RUN) has been updated to call this name - see
+*  that report for the call site.
+*
+*  Real implementation of the native chunk/token/graph load: takes the
+*  raw rows ZLLD_PACKAGE_EXTRACTOR already staged in Database mode
+*  (ZLLD_STG_RUN/_OBJECT/_DEPENDENCY/_DDIC) and turns them into the
+*  query-ready tables a future retrieval report will read
+*  (ZLLD_OBJECTS, ZLLD_OBJ_CALLS, ZLLD_OBJ_DDIC_REF, ZLLD_DDIC_OBJECTS,
+*  ZLLD_CHUNKS, ZLLD_CHUNK_TOKENS). This is a direct native port of what
+*  the Python pipeline.py/graph_loader.py did for a file, with vector
+*  embeddings replaced by lexical tokenization throughout (per the
+*  real-data evidence that the embedding model wasn't earning its keep).
+*
+*  REQUIRES (see DDIC_TABLES_TO_CREATE_LLD.txt for full specs -
+*  NOT YET CREATED):
+*    - Table ZLLD_OBJECTS
+*    - Table ZLLD_OBJ_CALLS
+*    - Table ZLLD_OBJ_DDIC_REF
+*    - Table ZLLD_DDIC_OBJECTS
+*    - Table ZLLD_CHUNKS
+*    - Table ZLLD_CHUNK_TOKENS
+*    - Table ZLLD_EDGE_KIND_MAP (seed via Report ZLLD_SEED_CONFIG_TABLES)
+*    - Table ZLLD_CONFIG (seed via Report ZLLD_SEED_CONFIG_TABLES)
+*    - ZLLD_STG_RUN needs a new ERROR_MESSAGE field (TYPE STRING) added -
+*      see DDIC_TABLES_TO_CREATE_LLD.txt
+*    - Include with the FORM subroutines this function PERFORMs - see
+*      "Step 1/Include LZLLD_EXTR_F01 (forms for ZLLD_EXTRACT_TO_DB).txt".
+*      A function module's own source cannot itself contain FORM/ENDFORM
+*      (that's an ABAP restriction, not a project convention) - create
+*      that include as a normal program and add it to this function
+*      group's include list (function group Attributes, or the "Include
+*      Programs" node under the function group in SE80) so PERFORM below
+*      resolves. Same reasoning as why this report's own selection-
+*      screen forms all live in one physical unit - just one level up,
+*      since function GROUPS (unlike a single REPORT) support multiple
+*      includes shared across their function modules.
+*
+*  Does NOT do source/dependency extraction itself - it only reads what
+*  ZLLD_PACKAGE_EXTRACTOR already staged (SOURCE, DEPENDENCY_TYPE/NAME/
+*  SIGNATURE_JSON, DDIC_TYPE/NAME/DETAIL_JSON are already split into
+*  columns by that report's JSON walker - this function never touches
+*  raw JSON at all).
+*
+*  VERIFY: this has not been created/tested in the system - written
+*  without SAP access, like everything else in this project originally
+*  was. See LLD_EXTRACTOR_DESIGN_NOTES.md's "Native processing (DB mode
+*  step 2)" section for the full assumptions list and acceptance-
+*  criteria test plan.
+*&---------------------------------------------------------------------*
+
+  DATA: ls_stg_run        TYPE zlld_stg_run,
+        lv_found          TYPE abap_bool,
+        lt_edge_map       TYPE zlld_tt_edge_map,
+        lv_stopword_csv   TYPE string,
+        lt_stopwords      TYPE string_table,
+        lv_min_lines_str  TYPE string,
+        lv_min_lines      TYPE i,
+        lt_removed        TYPE zlld_tt_obj_key,
+        lt_staged_objects TYPE STANDARD TABLE OF zlld_stg_object,
+        lv_failed         TYPE abap_bool,
+        lv_error_message  TYPE string,
+        lv_objects_done   TYPE i.
+
+  CLEAR: ev_status, ev_message, lv_failed, lv_error_message, lv_objects_done.
+
+  PERFORM zlld_read_stg_run USING iv_run_id CHANGING ls_stg_run lv_found.
+  IF lv_found = abap_false.
+    ev_status  = 'FAILED'.
+    ev_message = |No ZLLD_STG_RUN row found for RUN_ID { iv_run_id }. Nothing to process.|.
+    RETURN.
+  ENDIF.
+
+  PERFORM zlld_load_edge_kind_map CHANGING lt_edge_map.
+
+  " STOPWORDS/CHUNK_MERGE_MIN_LINES both live in ZLLD_CONFIG so they can
+  " be tuned via SM30 without a transport - see the brief. Missing rows
+  " fall back to safe defaults rather than erroring, matching this
+  " project's established "never error on an unrecognized/missing
+  " open-vocabulary value" philosophy (e.g. EDGE_KIND's own default).
+  PERFORM zlld_get_config_value USING 'STOPWORDS' '' CHANGING lv_stopword_csv.
+  PERFORM zlld_parse_stopwords USING lv_stopword_csv CHANGING lt_stopwords.
+
+  PERFORM zlld_get_config_value USING 'CHUNK_MERGE_MIN_LINES' '3' CHANGING lv_min_lines_str.
+  lv_min_lines = lv_min_lines_str.
+
+  " FULL vs INCREMENTAL, same semantics as the already-validated Python
+  " loader (see graph_loader.py) - untouched-row guarantee: an object
+  " neither removed nor present in this run's staged data is never
+  " referenced by any DELETE/INSERT/MODIFY statement below.
+  IF ls_stg_run-run_type = 'FULL'.
+    PERFORM zlld_delete_package_rows USING ls_stg_run-zpackage.
+  ELSE.
+    PERFORM zlld_parse_removed_list USING ls_stg_run-removed_objects CHANGING lt_removed.
+    LOOP AT lt_removed INTO DATA(ls_removed).
+      PERFORM zlld_delete_object_rows USING ls_removed-obj_name.
+    ENDLOOP.
+  ENDIF.
+
+  SELECT * FROM zlld_stg_object INTO TABLE lt_staged_objects WHERE run_id = iv_run_id.
+
+  LOOP AT lt_staged_objects INTO DATA(ls_staged).
+    IF ls_stg_run-run_type = 'INCR'.
+      " FULL already cleared the whole package above; INCR only cleared
+      " REMOVED_OBJECTS so far - a touched-but-not-removed object's own
+      " prior rows still need clearing before it's reloaded (delete-then-
+      " reinsert one object at a time, same reasoning as the Python
+      " loader: simpler and safer than diffing individual edges).
+      PERFORM zlld_delete_object_rows USING ls_staged-object_name.
+    ENDIF.
+
+    PERFORM zlld_load_one_object USING iv_run_id
+                                        ls_staged-object_name
+                                        ls_staged-object_type
+                                        ls_stg_run-zpackage
+                                        lt_edge_map
+                                        lv_min_lines
+                                        lt_stopwords
+                                  CHANGING lv_failed lv_error_message.
+    IF lv_failed = abap_true.
+      EXIT.
+    ENDIF.
+
+    lv_objects_done = lv_objects_done + 1.
+  ENDLOOP.
+
+  " DDIC snapshot is package-wide, not object-scoped (ZLLD_STG_DDIC is
+  " always the package's full current DOMA/DTEL/TABL/STRU/TTYP catalog,
+  " staged fresh on both FULL and INCR runs - see ZLLD_PACKAGE_EXTRACTOR's
+  " STAGE_PACKAGE_DDIC, called unconditionally) - so it's simplest and
+  " correct to always fully replace it for this package, regardless of
+  " run type, rather than trying to diff it against removed/staged
+  " objects the way the object-scoped tables above do.
+  IF lv_failed = abap_false.
+    PERFORM zlld_load_ddic_snapshot USING iv_run_id ls_stg_run-zpackage.
+  ENDIF.
+
+  " Single logical unit of work for every final-table write this run
+  " made: only COMMIT once everything succeeded; on any failure, roll
+  " back so nothing partially-loaded looks superficially complete, then
+  " persist the FAILED status/message in its own fresh LUW.
+  IF lv_failed = abap_false.
+    ls_stg_run-status        = 'PROCESSED'.
+    ls_stg_run-error_message = ''.
+    MODIFY zlld_stg_run FROM ls_stg_run.
+    COMMIT WORK.
+
+    ev_status  = 'PROCESSED'.
+    ev_message = |Loaded { lv_objects_done } object(s) into the graph/chunk/token tables for run { iv_run_id }.|.
+  ELSE.
+    ROLLBACK WORK.
+
+    ls_stg_run-status        = 'FAILED'.
+    ls_stg_run-error_message = lv_error_message.
+    MODIFY zlld_stg_run FROM ls_stg_run.
+    COMMIT WORK.
+
+    ev_status  = 'FAILED'.
+    ev_message = lv_error_message.
+  ENDIF.
+
+ENDFUNCTION.

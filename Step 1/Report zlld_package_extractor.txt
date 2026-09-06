@@ -24,12 +24,15 @@ REPORT zlld_package_extractor.
 *
 *  REQUIRES for DB output mode (step1_db_mode_brief.md - NOT YET CREATED,
 *  see DDIC_TABLES_TO_CREATE_LLD.txt for specs to build in SE11 first):
-*    - Table ZLLD_STG_RUN
+*    - Table ZLLD_STG_RUN (now also needs an ERROR_MESSAGE field - see
+*      DDIC_TABLES_TO_CREATE_LLD.txt)
 *    - Table ZLLD_STG_OBJECT
 *    - Table ZLLD_STG_DEPENDENCY
 *    - Table ZLLD_STG_DDIC
-*    - Function module ZLLD_PROCESS_EXTRACTION_RUN (a stub for this
-*      brief - see Step 1/Function Module ZLLD_PROCESS_EXTRACTION_RUN.txt)
+*    - Function module ZLLD_EXTRACT_TO_DB (renamed from the earlier
+*      ZLLD_PROCESS_EXTRACTION_RUN stub - now a real implementation, per
+*      step2_native_processing_brief.md - see
+*      Step 1/Function Module ZLLD_EXTRACT_TO_DB.txt)
 *  File mode (the default) needs none of the above and is unchanged.
 *
 *  SEVERAL FM CALLS BELOW ARE FLAGGED "VERIFY" - their exact parameter
@@ -308,7 +311,7 @@ FORM main.
       PERFORM generate_run_id CHANGING gv_run_id.
       PERFORM build_and_stage_lld_db.
       PERFORM finalize_sync_state USING p_pack gv_run_type gv_new_hwm.
-      PERFORM call_process_extraction_run USING gv_run_id.
+      PERFORM call_extract_to_db USING gv_run_id.
       PERFORM display_db_mode_result.
 
       " Optional debugging aid, not the primary path - re-runs the whole
@@ -1541,10 +1544,12 @@ ENDFORM.
 *&
 *& Stages the SAME already-computed data FILE mode writes to GT_OUTPUT -
 *& instead as rows in ZLLD_STG_RUN/_OBJECT/_DEPENDENCY/_DDIC - then hands
-*& off to ZLLD_PROCESS_EXTRACTION_RUN (a stub for this brief; see
-*& Step 1/Function Module ZLLD_PROCESS_EXTRACTION_RUN.txt). Does not
-*& derive EDGE_KIND or otherwise interpret DEPENDENCY_TYPE - that stays
-*& downstream native processing's job, per the brief.
+*& off to ZLLD_EXTRACT_TO_DB (real logic now - see
+*& Step 1/Function Module ZLLD_EXTRACT_TO_DB.txt; renamed from the
+*& earlier ZLLD_PROCESS_EXTRACTION_RUN stub). This report's own staging
+*& forms below still do not derive EDGE_KIND or otherwise interpret
+*& DEPENDENCY_TYPE - that stays ZLLD_EXTRACT_TO_DB's job, unchanged from
+*& the original design.
 *&
 *& EXTRACT_LLD_OBJECT_DB and PROCESS_CHECKED_LLD_OBJECTS_DB below are
 *& deliberate near-duplicates of EXTRACT_LLD_OBJECT/
@@ -2047,17 +2052,18 @@ FORM stage_ddic_section USING iv_run_id    TYPE sysuuid_x16
 ENDFORM.
 
 *&---------------------------------------------------------------------*
-*&      Form  CALL_PROCESS_EXTRACTION_RUN
+*&      Form  CALL_EXTRACT_TO_DB
 *&---------------------------------------------------------------------*
-*       ZLLD_PROCESS_EXTRACTION_RUN is a stub for this brief - see
-*       Step 1/Function Module ZLLD_PROCESS_EXTRACTION_RUN.txt. Its real
-*       logic (chunking, tokenization, edge_kind derivation, graph/DDIC
-*       loading into query-ready tables) is a separate, later brief.
+*       ZLLD_EXTRACT_TO_DB (renamed from the earlier
+*       ZLLD_PROCESS_EXTRACTION_RUN stub, per
+*       step2_native_processing_brief.md) - real chunking, tokenization,
+*       edge_kind derivation, and graph/DDIC loading into query-ready
+*       tables. See Step 1/Function Module ZLLD_EXTRACT_TO_DB.txt.
 *&---------------------------------------------------------------------*
-FORM call_process_extraction_run USING iv_run_id TYPE sysuuid_x16.
+FORM call_extract_to_db USING iv_run_id TYPE sysuuid_x16.
   CLEAR: gv_db_status, gv_db_message.
 
-  CALL FUNCTION 'ZLLD_PROCESS_EXTRACTION_RUN'
+  CALL FUNCTION 'ZLLD_EXTRACT_TO_DB'
     EXPORTING
       iv_run_id  = iv_run_id
     IMPORTING

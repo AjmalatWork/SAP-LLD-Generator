@@ -164,6 +164,17 @@ DATA: gv_output_mode TYPE char4,          " 'FILE' or 'DB'
       gv_db_status   TYPE char12,
       gv_db_message  TYPE string.
 
+" TEMPORARY diagnostic capture (see DISPLAY_DB_MODE_RESULT) - staging
+" produced zero ZDCCRT_STG_DEP/_DDIC rows on the first real DB-mode run
+" against ZZBA91, so the raw JSON ZCR_GET_DEPENDENCY_OBJ_NEW/
+" Z_GET_DDIC_INFO actually return is dumped to the list to confirm or
+" refute the shape PARSE_AND_STAGE_DEPENDENCIES/STAGE_PACKAGE_DDIC
+" assume. Remove once the parser is confirmed correct against real
+" output.
+DATA: gv_debug_ddic_json TYPE string,
+      gv_debug_dep_json  TYPE string,
+      gv_debug_dep_obj   TYPE e071-obj_name.
+
 " Package-membership name index (built once per run by
 " BUILD_PACKAGE_NAME_INDEX, used by TRANSPORT_TOUCHES_PACKAGE) -
 " separate from GT_CURRENT_INVENTORY because these need per-type binary
@@ -1630,6 +1641,7 @@ FORM build_and_stage_lld_db.
   gv_extracted_count = 0.
 
   PERFORM build_package_ddic_json USING p_pack CHANGING lv_ddic_json.
+  gv_debug_ddic_json = lv_ddic_json.
   PERFORM stage_extraction_run USING gv_run_id p_pack gv_run_type gt_removed_objects.
   PERFORM stage_package_ddic USING gv_run_id lv_ddic_json.
   PERFORM process_checked_lld_objects_db.
@@ -1716,6 +1728,11 @@ FORM extract_lld_object_db USING iv_owner_type TYPE e071-object
   PERFORM build_dependency_for_object USING iv_owner_type iv_owner_name
                                            CHANGING lv_dep_json lv_skip.
   CHECK lv_skip = abap_false.
+
+  IF gv_debug_dep_obj IS INITIAL.
+    gv_debug_dep_json = lv_dep_json.
+    gv_debug_dep_obj  = iv_owner_name.
+  ENDIF.
 
   PERFORM stage_lld_object USING gv_run_id iv_owner_type iv_owner_name p_pack lt_source lv_dep_json.
   gv_extracted_count = gv_extracted_count + 1.
@@ -2152,6 +2169,54 @@ FORM display_db_mode_result.
   WRITE: / 'Objects staged:', gv_extracted_count.
   WRITE: / 'Hand-off status:', gv_db_status.
   WRITE: / 'Hand-off message:', gv_db_message.
+
+  " TEMPORARY - see GV_DEBUG_DDIC_JSON/GV_DEBUG_DEP_JSON declaration.
+  " Dumps the raw JSON actually returned by ZCR_GET_DEPENDENCY_OBJ_NEW/
+  " Z_GET_DDIC_INFO so a zero-rows-staged run can be root-caused against
+  " the real shape instead of the assumed one.
+  SKIP.
+  WRITE: / '--- DIAGNOSTIC: raw JSON (remove once parser is confirmed) ---'.
+  PERFORM dump_long_string USING 'DDIC JSON' gv_debug_ddic_json.
+  PERFORM dump_long_string USING |Dependency JSON for { gv_debug_dep_obj }| gv_debug_dep_json.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  DUMP_LONG_STRING
+*&---------------------------------------------------------------------*
+*       TEMPORARY diagnostic helper - writes IV_VALUE to the list in
+*       200-char chunks (a single WRITE of a long STRING gets truncated/
+*       wrapped unpredictably by the classical list width), capped at
+*       the first 2000 chars so one huge blob cannot flood the spool.
+*&---------------------------------------------------------------------*
+FORM dump_long_string USING iv_label TYPE string
+                             iv_value TYPE string.
+  DATA: lv_len    TYPE i,
+        lv_pos    TYPE i,
+        lv_remain TYPE i,
+        lv_chunk  TYPE string.
+
+  lv_len = strlen( iv_value ).
+  WRITE: / iv_label, '(length', lv_len, 'chars):'.
+
+  IF iv_value IS INITIAL.
+    WRITE: / '  <empty>'.
+    RETURN.
+  ENDIF.
+
+  WHILE lv_pos < lv_len AND lv_pos < 2000.
+    lv_remain = lv_len - lv_pos.
+    IF lv_remain > 200.
+      lv_chunk = substring( val = iv_value off = lv_pos len = 200 ).
+    ELSE.
+      lv_chunk = substring( val = iv_value off = lv_pos len = lv_remain ).
+    ENDIF.
+    WRITE: / lv_chunk.
+    lv_pos = lv_pos + 200.
+  ENDWHILE.
+
+  IF lv_len > 2000.
+    WRITE: / '  ... (truncated, ', lv_len - 2000, 'more chars)'.
+  ENDIF.
 ENDFORM.
 
 *&=======================================================================*

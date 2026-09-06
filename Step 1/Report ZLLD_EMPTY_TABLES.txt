@@ -1,0 +1,91 @@
+REPORT zlld_empty_tables.
+
+*&---------------------------------------------------------------------*
+*& ZLLD_EMPTY_TABLES
+*&---------------------------------------------------------------------*
+*  One-shot utility to empty all 14 ZDCCRT_* tables before a fresh test
+*  run of ZLLD_PACKAGE_EXTRACTOR / ZLLD_GET_CANDIDATES. Every DELETE is
+*  unconditional (no WHERE clause) - this clears ALL rows for ALL
+*  packages/runs in the current client, not a per-package reset.
+*
+*  Includes ZDCCRT_EKIND_MAP and ZDCCRT_CONFIG (the seed/config
+*  tables) since they are ZDCCRT_* tables too - re-run
+*  ZLLD_SEED_CONFIG_TABLES afterward, otherwise ZLLD_EXTRACT_TO_DB_F01's
+*  edge_kind derivation and ZLLD_GET_CANDIDATES' scoring weights/
+*  thresholds have nothing to read until reseeded.
+*
+*  Asks for an explicit confirmation popup before deleting anything -
+*  this is destructive and cannot be undone.
+*&---------------------------------------------------------------------*
+
+START-OF-SELECTION.
+  PERFORM confirm_and_empty_tables.
+
+*&---------------------------------------------------------------------*
+*&      Form  CONFIRM_AND_EMPTY_TABLES
+*&---------------------------------------------------------------------*
+FORM confirm_and_empty_tables.
+  DATA: lv_answer    TYPE c LENGTH 1,
+        lt_tables     TYPE STANDARD TABLE OF tabname WITH EMPTY KEY,
+        lv_total      TYPE i,
+        lv_count      TYPE i.
+
+  CALL FUNCTION 'POPUP_TO_CONFIRM'
+    EXPORTING
+      titlebar       = 'Empty all ZDCCRT_* tables'
+      text_question  = 'This deletes ALL rows from all 14 ZDCCRT_* tables (sync-state, staging, query-ready, and config/seed). This cannot be undone. Continue?'
+      text_button_1  = 'Yes, empty all'
+      text_button_2  = 'Cancel'
+      default_button = '2'
+    IMPORTING
+      answer         = lv_answer.
+
+  IF lv_answer <> '1'.
+    WRITE: / 'Cancelled - no tables were emptied.'.
+    RETURN.
+  ENDIF.
+
+  lt_tables = VALUE #(
+    ( 'ZDCCRT_SYNC_LOG'  )
+    ( 'ZDCCRT_SYNC_OBJ'  )
+    ( 'ZDCCRT_STG_RUN'   )
+    ( 'ZDCCRT_STG_OBJ'   )
+    ( 'ZDCCRT_STG_DEP'   )
+    ( 'ZDCCRT_STG_DDIC'  )
+    ( 'ZDCCRT_OBJECTS'   )
+    ( 'ZDCCRT_OBJ_CALLS' )
+    ( 'ZDCCRT_OBJ_DDREF' )
+    ( 'ZDCCRT_DDIC_OBJ'  )
+    ( 'ZDCCRT_CHUNKS'    )
+    ( 'ZDCCRT_CHUNK_TOK' )
+    ( 'ZDCCRT_EKIND_MAP' )
+    ( 'ZDCCRT_CONFIG'    )
+  ).
+
+  WRITE: / 'Emptying all ZDCCRT_* tables', /.
+
+  LOOP AT lt_tables INTO DATA(lv_tabname).
+    PERFORM empty_one_table USING lv_tabname CHANGING lv_count.
+    lv_total = lv_total + lv_count.
+    WRITE: / lv_tabname, ':', lv_count, 'row(s) deleted'.
+  ENDLOOP.
+
+  SKIP.
+  WRITE: / 'Total rows deleted:', lv_total.
+  WRITE: / 'Reminder: ZDCCRT_EKIND_MAP and ZDCCRT_CONFIG are now empty -'.
+  WRITE: / 'run ZLLD_SEED_CONFIG_TABLES again before the next extraction/retrieval run.'.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  EMPTY_ONE_TABLE
+*&---------------------------------------------------------------------*
+*       Dynamic DELETE FROM (iv_tabname) - all 14 tables share the same
+*       "delete everything, report how many rows" shape, so one generic
+*       form is used instead of 14 near-identical static DELETEs.
+*&---------------------------------------------------------------------*
+FORM empty_one_table USING iv_tabname TYPE tabname
+                      CHANGING cv_count TYPE i.
+  CLEAR cv_count.
+  DELETE FROM (iv_tabname).
+  cv_count = sy-dbcnt.
+ENDFORM.

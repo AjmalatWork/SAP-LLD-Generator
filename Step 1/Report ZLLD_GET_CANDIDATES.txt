@@ -215,13 +215,42 @@ SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.
 SELECT-OPTIONS: s_pack FOR zdccrt_objects-zpackage OBLIGATORY.
 PARAMETERS: p_req  TYPE string OBLIGATORY LOWER CASE,
             p_note TYPE string LOWER CASE,
-            p_conf TYPE char7  LOWER CASE,   " blank / UNSURE / LIKELY / CERTAIN
+            p_conf TYPE char7  AS LISTBOX VISIBLE LENGTH 20,   " blank / UNSURE / LIKELY / CERTAIN
             p_topn TYPE i DEFAULT 5,
             p_file TYPE string OBLIGATORY DEFAULT 'C:\temp\'.
 SELECTION-SCREEN END OF BLOCK b1.
 
 AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
   PERFORM f4_output_folder CHANGING p_file.
+
+INITIALIZATION.
+  PERFORM set_confidence_listbox.
+
+*&---------------------------------------------------------------------*
+*&      Form  SET_CONFIDENCE_LISTBOX
+*&---------------------------------------------------------------------*
+*       P_CONF as a dropdown (AS LISTBOX) instead of free-text entry -
+*       VRM_SET_VALUES is the standard way to populate a LISTBOX
+*       PARAMETER's fixed value list; VRM_VALUE/VRM_VALUES are plain
+*       DDIC types, no TYPE-POOLS statement needed. The blank entry
+*       ('(none)') is a real, selectable choice - VALIDATE_INPUTS still
+*       treats P_CONF = '' as "no tier" exactly as before.
+*&---------------------------------------------------------------------*
+FORM set_confidence_listbox.
+  DATA: lt_values TYPE vrm_values,
+        ls_value  TYPE vrm_value.
+
+  ls_value-key = ''.        ls_value-text = '(none)'.  APPEND ls_value TO lt_values.
+  ls_value-key = 'UNSURE'.  ls_value-text = 'UNSURE'.  APPEND ls_value TO lt_values.
+  ls_value-key = 'LIKELY'.  ls_value-text = 'LIKELY'.  APPEND ls_value TO lt_values.
+  ls_value-key = 'CERTAIN'. ls_value-text = 'CERTAIN'. APPEND ls_value TO lt_values.
+
+  CALL FUNCTION 'VRM_SET_VALUES'
+    EXPORTING
+      id     = 'P_CONF'
+    TABLES
+      values = lt_values.
+ENDFORM.
 
 *&---------------------------------------------------------------------*
 *& Main

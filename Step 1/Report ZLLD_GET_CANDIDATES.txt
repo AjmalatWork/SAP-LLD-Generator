@@ -1411,8 +1411,8 @@ FORM build_ddic_json_section CHANGING cv_ddic_json TYPE string.
   CLEAR cv_ddic_json.
   PERFORM gt_pack_names_range CHANGING lr_pack.
 
-  SELECT * FROM zdccrt_ddic_obj INTO TABLE lt_ddic
-    WHERE zpackage IN lr_pack
+  SELECT * FROM zdccrt_ddic_obj INTO TABLE @lt_ddic
+    WHERE zpackage IN @lr_pack
     ORDER BY zpackage, ddic_type, ddic_name.
 
   LOOP AT gt_pack_names INTO DATA(lv_pack).

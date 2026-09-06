@@ -101,7 +101,13 @@ TYPES: BEGIN OF ts_obj_score,
          final_score TYPE f,
          tier_label  TYPE string,
        END OF ts_obj_score,
-       tt_obj_score TYPE SORTED TABLE OF ts_obj_score WITH UNIQUE KEY object_name.
+       tt_obj_score TYPE SORTED TABLE OF ts_obj_score WITH UNIQUE KEY object_name,
+       " SORT is not allowed on a SORTED TABLE (its order is fixed by
+       " the table key, not an arbitrary BY clause) - this STANDARD
+       " TABLE variant is only for local scratch copies that need to be
+       " re-sorted by score (BUILD_UNADJUSTED_RANKING/
+       " BUILD_ADJUSTED_RANKING), never for GT_OBJ_SCORE itself.
+       tt_obj_score_std TYPE STANDARD TABLE OF ts_obj_score WITH EMPTY KEY.
 
 * Minimal (object_name, score) lookup table - used by
 * COMPUTE_SEMANTIC_SCORES to track each object's best (max) cosine
@@ -1001,7 +1007,7 @@ ENDFORM.
 *       comparison baseline for disagreement detection.
 *&---------------------------------------------------------------------*
 FORM build_unadjusted_ranking.
-  DATA lt_sorted TYPE tt_obj_score.
+  DATA lt_sorted TYPE tt_obj_score_std.
 
   CLEAR gt_unadjusted_sorted.
   lt_sorted = gt_obj_score.
@@ -1093,7 +1099,7 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 FORM build_adjusted_ranking.
   DATA: lt_universe TYPE tt_obj_score,
-        lt_sorted   TYPE tt_obj_score.
+        lt_sorted   TYPE tt_obj_score_std.
 
   CLEAR gt_adjusted_sorted.
 

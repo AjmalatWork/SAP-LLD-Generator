@@ -51,3 +51,79 @@ actually built.
    - REFRESH_SYNC_OBJECTS (in the report) deletes and re-inserts this
      package's full row set after every successful run (FULL or INCR) -
      it is a full snapshot each time, not an append-only log.
+
+===========================================================================
+DB output mode (step1_db_mode_brief.md) - STATUS: NOT YET CREATED
+===========================================================================
+Written without SAP access, like everything else in this doc originally was.
+Field names below proactively apply the ZPACKAGE convention already used for
+ZDCCRT_SYNC_LOG/OBJ (a bare PACKAGE component name was avoided there) -
+expect these names to be finalized/renamed during real SE11 creation the
+same way ZDCCRT_SYNC_LOG/OBJ's were, and this doc updated to match afterward.
+
+3) Table ZLLD_STG_RUN  ("one row per DB-mode extraction run")
+   Short text: LLD Extractor - DB-Mode Run Header
+
+   Field            Key   Data Element   Data Type   Length   Notes
+   ---------------  ----  -------------  ----------  -------  ----------------------------------
+   MANDT            X     MANDT          CLNT        3        client
+   RUN_ID           X     SYSUUID_X16    RAW         16       generated at start of DB-mode run (CL_SYSTEM_UUID)
+   ZPACKAGE               DEVCLASS       CHAR        30       package (same rename precedent as ZDCCRT_SYNC_LOG)
+   RUN_TYPE               CHAR4          CHAR        4        'FULL' or 'INCR' - from existing sync logic, unchanged
+   EXTRACTED_AT            TIMESTAMP      DEC         15       UTC timestamp (GET TIME STAMP FIELD)
+   REMOVED_OBJECTS          STRING         STRING      -        comma-separated "TYPE:NAME" list, or 'NONE' - same format/logic as the file header's REMOVED_OBJECTS line (BUILD_REMOVED_OBJECTS_LIST)
+   STATUS                    CHAR12         CHAR        12       'EXTRACTED' / 'PROCESSING' / 'PROCESSED' / 'FAILED' - report sets 'EXTRACTED'; ZLLD_PROCESS_EXTRACTION_RUN's stub sets 'STUB_OK' (fits within CHAR12)
+
+   Notes:
+   - RUN_ID is the join key across all four staging tables.
+   - VERIFY: SYSUUID_X16 as a data element name may not exist as a
+     reusable DDIC data element on your system the way DEVCLASS/CHAR4 do -
+     if SE11 rejects it, define the field directly as RAW 16 instead.
+
+4) Table ZLLD_STG_OBJECT  ("one row per staged object")
+   Short text: LLD Extractor - DB-Mode Staged Objects
+
+   Field         Key   Data Element   Data Type   Length   Notes
+   ------------  ----  -------------  ----------  -------  --------------------------------------
+   MANDT         X     MANDT          CLNT        3        client
+   RUN_ID        X     SYSUUID_X16    RAW         16
+   OBJECT_NAME   X     SEOCLSNAME     CHAR        30       widen if a real PROG/FUNC name ever exceeds this - SEOCLSNAME is a CLAS-oriented data element reused here for convenience, per the brief
+   OBJECT_TYPE         CHAR4          CHAR        4        'CLAS' / 'PROG' / 'FUNC' (E071-OBJECT's short codes, not the LLD_TYPE long name file mode's TYPE: line uses)
+   ZPACKAGE            DEVCLASS       CHAR        30
+   SOURCE              STRING         STRING      -        full source, newline-joined, exactly as GET_SOURCE_FOR_LLD_OBJECT already returns it
+
+   Notes:
+   - Same (RUN_ID, OBJECT_NAME) key as ZLLD_STG_DEPENDENCY - a run never
+     extracts the same object name twice (BUILD_UNIQUE_LLD_OBJECTS already
+     dedupes upstream), so this is a safe primary key, not just a
+     convenience.
+
+5) Table ZLLD_STG_DEPENDENCY  ("one row per dependency entry")
+   Short text: LLD Extractor - DB-Mode Staged Dependencies
+
+   Field            Key   Data Element   Data Type   Length   Notes
+   ---------------  ----  -------------  ----------  -------  ----------------------------------
+   MANDT            X     MANDT          CLNT        3        client
+   RUN_ID           X     SYSUUID_X16    RAW         16
+   OBJECT_NAME      X     SEOCLSNAME     CHAR        30       the object this dependency belongs to
+   DEPENDENCY_SEQ   X     INT4           INT4        10       preserves original array order
+   DEPENDENCY_TYPE        STRING         STRING      -        raw type exactly as ZCR_GET_DEPENDENCY_OBJ_NEW emits it - METH/OM/CLAS/TABL/etc, open vocabulary, no CHECK constraint
+   DEPENDENCY_NAME        STRING         STRING      -
+   SIGNATURE_JSON         STRING         STRING      -        kept as an opaque blob - not touched by step 2/3-equivalent scoring, only read by a later processing step
+
+6) Table ZLLD_STG_DDIC  ("one row per DDIC object referenced by the package")
+   Short text: LLD Extractor - DB-Mode Staged DDIC Info
+
+   Field         Key   Data Element   Data Type   Length   Notes
+   ------------  ----  -------------  ----------  -------  --------------------------------------
+   MANDT         X     MANDT          CLNT        3        client
+   RUN_ID        X     SYSUUID_X16    RAW         16
+   DDIC_TYPE     X     CHAR4          CHAR        4        DOMA / DTEL / TABL / STRU / TTYP
+   DDIC_NAME     X     STRING         STRING      -        VERIFY: STRING cannot be a full table key component in some releases (only the last key field may need special handling, or STRING may need to move out of the key entirely with a separate technical key) - if SE11 rejects STRING in the key, use a CHAR-length data element sized to the longest real DDIC object name instead (e.g. CHAR 30, matching DEVCLASS-scale names elsewhere in this file)
+   DETAIL_JSON             STRING         STRING      -        kept as an opaque blob for the same reason as SIGNATURE_JSON above
+
+   Notes:
+   - STAGE_PACKAGE_DDIC (in the report) uses MODIFY, not INSERT, so a
+     duplicate (RUN_ID, DDIC_TYPE, DDIC_NAME) - not expected from this
+     report's own single-package DDIC call, but cheap to guard against -
+     overwrites rather than erroring.

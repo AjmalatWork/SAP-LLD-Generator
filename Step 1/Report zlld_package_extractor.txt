@@ -22,6 +22,16 @@ REPORT zlld_package_extractor.
 *    - Table ZDCCRT_SYNC_LOG
 *    - Table ZDCCRT_SYNC_OBJ
 *
+*  REQUIRES for DB output mode (step1_db_mode_brief.md - NOT YET CREATED,
+*  see DDIC_TABLES_TO_CREATE_LLD.txt for specs to build in SE11 first):
+*    - Table ZLLD_STG_RUN
+*    - Table ZLLD_STG_OBJECT
+*    - Table ZLLD_STG_DEPENDENCY
+*    - Table ZLLD_STG_DDIC
+*    - Function module ZLLD_PROCESS_EXTRACTION_RUN (a stub for this
+*      brief - see Step 1/Function Module ZLLD_PROCESS_EXTRACTION_RUN.txt)
+*  File mode (the default) needs none of the above and is unchanged.
+*
 *  SEVERAL FM CALLS BELOW ARE FLAGGED "VERIFY" - their exact parameter
 *  names/types are written from best recollection, not from a live
 *  system, since this was built without SAP access. Check each one in
@@ -124,6 +134,16 @@ DATA: gv_run_type          TYPE char4,
       gv_new_hwm           TYPE e070-trkorr,
       gv_extracted_count   TYPE i.
 
+" DB-mode state (step1_db_mode_brief.md). GV_OUTPUT_MODE is set once at
+" the top of MAIN from the selection screen radio buttons and never
+" changes during a run - everything downstream branches on it, not on
+" P_MFILE/P_MDB directly, so there is exactly one place (MAIN) where the
+" selection-screen inputs get translated into control flow.
+DATA: gv_output_mode TYPE char4,          " 'FILE' or 'DB'
+      gv_run_id      TYPE sysuuid_x16,
+      gv_db_status   TYPE char12,
+      gv_db_message  TYPE string.
+
 " Package-membership name index (built once per run by
 " BUILD_PACKAGE_NAME_INDEX, used by TRANSPORT_TOUCHES_PACKAGE) -
 " separate from GT_CURRENT_INVENTORY because these need per-type binary
@@ -188,8 +208,34 @@ PARAMETERS: p_pack TYPE devclass OBLIGATORY,
             p_file TYPE string  OBLIGATORY DEFAULT 'C:\temp\'.
 SELECTION-SCREEN END OF BLOCK b1.
 
+* text-002: maintain via SE38 Text Elements, e.g. "Output Mode"
+* File remains the default (P_MFILE = 'X') - DB mode is opt-in, per the
+* step1_db_mode_brief.md "File mode must remain byte-for-byte identical
+* to current behavior" requirement. Nothing in MAIN branches on output
+* mode until after CALL SCREEN 9000 returns (see MAIN below) - the file
+* path executes exactly as before, with no new logic in between.
+SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE text-002.
+PARAMETERS: p_mfile RADIOBUTTON GROUP outm DEFAULT 'X',
+            p_mdb   RADIOBUTTON GROUP outm.
+PARAMETERS: p_alsofl TYPE abap_bool AS CHECKBOX DEFAULT abap_false.
+SELECTION-SCREEN END OF BLOCK b2.
+
 AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
   PERFORM f4_output_folder CHANGING p_file.
+
+*&---------------------------------------------------------------------*
+*&      "Also write file copy" is only meaningful (and only enabled)
+*&      when Database mode is selected - low-priority nice-to-have for
+*&      side-by-side debugging during the transition period, per the
+*&      brief. Standard LOOP AT SCREEN enable/disable pattern.
+*&---------------------------------------------------------------------*
+AT SELECTION-SCREEN OUTPUT.
+  LOOP AT SCREEN.
+    IF screen-name = 'P_ALSOFL'.
+      screen-input = COND #( WHEN p_mdb = abap_true THEN 1 ELSE 0 ).
+      MODIFY SCREEN.
+    ENDIF.
+  ENDLOOP.
 
 *&---------------------------------------------------------------------*
 *& Main
@@ -204,8 +250,20 @@ START-OF-SELECTION.
 *       deletion detection (always, regardless of run type), build the
 *       candidate object list, show the ALV review screen, and - once
 *       confirmed - write the LLD file and update sync state.
+*
+*       Output-mode branching (step1_db_mode_brief.md) happens ONLY
+*       after CALL SCREEN 9000 returns, at the exact point file mode
+*       already wrote its output - everything above that point (object
+*       enumeration, sync, deletion detection, the ALV review) is
+*       identical regardless of mode, and the FILE branch below calls
+*       exactly the same three forms, in the same order, that this form
+*       called unconditionally before this brief - a regression there
+*       would mean genuinely new code executing on the file path, which
+*       the brief treats as a hard requirement not to do.
 *&---------------------------------------------------------------------*
 FORM main.
+  gv_output_mode = COND #( WHEN p_mdb = abap_true THEN 'DB' ELSE 'FILE' ).
+
   PERFORM validate_package.
   CHECK gv_error = abap_false.
 
@@ -245,9 +303,32 @@ FORM main.
 
   CHECK gv_multi_cancelled = abap_false.
 
-  PERFORM build_and_write_lld_file.
-  PERFORM finalize_sync_state USING p_pack gv_run_type gv_new_hwm.
-  PERFORM download_output_file.
+  CASE gv_output_mode.
+    WHEN 'DB'.
+      PERFORM generate_run_id CHANGING gv_run_id.
+      PERFORM build_and_stage_lld_db.
+      PERFORM finalize_sync_state USING p_pack gv_run_type gv_new_hwm.
+      PERFORM call_process_extraction_run USING gv_run_id.
+      PERFORM display_db_mode_result.
+
+      " Optional debugging aid, not the primary path - re-runs the whole
+      " source/dependency extraction a second time rather than reusing
+      " what BUILD_AND_STAGE_LLD_DB already computed, since that would
+      " mean either restructuring EXTRACT_LLD_OBJECT (touching existing,
+      " already-validated extraction logic) or threading extra output
+      " parameters through it. Fine at the pilot scale this checkbox is
+      " for; not recommended against a large package on every DB-mode run.
+      IF p_alsofl = abap_true.
+        PERFORM build_and_write_lld_file.
+        PERFORM download_output_file.
+      ENDIF.
+
+    WHEN OTHERS.  " 'FILE' - the default, byte-for-byte unchanged from
+                  " before this brief.
+      PERFORM build_and_write_lld_file.
+      PERFORM finalize_sync_state USING p_pack gv_run_type gv_new_hwm.
+      PERFORM download_output_file.
+  ENDCASE.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
@@ -1312,6 +1393,32 @@ FORM build_and_write_lld_file.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
+*&      Form  BUILD_REMOVED_OBJECTS_LIST
+*&---------------------------------------------------------------------*
+*       Extracted out of APPEND_FILE_HEADER unchanged (pure refactor -
+*       same loop, same string building, same output) so DB mode's
+*       ZLLD_STG_RUN-REMOVED_OBJECTS can share the exact same
+*       "TYPE:NAME, TYPE:NAME" / "NONE" format as the file header line,
+*       without file mode's own output changing by a single character.
+*&---------------------------------------------------------------------*
+FORM build_removed_objects_list USING it_removed TYPE tt_lld_obj
+                                 CHANGING cv_list TYPE string.
+  CLEAR cv_list.
+
+  IF it_removed IS INITIAL.
+    cv_list = 'NONE'.
+  ELSE.
+    LOOP AT it_removed INTO DATA(ls_removed).
+      IF cv_list IS INITIAL.
+        cv_list = |{ ls_removed-obj_type }:{ ls_removed-obj_name }|.
+      ELSE.
+        cv_list = |{ cv_list }, { ls_removed-obj_type }:{ ls_removed-obj_name }|.
+      ENDIF.
+    ENDLOOP.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
 *&      Form  APPEND_FILE_HEADER
 *&---------------------------------------------------------------------*
 *       Written ONCE, before any object blocks. REMOVED_OBJECTS is a
@@ -1326,17 +1433,7 @@ FORM append_file_header USING iv_package   TYPE devclass
                                iv_ddic_json TYPE string.
   DATA lv_removed_list TYPE string.
 
-  IF it_removed IS INITIAL.
-    lv_removed_list = 'NONE'.
-  ELSE.
-    LOOP AT it_removed INTO DATA(ls_removed).
-      IF lv_removed_list IS INITIAL.
-        lv_removed_list = |{ ls_removed-obj_type }:{ ls_removed-obj_name }|.
-      ELSE.
-        lv_removed_list = |{ lv_removed_list }, { ls_removed-obj_type }:{ ls_removed-obj_name }|.
-      ENDIF.
-    ENDLOOP.
-  ENDIF.
+  PERFORM build_removed_objects_list USING it_removed CHANGING lv_removed_list.
 
   APPEND VALUE #( line = |RUN_TYPE: { iv_run_type }| ) TO gt_output.
   APPEND VALUE #( line = |PACKAGE: { iv_package }| ) TO gt_output.
@@ -1437,6 +1534,551 @@ FORM download_output_file.
   ELSE.
     WRITE: / 'Error downloading file. Check if the file path is valid.'.
   ENDIF.
+ENDFORM.
+
+*&=======================================================================*
+*& DB-mode output (step1_db_mode_brief.md)
+*&
+*& Stages the SAME already-computed data FILE mode writes to GT_OUTPUT -
+*& instead as rows in ZLLD_STG_RUN/_OBJECT/_DEPENDENCY/_DDIC - then hands
+*& off to ZLLD_PROCESS_EXTRACTION_RUN (a stub for this brief; see
+*& Step 1/Function Module ZLLD_PROCESS_EXTRACTION_RUN.txt). Does not
+*& derive EDGE_KIND or otherwise interpret DEPENDENCY_TYPE - that stays
+*& downstream native processing's job, per the brief.
+*&
+*& EXTRACT_LLD_OBJECT_DB and PROCESS_CHECKED_LLD_OBJECTS_DB below are
+*& deliberate near-duplicates of EXTRACT_LLD_OBJECT/
+*& PROCESS_CHECKED_LLD_OBJECTS rather than a shared, branching form -
+*& the brief's "do not touch any existing extraction logic" is honored
+*& most literally by never adding a conditional into those forms at all,
+*& even at the cost of a small amount of duplicated owner-rollup logic.
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  GENERATE_RUN_ID
+*&---------------------------------------------------------------------*
+*       CL_SYSTEM_UUID is a stable, universally-available kernel-level
+*       utility class (unlike /UI2/CL_JSON or similar add-on-dependent
+*       classes) - no VERIFY needed here.
+*&---------------------------------------------------------------------*
+FORM generate_run_id CHANGING cv_run_id TYPE sysuuid_x16.
+  TRY.
+      cv_run_id = cl_system_uuid=>create_uuid_x16_static( ).
+    CATCH cx_uuid_error.
+      CLEAR cv_run_id.
+  ENDTRY.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_AND_STAGE_LLD_DB
+*&---------------------------------------------------------------------*
+*       DB-mode mirror of BUILD_AND_WRITE_LLD_FILE. Calls the SAME
+*       BUILD_PACKAGE_DDIC_JSON (one Z_GET_DDIC_INFO call, not two) and
+*       stages its result instead of appending it to GT_OUTPUT as text.
+*&---------------------------------------------------------------------*
+FORM build_and_stage_lld_db.
+  DATA lv_ddic_json TYPE string.
+
+  gv_extracted_count = 0.
+
+  PERFORM build_package_ddic_json USING p_pack CHANGING lv_ddic_json.
+  PERFORM stage_extraction_run USING gv_run_id p_pack gv_run_type gt_removed_objects.
+  PERFORM stage_package_ddic USING gv_run_id lv_ddic_json.
+  PERFORM process_checked_lld_objects_db.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  STAGE_EXTRACTION_RUN
+*&---------------------------------------------------------------------*
+FORM stage_extraction_run USING iv_run_id   TYPE sysuuid_x16
+                                 iv_package  TYPE devclass
+                                 iv_run_type TYPE char4
+                                 it_removed  TYPE tt_lld_obj.
+  DATA: ls_stg_run TYPE zlld_stg_run,
+        lv_ts      TYPE timestamp.
+
+  GET TIME STAMP FIELD lv_ts.
+
+  ls_stg_run-run_id       = iv_run_id.
+  ls_stg_run-zpackage     = iv_package.
+  ls_stg_run-run_type     = iv_run_type.
+  ls_stg_run-extracted_at = lv_ts.
+  PERFORM build_removed_objects_list USING it_removed CHANGING ls_stg_run-removed_objects.
+  ls_stg_run-status       = 'EXTRACTED'.
+
+  INSERT zlld_stg_run FROM ls_stg_run.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  PROCESS_CHECKED_LLD_OBJECTS_DB
+*&---------------------------------------------------------------------*
+*       Deliberate near-duplicate of PROCESS_CHECKED_LLD_OBJECTS - see
+*       this section's header comment for why.
+*&---------------------------------------------------------------------*
+FORM process_checked_lld_objects_db.
+  DATA lt_owners TYPE tt_lld_obj.
+
+  gv_extracted_count = 0.
+
+  LOOP AT gt_lld_multi_obj INTO DATA(ls_multi) WHERE checked = abap_true.
+    APPEND VALUE #( obj_type = ls_multi-owner_type obj_name = ls_multi-owner_name ) TO lt_owners.
+  ENDLOOP.
+
+  SORT lt_owners BY obj_type obj_name.
+  DELETE ADJACENT DUPLICATES FROM lt_owners COMPARING obj_type obj_name.
+
+  LOOP AT lt_owners INTO DATA(ls_owner).
+    PERFORM extract_lld_object_db USING ls_owner-obj_type ls_owner-obj_name.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  EXTRACT_LLD_OBJECT_DB
+*&---------------------------------------------------------------------*
+*       Deliberate near-duplicate of EXTRACT_LLD_OBJECT - calls the SAME
+*       GET_SOURCE_FOR_LLD_OBJECT/BUILD_DEPENDENCY_FOR_OBJECT (unchanged,
+*       untouched), then stages instead of appending text. Stores the
+*       short OWNER_TYPE code (CLAS/PROG/FUNC) as OBJECT_TYPE, per the
+*       brief's staging-table spec - not the long LLD_TYPE name
+*       (PROGRAM/CLASS/FUNCTION_MODULE) file mode's output uses.
+*&---------------------------------------------------------------------*
+FORM extract_lld_object_db USING iv_owner_type TYPE e071-object
+                                  iv_owner_name TYPE e071-obj_name.
+  DATA: lt_source   TYPE tt_code_line,
+        lv_dep_json TYPE string,
+        lv_skip     TYPE abap_bool.
+
+  CASE iv_owner_type.
+    WHEN 'PROG' OR 'CLAS' OR 'FUNC'.
+      " valid - fall through
+    WHEN OTHERS.
+      RETURN.
+  ENDCASE.
+
+  PERFORM get_source_for_lld_object USING iv_owner_type iv_owner_name
+                                     CHANGING lt_source lv_skip.
+  CHECK lv_skip = abap_false.
+
+  PERFORM build_dependency_for_object USING iv_owner_type iv_owner_name
+                                           CHANGING lv_dep_json lv_skip.
+  CHECK lv_skip = abap_false.
+
+  PERFORM stage_lld_object USING gv_run_id iv_owner_type iv_owner_name p_pack lt_source lv_dep_json.
+  gv_extracted_count = gv_extracted_count + 1.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  STAGE_LLD_OBJECT
+*&---------------------------------------------------------------------*
+FORM stage_lld_object USING iv_run_id   TYPE sysuuid_x16
+                             iv_obj_type TYPE e071-object
+                             iv_obj_name TYPE e071-obj_name
+                             iv_package  TYPE devclass
+                             it_source   TYPE tt_code_line
+                             iv_dep_json TYPE string.
+  DATA ls_stg_object TYPE zlld_stg_object.
+
+  ls_stg_object-run_id      = iv_run_id.
+  ls_stg_object-object_name = iv_obj_name.
+  ls_stg_object-object_type = iv_obj_type.
+  ls_stg_object-zpackage    = iv_package.
+  PERFORM join_source_lines USING it_source CHANGING ls_stg_object-source.
+
+  INSERT zlld_stg_object FROM ls_stg_object.
+
+  PERFORM parse_and_stage_dependencies USING iv_run_id iv_obj_name iv_dep_json.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  JOIN_SOURCE_LINES
+*&---------------------------------------------------------------------*
+*       IT_SOURCE is read today exactly as GET_SOURCE_FOR_LLD_OBJECT
+*       returns it (unchanged) - this just joins it into one STRING with
+*       embedded newlines for the SOURCE column, instead of GT_OUTPUT's
+*       one-table-row-per-line shape.
+*&---------------------------------------------------------------------*
+FORM join_source_lines USING it_source TYPE tt_code_line
+                        CHANGING cv_joined TYPE string.
+  DATA lv_first TYPE abap_bool VALUE abap_true.
+
+  CLEAR cv_joined.
+
+  LOOP AT it_source INTO DATA(ls_line).
+    IF lv_first = abap_true.
+      cv_joined = ls_line-line.
+      lv_first = abap_false.
+    ELSE.
+      cv_joined = |{ cv_joined }{ cl_abap_char_utilities=>newline }{ ls_line-line }|.
+    ENDIF.
+  ENDLOOP.
+ENDFORM.
+
+*&=======================================================================*
+*& Minimal JSON walker (DB mode only)
+*&
+*& ZCR_GET_DEPENDENCY_OBJ_NEW/Z_GET_DDIC_INFO emit JSON strings, not
+*& native ABAP structures - FILE mode has always just embedded that text
+*& as-is, but ZLLD_STG_DEPENDENCY/_DDIC need DEPENDENCY_TYPE/NAME and
+*& DDIC_TYPE/NAME split into their own columns (see the brief). Rather
+*& than depend on an add-on-provided JSON library (e.g. /UI2/CL_JSON -
+*& not guaranteed present on every system, and awkward for "re-serialize
+*& this nested object as its own opaque string" which SIGNATURE_JSON/
+*& DETAIL_JSON need), this is a small, self-contained bracket-matching
+*& scanner written against the EXACT, already-confirmed real shapes (see
+*& lld_step2/parser.py on the Python side, validated against real
+*& ZZBA91 output):
+*&   dependency JSON: [{"TYPE":owner_type,"NAME":owner_name,
+*&                      "DEPENDENCIES":[{"TYPE":...,"NAME":...,
+*&                                       "SIGNATURE":{...}?}, ...]}]
+*&   DDIC JSON:        {"PACKAGES":[{"DOMAIN":[{"NAME":...,...}],
+*&                      "DATA_ELEMENT":[...],"TABLE":[...],
+*&                      "STRUCTURE":[...],"TABLE_TYPE":[...]}]}
+*& VERIFY: this has not been run against a live system - the shapes
+*& above are confirmed from real extraction output already processed by
+*& this project's Python side, not from a live ABAP test of this scanner
+*& itself. Test against a real, non-trivial dependency JSON (multiple
+*& entries, at least one WITH a SIGNATURE and one WITHOUT) before
+*& trusting DB mode's staged rows.
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  FIND_MATCHING_BRACKET
+*&---------------------------------------------------------------------*
+*       Given IV_JSON and IV_OPEN_POS pointing at a '{' or '[', returns
+*       the offset of its matching closing bracket, correctly skipping
+*       brackets that appear inside quoted string values (tracking
+*       "in a string" state and backslash-escaping so an escaped quote
+*       doesn't end the string early). Returns -1 if unmatched.
+*&---------------------------------------------------------------------*
+FORM find_matching_bracket USING iv_json     TYPE string
+                                  iv_open_pos TYPE i
+                            CHANGING cv_close_pos TYPE i.
+  DATA: lv_len        TYPE i,
+        lv_pos        TYPE i,
+        lv_depth      TYPE i,
+        lv_open_char  TYPE c LENGTH 1,
+        lv_close_char TYPE c LENGTH 1,
+        lv_char       TYPE c LENGTH 1,
+        lv_in_string  TYPE abap_bool,
+        lv_escaped    TYPE abap_bool.
+
+  cv_close_pos = -1.
+  lv_len = strlen( iv_json ).
+  CHECK iv_open_pos >= 0 AND iv_open_pos < lv_len.
+
+  lv_open_char = substring( val = iv_json off = iv_open_pos len = 1 ).
+  CASE lv_open_char.
+    WHEN '{'. lv_close_char = '}'.
+    WHEN '['. lv_close_char = ']'.
+    WHEN OTHERS. RETURN.
+  ENDCASE.
+
+  lv_depth     = 0.
+  lv_in_string = abap_false.
+  lv_escaped   = abap_false.
+
+  DO lv_len - iv_open_pos TIMES.
+    lv_pos  = iv_open_pos + sy-index - 1.
+    lv_char = substring( val = iv_json off = lv_pos len = 1 ).
+
+    IF lv_in_string = abap_true.
+      IF lv_escaped = abap_true.
+        lv_escaped = abap_false.
+      ELSEIF lv_char = '\'.
+        lv_escaped = abap_true.
+      ELSEIF lv_char = '"'.
+        lv_in_string = abap_false.
+      ENDIF.
+      CONTINUE.
+    ENDIF.
+
+    IF lv_char = '"'.
+      lv_in_string = abap_true.
+    ELSEIF lv_char = lv_open_char.
+      lv_depth = lv_depth + 1.
+    ELSEIF lv_char = lv_close_char.
+      lv_depth = lv_depth - 1.
+      IF lv_depth = 0.
+        cv_close_pos = lv_pos.
+        RETURN.
+      ENDIF.
+    ENDIF.
+  ENDDO.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  STRIP_OUTER_JSON_ARRAY
+*&---------------------------------------------------------------------*
+*       Returns the substring strictly between a JSON string's first '['
+*       and that bracket's matching ']', regardless of surrounding
+*       whitespace - i.e. "[ {\"A\":1}, {\"A\":2} ]" -> " {\"A\":1},
+*       {\"A\":2} " (untrimmed; SPLIT_JSON_TOP_LEVEL_ELEMENTS below
+*       skips non-bracket characters on its own, so leading/trailing
+*       whitespace here is harmless).
+*&---------------------------------------------------------------------*
+FORM strip_outer_json_array USING iv_json TYPE string
+                             CHANGING cv_inner TYPE string.
+  DATA: lv_open  TYPE i,
+        lv_close TYPE i.
+
+  CLEAR cv_inner.
+
+  FIND FIRST OCCURRENCE OF '[' IN iv_json MATCH OFFSET lv_open.
+  CHECK sy-subrc = 0.
+
+  PERFORM find_matching_bracket USING iv_json lv_open CHANGING lv_close.
+  CHECK lv_close > lv_open.
+
+  cv_inner = substring( val = iv_json off = lv_open + 1 len = lv_close - lv_open - 1 ).
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  SPLIT_JSON_TOP_LEVEL_ELEMENTS
+*&---------------------------------------------------------------------*
+*       Splits an array's inner body (as returned by
+*       STRIP_OUTER_JSON_ARRAY) into its top-level '{...}'/'[...]'
+*       element substrings, skipping commas/whitespace between them.
+*       Every element this report's two known JSON shapes ever contain
+*       is itself an object, never a bare scalar.
+*&---------------------------------------------------------------------*
+FORM split_json_top_level_elements USING iv_array_body TYPE string
+                                    CHANGING ct_elements TYPE string_table.
+  DATA: lv_len   TYPE i,
+        lv_pos   TYPE i,
+        lv_close TYPE i,
+        lv_char  TYPE c LENGTH 1.
+
+  CLEAR ct_elements.
+  lv_len = strlen( iv_array_body ).
+  lv_pos = 0.
+
+  WHILE lv_pos < lv_len.
+    lv_char = substring( val = iv_array_body off = lv_pos len = 1 ).
+    IF lv_char = '{' OR lv_char = '['.
+      PERFORM find_matching_bracket USING iv_array_body lv_pos CHANGING lv_close.
+      IF lv_close < lv_pos.
+        EXIT.  " unmatched bracket - malformed input, stop rather than loop forever
+      ENDIF.
+      APPEND substring( val = iv_array_body off = lv_pos len = lv_close - lv_pos + 1 ) TO ct_elements.
+      lv_pos = lv_close + 1.
+    ELSE.
+      lv_pos = lv_pos + 1.
+    ENDIF.
+  ENDWHILE.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  EXTRACT_JSON_STRING_FIELD
+*&---------------------------------------------------------------------*
+*       Extracts a simple string-valued field (e.g. "TYPE":"METH",
+*       "NAME":"FOO") from one JSON object's raw text. Unescapes \" and
+*       \\ only - real dependency/DDIC TYPE and NAME values are ABAP
+*       identifiers and never contain other JSON escapes in practice.
+*       VERIFY if a NAME value is ever found to legitimately need fuller
+*       JSON unescaping (e.g. \uXXXX).
+*&---------------------------------------------------------------------*
+FORM extract_json_string_field USING iv_json_obj TYPE string
+                                      iv_field    TYPE string
+                                CHANGING cv_value TYPE string.
+  DATA: lv_regex TYPE string,
+        lv_raw   TYPE string.
+
+  CLEAR cv_value.
+
+  lv_regex = |"{ iv_field }"\s*:\s*"((?:[^"\\]|\\.)*)"|.
+
+  FIND REGEX lv_regex IN iv_json_obj SUBMATCHES lv_raw.
+  CHECK sy-subrc = 0.
+
+  REPLACE ALL OCCURRENCES OF '\"' IN lv_raw WITH '"'.
+  REPLACE ALL OCCURRENCES OF '\\' IN lv_raw WITH '\'.
+  cv_value = lv_raw.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  EXTRACT_JSON_RAW_FIELD
+*&---------------------------------------------------------------------*
+*       Extracts a nested object/array-valued field (e.g. "SIGNATURE":
+*       {...}, "DEPENDENCIES":[...], "PACKAGES":[...]) as its exact raw
+*       JSON substring, unparsed - this is what lets SIGNATURE_JSON/
+*       DETAIL_JSON stay opaque blobs per the brief, without needing a
+*       full JSON-to-ABAP deserializer. Blank if the field is absent or
+*       is not itself an object/array (the two real callers of this form
+*       never expect a bare scalar here).
+*&---------------------------------------------------------------------*
+FORM extract_json_raw_field USING iv_json_obj TYPE string
+                                   iv_field    TYPE string
+                             CHANGING cv_raw   TYPE string.
+  DATA: lv_regex     TYPE string,
+        lv_key_end   TYPE i,
+        lv_match_len TYPE i,
+        lv_scan_pos  TYPE i,
+        lv_close_pos TYPE i,
+        lv_char      TYPE c LENGTH 1.
+
+  CLEAR cv_raw.
+
+  lv_regex = |"{ iv_field }"\s*:\s*|.
+  FIND REGEX lv_regex IN iv_json_obj MATCH OFFSET lv_key_end MATCH LENGTH lv_match_len.
+  CHECK sy-subrc = 0.
+
+  lv_scan_pos = lv_key_end + lv_match_len.
+  CHECK lv_scan_pos < strlen( iv_json_obj ).
+  lv_char = substring( val = iv_json_obj off = lv_scan_pos len = 1 ).
+
+  CHECK lv_char = '{' OR lv_char = '['.
+
+  PERFORM find_matching_bracket USING iv_json_obj lv_scan_pos CHANGING lv_close_pos.
+  CHECK lv_close_pos >= lv_scan_pos.
+
+  cv_raw = substring( val = iv_json_obj off = lv_scan_pos len = lv_close_pos - lv_scan_pos + 1 ).
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  PARSE_AND_STAGE_DEPENDENCIES
+*&---------------------------------------------------------------------*
+*       IV_DEP_JSON is exactly what BUILD_DEPENDENCY_FOR_OBJECT already
+*       returned (unchanged) - this only walks it. Per
+*       ZCR_GET_DEPENDENCY_OBJ_NEW's per-object contract (see
+*       BUILD_DEPENDENCY_FOR_OBJECT's own comment), the outer array has
+*       exactly one entry; only that first entry is read.
+*&---------------------------------------------------------------------*
+FORM parse_and_stage_dependencies USING iv_run_id   TYPE sysuuid_x16
+                                         iv_obj_name TYPE e071-obj_name
+                                         iv_dep_json TYPE string.
+  DATA: lv_outer_body    TYPE string,
+        lt_outer_entries TYPE string_table,
+        lv_deps_raw      TYPE string,
+        lt_dep_entries   TYPE string_table,
+        lv_seq           TYPE i,
+        ls_stg_dep       TYPE zlld_stg_dependency.
+
+  CHECK iv_dep_json IS NOT INITIAL.
+
+  PERFORM strip_outer_json_array USING iv_dep_json CHANGING lv_outer_body.
+  PERFORM split_json_top_level_elements USING lv_outer_body CHANGING lt_outer_entries.
+
+  READ TABLE lt_outer_entries INTO DATA(lv_outer_entry) INDEX 1.
+  CHECK sy-subrc = 0.
+
+  PERFORM extract_json_raw_field USING lv_outer_entry 'DEPENDENCIES' CHANGING lv_deps_raw.
+  CHECK lv_deps_raw IS NOT INITIAL.
+
+  PERFORM strip_outer_json_array USING lv_deps_raw CHANGING lv_deps_raw.
+  PERFORM split_json_top_level_elements USING lv_deps_raw CHANGING lt_dep_entries.
+
+  lv_seq = 0.
+  LOOP AT lt_dep_entries INTO DATA(lv_dep_entry).
+    lv_seq = lv_seq + 1.
+
+    CLEAR ls_stg_dep.
+    ls_stg_dep-run_id         = iv_run_id.
+    ls_stg_dep-object_name    = iv_obj_name.
+    ls_stg_dep-dependency_seq = lv_seq.
+
+    PERFORM extract_json_string_field USING lv_dep_entry 'TYPE' CHANGING ls_stg_dep-dependency_type.
+    PERFORM extract_json_string_field USING lv_dep_entry 'NAME' CHANGING ls_stg_dep-dependency_name.
+    PERFORM extract_json_raw_field    USING lv_dep_entry 'SIGNATURE' CHANGING ls_stg_dep-signature_json.
+
+    INSERT zlld_stg_dependency FROM ls_stg_dep.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  STAGE_PACKAGE_DDIC
+*&---------------------------------------------------------------------*
+*       IV_DDIC_JSON is exactly what BUILD_PACKAGE_DDIC_JSON already
+*       returned (unchanged) - this only walks it.
+*&---------------------------------------------------------------------*
+FORM stage_package_ddic USING iv_run_id    TYPE sysuuid_x16
+                               iv_ddic_json TYPE string.
+  DATA: lv_packages_body TYPE string,
+        lt_pkg_entries   TYPE string_table.
+
+  CHECK iv_ddic_json IS NOT INITIAL.
+
+  PERFORM extract_json_raw_field USING iv_ddic_json 'PACKAGES' CHANGING lv_packages_body.
+  CHECK lv_packages_body IS NOT INITIAL.
+
+  PERFORM strip_outer_json_array USING lv_packages_body CHANGING lv_packages_body.
+  PERFORM split_json_top_level_elements USING lv_packages_body CHANGING lt_pkg_entries.
+
+  LOOP AT lt_pkg_entries INTO DATA(lv_pkg_entry).
+    PERFORM stage_ddic_section USING iv_run_id lv_pkg_entry 'DOMAIN'       'DOMA'.
+    PERFORM stage_ddic_section USING iv_run_id lv_pkg_entry 'DATA_ELEMENT' 'DTEL'.
+    PERFORM stage_ddic_section USING iv_run_id lv_pkg_entry 'TABLE'        'TABL'.
+    PERFORM stage_ddic_section USING iv_run_id lv_pkg_entry 'STRUCTURE'    'STRU'.
+    PERFORM stage_ddic_section USING iv_run_id lv_pkg_entry 'TABLE_TYPE'   'TTYP'.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  STAGE_DDIC_SECTION
+*&---------------------------------------------------------------------*
+FORM stage_ddic_section USING iv_run_id    TYPE sysuuid_x16
+                               iv_pkg_entry TYPE string
+                               iv_section   TYPE string
+                               iv_ddic_type TYPE char4.
+  DATA: lv_section_body TYPE string,
+        lt_entries      TYPE string_table,
+        ls_stg_ddic     TYPE zlld_stg_ddic.
+
+  PERFORM extract_json_raw_field USING iv_pkg_entry iv_section CHANGING lv_section_body.
+  CHECK lv_section_body IS NOT INITIAL.
+
+  PERFORM strip_outer_json_array USING lv_section_body CHANGING lv_section_body.
+  PERFORM split_json_top_level_elements USING lv_section_body CHANGING lt_entries.
+
+  LOOP AT lt_entries INTO DATA(lv_entry).
+    CLEAR ls_stg_ddic.
+    ls_stg_ddic-run_id    = iv_run_id.
+    ls_stg_ddic-ddic_type = iv_ddic_type.
+    PERFORM extract_json_string_field USING lv_entry 'NAME' CHANGING ls_stg_ddic-ddic_name.
+    CHECK ls_stg_ddic-ddic_name IS NOT INITIAL.
+    ls_stg_ddic-detail_json = lv_entry.
+
+    " MODIFY, not INSERT: cheap insurance against the same DDIC object
+    " appearing more than once (e.g. a future multi-package-scoped DDIC
+    " blob) colliding on ZLLD_STG_DDIC's (RUN_ID, DDIC_TYPE, DDIC_NAME)
+    " key - not expected from this report's own single-package
+    " BUILD_PACKAGE_DDIC_JSON call, but harmless either way.
+    MODIFY zlld_stg_ddic FROM ls_stg_ddic.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  CALL_PROCESS_EXTRACTION_RUN
+*&---------------------------------------------------------------------*
+*       ZLLD_PROCESS_EXTRACTION_RUN is a stub for this brief - see
+*       Step 1/Function Module ZLLD_PROCESS_EXTRACTION_RUN.txt. Its real
+*       logic (chunking, tokenization, edge_kind derivation, graph/DDIC
+*       loading into query-ready tables) is a separate, later brief.
+*&---------------------------------------------------------------------*
+FORM call_process_extraction_run USING iv_run_id TYPE sysuuid_x16.
+  CLEAR: gv_db_status, gv_db_message.
+
+  CALL FUNCTION 'ZLLD_PROCESS_EXTRACTION_RUN'
+    EXPORTING
+      iv_run_id  = iv_run_id
+    IMPORTING
+      ev_status  = gv_db_status
+      ev_message = gv_db_message.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  DISPLAY_DB_MODE_RESULT
+*&---------------------------------------------------------------------*
+*       Simple confirmation, not a new complex UI, per the brief - this
+*       confirms the DB-mode path executed, staged data, and
+*       successfully handed off, without claiming anything was actually
+*       processed into a usable graph yet.
+*&---------------------------------------------------------------------*
+FORM display_db_mode_result.
+  WRITE: / 'DB-mode extraction complete.'.
+  WRITE: / 'Run ID:', gv_run_id.
+  WRITE: / 'Objects staged:', gv_extracted_count.
+  WRITE: / 'Hand-off status:', gv_db_status.
+  WRITE: / 'Hand-off message:', gv_db_message.
 ENDFORM.
 
 *&=======================================================================*

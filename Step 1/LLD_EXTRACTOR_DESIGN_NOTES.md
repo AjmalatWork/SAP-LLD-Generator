@@ -180,3 +180,118 @@ Run these against a real test package once activated:
 | `ZCR_GET_DEPENDENCY_OBJ_NEW`, `ZCR_GET_OBJECT_SIGNATURE`, `Z_GET_DDIC_INFO` | unchanged, called as-is |
 | `BUILD_OBJECT_LIST_FROM_PACKAGE` | new, but composed entirely from the reused single-object builders above |
 | Everything else (sync-state, deletion detection, owner rollup, whole-object source/dependency reading, LLD output writer, trimmed ALV) | new |
+| `GET_SOURCE_FOR_LLD_OBJECT`, `BUILD_DEPENDENCY_FOR_OBJECT`, `BUILD_PACKAGE_DDIC_JSON`, `PROCESS_CHECKED_LLD_OBJECTS`, `EXTRACT_LLD_OBJECT` | reused verbatim by DB mode (see below) |
+| `APPEND_FILE_HEADER` | lightly refactored (removed-objects-list logic extracted to `BUILD_REMOVED_OBJECTS_LIST`) - output unchanged, see "DB output mode" below |
+| `MAIN` | lightly modified - output-mode branching added after `CALL SCREEN 9000` returns, file path unchanged, see "DB output mode" below |
+| DB-mode staging + JSON walker forms (`GENERATE_RUN_ID` through `DISPLAY_DB_MODE_RESULT`) | new, see "DB output mode" below |
+
+## DB output mode (`step1_db_mode_brief.md`)
+
+**Written without SAP access, same caveat as everything above.** Nothing in this
+section has been syntax-checked, activated, or run.
+
+### What to do before activating DB mode
+
+1. Create the four staging tables (`ZLLD_STG_RUN`/`_OBJECT`/`_DEPENDENCY`/`_DDIC`) —
+   see `DDIC_TABLES_TO_CREATE_LLD.txt`'s new section. **Not created yet** — File mode
+   needs none of this and works exactly as before regardless.
+2. Create function module `ZLLD_PROCESS_EXTRACTION_RUN` in SE37 matching
+   `Function Module ZLLD_PROCESS_EXTRACTION_RUN.txt`'s interface exactly.
+3. Maintain text element `text-002` (the new selection-screen block title) via SE38
+   Text Elements — e.g. "Output Mode".
+4. Work through "New assumptions to verify" below before trusting DB-mode output.
+
+### New assumptions to verify against the real system
+
+1. **The hand-rolled JSON walker (`FIND_MATCHING_BRACKET` through
+   `STAGE_PACKAGE_DDIC`) has never run against a live system.** The two JSON shapes
+   it assumes are confirmed real (validated by this project's Python side against
+   actual `ZZBA91` output — see `sap_lld_step2/lld_step2/parser.py`), but the ABAP
+   scanner itself is new, untested code. Test against a real, non-trivial dependency
+   JSON (multiple entries, at least one with a `SIGNATURE` and one without) before
+   trusting `ZLLD_STG_DEPENDENCY`/`ZLLD_STG_DDIC` rows. If parsing breaks, the most
+   likely culprits, in order: (a) a JSON shape difference from what `parser.py`
+   assumed (unlikely — that's already validated against real output, but re-check
+   if `ZCR_GET_DEPENDENCY_OBJ_NEW`/`Z_GET_DDIC_INFO` output ever changes), (b) an
+   ABAP string-offset-by-one error in `FIND_MATCHING_BRACKET` or
+   `SPLIT_JSON_TOP_LEVEL_ELEMENTS`, (c) a `NAME`/`TYPE` value containing a
+   `SIGNATURE_JSON` unescaping edge case `EXTRACT_JSON_STRING_FIELD` doesn't handle
+   (see its own "VERIFY" comment).
+2. **`CL_SYSTEM_UUID=>CREATE_UUID_X16_STATIC` exists and returns a value assignable
+   to `SYSUUID_X16`.** This is a stable, kernel-level SAP class with no known
+   version dependency, unlike an add-on library — low risk, but still unconfirmed
+   on this specific system.
+3. **`SYSUUID_X16` as a reusable DDIC data element.** If SE11 doesn't have it
+   available the way `DEVCLASS`/`CHAR4` are, define the field directly as `RAW 16`
+   instead — see the note in `DDIC_TABLES_TO_CREATE_LLD.txt`.
+4. **`STRING` as a table key component (`ZLLD_STG_DDIC-DDIC_NAME`).** Some
+   ECC/S4 releases restrict which data types can participate in a table key. If
+   SE11 rejects this, switch `DDIC_NAME` to a `CHAR`-length data element instead
+   (see the note in `DDIC_TABLES_TO_CREATE_LLD.txt`).
+
+### Design decisions worth knowing about (not silently made)
+
+- **`EXTRACT_LLD_OBJECT_DB`/`PROCESS_CHECKED_LLD_OBJECTS_DB` are deliberate
+  near-duplicates**, not a shared form with a mode branch inside it. The brief's
+  "do not touch any existing extraction logic" is honored most literally by never
+  adding a conditional into `EXTRACT_LLD_OBJECT`/`PROCESS_CHECKED_LLD_OBJECTS` at
+  all — the small owner-rollup duplication this costs is worth that guarantee.
+  Both duplicates call the exact same, unmodified
+  `GET_SOURCE_FOR_LLD_OBJECT`/`BUILD_DEPENDENCY_FOR_OBJECT`.
+- **"Also write file copy" re-runs source/dependency extraction a second time**
+  rather than reusing what DB-mode staging already computed. Avoiding that would
+  mean threading extra output parameters through `EXTRACT_LLD_OBJECT` or otherwise
+  touching it. Fine at the pilot scale the brief describes this checkbox for
+  ("side-by-side debugging during the transition period"); not recommended against
+  a large package on every routine DB-mode run.
+- **`APPEND_FILE_HEADER`'s removed-objects-list logic was extracted into
+  `BUILD_REMOVED_OBJECTS_LIST`, called by both file and DB mode.** This is a
+  behavior-preserving refactor — same loop, same string, same output — not new
+  logic; done so `ZLLD_STG_RUN.REMOVED_OBJECTS` matches the file header's
+  `REMOVED_OBJECTS:` line format exactly, character for character, without
+  duplicating the loop.
+- **`ZLLD_STG_OBJECT.OBJECT_TYPE` stores the short E071 code (`CLAS`/`PROG`/`FUNC`)**,
+  not the long `LLD_TYPE` name (`CLASS`/`PROGRAM`/`FUNCTION_MODULE`) file mode's
+  `TYPE:` line uses — matching the brief's literal table spec. A future native
+  processing step reading this table needs to know this if it ever needs to compare
+  against file-mode output.
+- **`STAGE_PACKAGE_DDIC`/`STAGE_DDIC_SECTION` use `MODIFY`, not `INSERT`**, as cheap
+  insurance against a duplicate `(RUN_ID, DDIC_TYPE, DDIC_NAME)` — not expected from
+  this report's own single-package `BUILD_PACKAGE_DDIC_JSON` call, but harmless
+  either way.
+- **`edge_kind` is not derived anywhere in DB mode**, per the brief — `DEPENDENCY_TYPE`
+  is staged exactly as `ZCR_GET_DEPENDENCY_OBJ_NEW` emits it, open vocabulary, no
+  `CHECK` constraint, matching step 2's own treatment of this same field.
+
+## Acceptance criteria — DB-mode test plan
+
+Run these against a real test package once the four tables and the stub FM exist:
+
+1. **File-mode regression: byte-for-byte match against a known-good prior run.**
+   Run `ZLLD_PACKAGE_EXTRACTOR` in File mode against the same test package used for
+   a prior validated run (`ZZBA91`, per the step 2 real-format validation work), and
+   diff the two output files directly (`fc`/`diff`/equivalent). They must be
+   byte-for-byte identical except for `EXTRACTED_AT` (the only field expected to
+   differ between two runs). This is the primary regression check for this brief —
+   show the diff, don't just assert it passed.
+2. **First (`FULL`) DB-mode run against `ZZBA91`.** Confirm staged row counts match
+   already-established ground truth exactly: 23 rows in `ZLLD_STG_OBJECT`, 474 rows
+   in `ZLLD_STG_DEPENDENCY`, 263 rows in `ZLLD_STG_DDIC` — the same numbers already
+   confirmed for this package via the file-mode/step 2 pipeline. A mismatch here
+   points at the JSON walker (assumption #1 above), not at extraction itself, since
+   the underlying `ZCR_GET_DEPENDENCY_OBJ_NEW`/`Z_GET_DDIC_INFO` calls are unchanged
+   and already validated.
+3. **Subsequent `INCREMENTAL` DB-mode run.** Confirm `ZLLD_STG_RUN.REMOVED_OBJECTS`
+   and the staged object subset match the same incremental-sync behavior already
+   validated for file mode (see the existing test plan above, items 2-4) — this
+   only checks that the same, unmodified sync logic now also flows correctly down
+   the DB-mode path, not new sync behavior.
+4. **Hand-off contract.** Confirm `ZLLD_PROCESS_EXTRACTION_RUN` is actually called,
+   returns `ev_status = 'STUB_OK'`, and that status/message surfaces correctly via
+   `DISPLAY_DB_MODE_RESULT`. Separately confirm the `ZLLD_STG_RUN` row's own
+   `STATUS` column was updated to `'STUB_OK'` by the stub (a DB check, not something
+   visible from the confirmation screen alone).
+5. **"Also write file copy" (if built).** With DB mode + the checkbox both selected,
+   confirm both a DB-mode result screen AND a downloaded file appear, and that the
+   file's content matches what a plain File-mode run against the same package would
+   produce (same caveat as #1 — `EXTRACTED_AT` aside).

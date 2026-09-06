@@ -228,10 +228,27 @@ section has been syntax-checked, activated, or run.
 3. **`SYSUUID_X16` as a reusable DDIC data element.** If SE11 doesn't have it
    available the way `DEVCLASS`/`CHAR4` are, define the field directly as `RAW 16`
    instead — see the note in `DDIC_TABLES_TO_CREATE_LLD.txt`.
-4. **`STRING` as a table key component (`ZLLD_STG_DDIC-DDIC_NAME`).** Some
-   ECC/S4 releases restrict which data types can participate in a table key. If
-   SE11 rejects this, switch `DDIC_NAME` to a `CHAR`-length data element instead
-   (see the note in `DDIC_TABLES_TO_CREATE_LLD.txt`).
+4. ~~`STRING` as a table key component (`ZLLD_STG_DDIC-DDIC_NAME`)~~ — **confirmed
+   rejected** on the real system (this system does not allow `STRING`/`RAWSTRING` in
+   any table key, not just this one field). Fixed throughout
+   `DDIC_TABLES_TO_CREATE_LLD.txt`: every key field that was `STRING` is now a
+   `CHAR`-length data element instead (`ZLLD_STG_DDIC-DDIC_NAME`,
+   `ZLLD_OBJ_CALLS-TARGET_OBJECT`/`DEPENDENCY_TYPE`,
+   `ZLLD_OBJ_DDIC_REF-DDIC_OBJECT_NAME`, `ZLLD_DDIC_OBJECTS-NAME`,
+   `ZLLD_CHUNK_TOKENS-TOKEN`, `ZLLD_EDGE_KIND_MAP-DEPENDENCY_TYPE`,
+   `ZLLD_CONFIG-CONFIG_KEY`). No ABAP source changes were needed anywhere for this —
+   every affected field is read/written exclusively through dictionary-typed
+   structures (`TYPE zlld_obj_calls`, `TYPE zlld_edge_kind_map`, etc.), so the field's
+   ABAP type follows whatever SE11 now says automatically; ABAP's implicit
+   `STRING`↔`CHAR(n)` conversion (including Open SQL's automatic trailing-blank trim
+   when reading a `CHAR` column into a `STRING` variable) makes every existing
+   `PERFORM`/`SELECT`/comparison still correct without modification. `ZLLD_OBJ_CALLS`
+   and `ZLLD_EDGE_KIND_MAP`'s `DEPENDENCY_TYPE` were deliberately given the exact same
+   `CHAR 10` type (not independently chosen lengths) so a future retrieval-report join
+   between them stays type-consistent, not just individually SE11-legal. Non-key
+   `STRING` fields (`SOURCE`, `SIGNATURE_JSON`, `DETAIL_JSON`, `CONFIG_VALUE`,
+   `ERROR_MESSAGE`, `REMOVED_OBJECTS`) are unaffected — this system's restriction is
+   specifically on key fields, not `STRING` columns in general.
 
 ### Design decisions worth knowing about (not silently made)
 

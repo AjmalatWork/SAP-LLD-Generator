@@ -123,7 +123,7 @@ same way ZDCCRT_SYNC_LOG/OBJ's were, and this doc updated to match afterward.
    MANDT         X     MANDT          CLNT        3        client
    RUN_ID        X     SYSUUID_X16    RAW         16
    DDIC_TYPE     X     CHAR4          CHAR        4        DOMA / DTEL / TABL / STRU / TTYP
-   DDIC_NAME     X     STRING         STRING      -        VERIFY: STRING cannot be a full table key component in some releases (only the last key field may need special handling, or STRING may need to move out of the key entirely with a separate technical key) - if SE11 rejects STRING in the key, use a CHAR-length data element sized to the longest real DDIC object name instead (e.g. CHAR 30, matching DEVCLASS-scale names elsewhere in this file)
+   DDIC_NAME     X     CHAR30         CHAR        30       CONFIRMED: this system rejects STRING as a table key component - real DDIC object names are max 30 chars anyway (same scale as DEVCLASS elsewhere in this file), so CHAR 30 loses nothing
    DETAIL_JSON             STRING         STRING      -        kept as an opaque blob for the same reason as SIGNATURE_JSON above
 
    Notes:
@@ -160,8 +160,8 @@ ZLLD_RETRIEVE_CANDIDATES queries - none of them are staging tables.
    ---------------  ----  -------------  ----------  -------  ----------------------------------
    MANDT            X     MANDT          CLNT        3        client
    SOURCE_OBJECT    X     SEOCLSNAME     CHAR        30       the object the dependency belongs to
-   TARGET_OBJECT    X     STRING         STRING      -        no FK - may be external/unresolved, same open-vocabulary approach as the Python schema; VERIFY STRING-in-key the same way as ZLLD_STG_DDIC-DDIC_NAME above
-   DEPENDENCY_TYPE  X     STRING         STRING      -        raw type exactly as staged - open vocabulary
+   TARGET_OBJECT    X     CHAR60         CHAR        60       no FK - may be external/unresolved, same open-vocabulary approach as the Python schema; CHAR 60 (not 30) because a METH-type dependency name is CLSNAME(30)+METHNAME(up to 30) concatenated with no separator - see ZLLD_EXTRACT_TO_DB_F01's ADD_CLASS_METHODS-style name-building
+   DEPENDENCY_TYPE  X     CHAR10         CHAR        10       raw type exactly as staged - open vocabulary; CHAR 10 matches ZLLD_EDGE_KIND_MAP-DEPENDENCY_TYPE below exactly (real types observed are all <=4 chars, so this also keeps the two tables' join-friendly for a future retrieval report)
    EDGE_KIND              STRING         STRING      -        normalized, via ZLLD_EDGE_KIND_MAP
    SIGNATURE_JSON          STRING         STRING      -        copied through verbatim from ZLLD_STG_DEPENDENCY, never parsed by ZLLD_EXTRACT_TO_DB
 
@@ -184,7 +184,7 @@ ZLLD_RETRIEVE_CANDIDATES queries - none of them are staging tables.
    MANDT             X     MANDT          CLNT        3        client
    OBJECT_NAME       X     SEOCLSNAME     CHAR        30
    DDIC_TYPE         X     CHAR4          CHAR        4        DOMA / DTEL / TABL / STRU / TTYP
-   DDIC_OBJECT_NAME  X     STRING         STRING      -        VERIFY STRING-in-key, same as above
+   DDIC_OBJECT_NAME  X     CHAR30         CHAR        30       CONFIRMED: STRING rejected in keys on this system - real DDIC object names are max 30 chars, same as ZLLD_STG_DDIC-DDIC_NAME above
 
    Notes:
    - Populated for EVERY DDIC-shaped dependency type, not just TABL -
@@ -203,7 +203,7 @@ ZLLD_RETRIEVE_CANDIDATES queries - none of them are staging tables.
     MANDT         X     MANDT          CLNT        3        client
     PACKAGE       X     DEVCLASS       CHAR        30
     DDIC_TYPE     X     CHAR4          CHAR        4        DOMA / DTEL / TABL / STRU / TTYP
-    NAME          X     STRING         STRING      -        VERIFY STRING-in-key, same as above
+    NAME          X     CHAR30         CHAR        30       CONFIRMED: STRING rejected in keys on this system - real DDIC object names are max 30 chars, same as above
     DETAIL_JSON         STRING         STRING      -        copied through verbatim from ZLLD_STG_DDIC
 
     Notes:
@@ -230,7 +230,7 @@ ZLLD_RETRIEVE_CANDIDATES queries - none of them are staging tables.
     Field            Key   Data Element   Data Type   Length   Notes
     ---------------  ----  -------------  ----------  -------  ----------------------------------
     MANDT            X     MANDT          CLNT        3        client
-    TOKEN            X     STRING         STRING      -        lowercased, stopword-filtered; VERIFY STRING-in-key, same as above
+    TOKEN            X     CHAR40         CHAR        40       lowercased, stopword-filtered; CONFIRMED: STRING rejected in keys on this system - CHAR 40 covers any realistic lexical token (ABAP identifier fragments are rarely longer), a token that legitimately exceeds this is silently truncated on insert - acceptable for a lexical-scoring feature, not an identifier used for lookups elsewhere
     CHUNK_ID         X     SYSUUID_X16    RAW         16
     TERM_FREQUENCY         I              INT4        10       count of this token within this one chunk
 
@@ -246,7 +246,7 @@ ZLLD_RETRIEVE_CANDIDATES queries - none of them are staging tables.
     Field            Key   Data Element   Data Type   Length   Notes
     ---------------  ----  -------------  ----------  -------  ----------------------------------
     MANDT            X     MANDT          CLNT        3        client
-    DEPENDENCY_TYPE  X     STRING         STRING      -        raw type (METH/OM/CLAS/TABL/etc.) - VERIFY STRING-in-key, same as above; if rejected, CHAR 10 is more than enough (real types observed are all <=4 chars)
+    DEPENDENCY_TYPE  X     CHAR10         CHAR        10       raw type (METH/OM/CLAS/TABL/etc.) - CONFIRMED: STRING rejected in keys on this system; CHAR 10 is more than enough (real types observed are all <=4 chars) - matches ZLLD_OBJ_CALLS-DEPENDENCY_TYPE's type exactly (see above), which matters since a future retrieval report joins the two
     EDGE_KIND              STRING         STRING      -        normalized category (calls_method/class_ref/table_ref/etc.)
     IS_CALL_LIKE            ABAP_BOOL      CHAR        1        replaces Python's CALL_LIKE_EDGE_KINDS tuple
 
@@ -268,7 +268,7 @@ ZLLD_RETRIEVE_CANDIDATES queries - none of them are staging tables.
     Field            Key   Data Element   Data Type   Length   Notes
     ---------------  ----  -------------  ----------  -------  ----------------------------------
     MANDT            X     MANDT          CLNT        3        client
-    CONFIG_KEY       X     STRING         STRING      -        VERIFY STRING-in-key, same as above; if rejected, CHAR 40 is plenty
+    CONFIG_KEY       X     CHAR40         CHAR        40       CONFIRMED: STRING rejected in keys on this system; CHAR 40 is plenty (longest real key so far is 'NEW_OBJECT_SPREAD_THRESHOLD' at 28 chars)
     CONFIG_VALUE           STRING         STRING      -
 
     Notes:

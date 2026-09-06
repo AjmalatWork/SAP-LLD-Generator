@@ -1383,6 +1383,65 @@ FORM build_source_text USING iv_object_name TYPE string CHANGING cv_source TYPE 
 ENDFORM.
 
 *&---------------------------------------------------------------------*
+*&      Form  BUILD_DDIC_JSON_SECTION
+*&---------------------------------------------------------------------*
+*       Rebuilds the real {"PACKAGES":[{"PACKAGE":...,"DOMAIN":[...],
+*       "DATA_ELEMENT":[...],"TABLE":[...],"STRUCTURE":[...],
+*       "TABLE_TYPE":[...]}, ...]} shape from ZDCCRT_DDIC_OBJ, scoped to
+*       GT_PACK_NAMES - this was previously a hardcoded empty
+*       {"PACKAGES":[]} stub, which meant the gem saw zero DDIC context
+*       for every exported candidate file regardless of how much real
+*       DDIC data the package actually has. Each row's DETAIL_JSON is
+*       already the exact raw JSON object ZLLD_PACKAGE_EXTRACTOR staged
+*       (never parsed, copied through verbatim - same "never re-encode"
+*       rule as BUILD_DEPENDENCIES_JSON's SIGNATURE_JSON), so this only
+*       needs to bucket rows by DDIC_TYPE and join them back into arrays.
+*&---------------------------------------------------------------------*
+FORM build_ddic_json_section CHANGING cv_ddic_json TYPE string.
+  DATA: lr_pack        TYPE tt_devclass_range,
+        lt_ddic        TYPE STANDARD TABLE OF zdccrt_ddic_obj WITH EMPTY KEY,
+        lt_pkg_entries TYPE string_t,
+        lt_domain      TYPE string_t,
+        lt_dtel        TYPE string_t,
+        lt_tabl        TYPE string_t,
+        lt_stru        TYPE string_t,
+        lt_ttyp        TYPE string_t,
+        lv_pkg_json    TYPE string.
+
+  CLEAR cv_ddic_json.
+  PERFORM gt_pack_names_range CHANGING lr_pack.
+
+  SELECT * FROM zdccrt_ddic_obj INTO TABLE lt_ddic
+    WHERE zpackage IN lr_pack
+    ORDER BY zpackage, ddic_type, ddic_name.
+
+  LOOP AT gt_pack_names INTO DATA(lv_pack).
+    CLEAR: lt_domain, lt_dtel, lt_tabl, lt_stru, lt_ttyp.
+
+    LOOP AT lt_ddic INTO DATA(ls_ddic) WHERE zpackage = lv_pack.
+      CASE ls_ddic-ddic_type.
+        WHEN 'DOMA'. APPEND ls_ddic-detail_json TO lt_domain.
+        WHEN 'DTEL'. APPEND ls_ddic-detail_json TO lt_dtel.
+        WHEN 'TABL'. APPEND ls_ddic-detail_json TO lt_tabl.
+        WHEN 'STRU'. APPEND ls_ddic-detail_json TO lt_stru.
+        WHEN 'TTYP'. APPEND ls_ddic-detail_json TO lt_ttyp.
+      ENDCASE.
+    ENDLOOP.
+
+    lv_pkg_json = |\{"PACKAGE":"{ lv_pack }",| &&
+                  |"DOMAIN":[{ concat_lines_of( table = lt_domain sep = `,` ) }],| &&
+                  |"DATA_ELEMENT":[{ concat_lines_of( table = lt_dtel sep = `,` ) }],| &&
+                  |"TABLE":[{ concat_lines_of( table = lt_tabl sep = `,` ) }],| &&
+                  |"STRUCTURE":[{ concat_lines_of( table = lt_stru sep = `,` ) }],| &&
+                  |"TABLE_TYPE":[{ concat_lines_of( table = lt_ttyp sep = `,` ) }]\}|.
+
+    APPEND lv_pkg_json TO lt_pkg_entries.
+  ENDLOOP.
+
+  cv_ddic_json = |\{"PACKAGES":[{ concat_lines_of( table = lt_pkg_entries sep = `,` ) }]\}|.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
 *&      Form  EXPORT_CANDIDATES
 *&---------------------------------------------------------------------*
 FORM export_candidates.
@@ -1392,6 +1451,7 @@ FORM export_candidates.
         lv_package      TYPE devclass,
         lv_source       TYPE string,
         lv_dep_json     TYPE string,
+        lv_ddic_json    TYPE string,
         lv_block        TYPE string,
         lt_top_names    TYPE string_t,
         lv_proceed      TYPE abap_bool.
@@ -1410,13 +1470,15 @@ FORM export_candidates.
     lv_package = 'UNKNOWN'.
   ENDIF.
 
+  PERFORM build_ddic_json_section CHANGING lv_ddic_json.
+
   lv_header = |RUN_TYPE: INCREMENTAL\n| &&
               |PACKAGE: { lv_package }\n| &&
               |EXTRACTED_AT: { sy-datum DATE = ISO } { sy-uzeit TIME = ISO }\n| &&
               |REMOVED_OBJECTS: NONE\n| &&
               |\n| &&
               |--- DDIC ---\n| &&
-              |\{"PACKAGES":[]\}|.
+              |{ lv_ddic_json }|.
 
   APPEND lv_metadata TO lt_blocks.
   APPEND lv_header TO lt_blocks.

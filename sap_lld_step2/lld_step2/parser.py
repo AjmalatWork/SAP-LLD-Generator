@@ -63,6 +63,14 @@ _OBJECT_HEADER_RE = re.compile(r"^=== OBJECT:\s*(?P<name>\S+)\s*===\s*$")
 _END_OBJECT_RE = re.compile(r"^=== END OBJECT ===\s*$")
 _TYPE_RE = re.compile(r"^TYPE:\s*(?P<type>\S+)\s*$")
 _PACKAGE_RE = re.compile(r"^PACKAGE:\s*(?P<package>\S+)\s*$")
+# Step 3's export (lld_step2.retrieval.export_candidates_to_file) writes
+# these retrieval-metadata fields on an object header line - real step 1
+# extraction never does. Tolerated (skipped, not parsed into ParsedObject)
+# so an exported candidate file round-trips through this same parser
+# without a special case; this parser never emits or requires them itself.
+_RETRIEVAL_METADATA_FIELD_RE = re.compile(
+    r"^(FINAL_SCORE|SEMANTIC_SCORE|STRUCTURAL_SCORE|TIER_ADJUSTMENT_APPLIED):.*$"
+)
 _RUN_TYPE_RE = re.compile(r"^RUN_TYPE:\s*(?P<run_type>\S+)\s*$")
 _EXTRACTED_AT_RE = re.compile(r"^EXTRACTED_AT:\s*(?P<extracted_at>.*\S)\s*$")
 _REMOVED_OBJECTS_RE = re.compile(r"^REMOVED_OBJECTS:\s*(?P<removed_objects>.*\S)\s*$")
@@ -182,6 +190,12 @@ def parse_extraction_file(text: str) -> ExtractionFile:
             )
 
         obj_package, i = _consume_field(lines, i, _PACKAGE_RE, "package", name)
+
+        # Optional, step-3-export-only fields (see _RETRIEVAL_METADATA_FIELD_RE)
+        # - zero or more of these may appear here in real extraction files
+        # they never do, since step 1 doesn't emit them.
+        while i < n and _RETRIEVAL_METADATA_FIELD_RE.match(lines[i].strip()):
+            i += 1
 
         i = _skip_blank(lines, i)
         i = _expect_marker(lines, i, _SOURCE_MARKER, name)

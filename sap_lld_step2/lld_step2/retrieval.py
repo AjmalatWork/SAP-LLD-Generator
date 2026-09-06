@@ -187,21 +187,54 @@ class RetrievalResult:
 # =============================================================================
 
 
-def _fetch_all_objects(conn: psycopg.Connection) -> list[dict]:
+def _validate_packages(conn: psycopg.Connection, packages: list[str]) -> None:
+    """Hard-fails before any other processing if `packages` is empty or
+    names a package with no loaded data. A typo'd package name silently
+    producing zero candidates (and therefore a false likely_new_object)
+    would be a worse failure mode than an explicit, immediate error - the
+    developer's whole point in supplying packages is to trust that scope,
+    so a scope that doesn't exist must not be allowed to quietly mean
+    "search nothing."
+    """
+    if not packages:
+        raise ValueError("packages is required and must be a non-empty list")
+
     with conn.cursor() as cur:
-        cur.execute("SELECT name, type, package FROM objects ORDER BY name")
+        cur.execute("SELECT DISTINCT package FROM objects")
+        known_packages = {r[0] for r in cur.fetchall()}
+
+    unknown = sorted(set(packages) - known_packages)
+    if unknown:
+        raise ValueError(
+            f"Unknown package(s): {unknown}. Known packages with loaded data: "
+            f"{sorted(known_packages)}"
+        )
+
+
+def _fetch_all_objects(conn: psycopg.Connection, packages: list[str]) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT name, type, package FROM objects WHERE package = ANY(%s) ORDER BY name",
+            (packages,),
+        )
         return [{"name": r[0], "type": r[1], "package": r[2]} for r in cur.fetchall()]
 
 
-def _fetch_bidirectional_adjacency(conn: psycopg.Connection) -> dict[str, set[str]]:
+def _fetch_bidirectional_adjacency(
+    conn: psycopg.Connection, packages: list[str]
+) -> dict[str, set[str]]:
     """Undirected adjacency over `object_calls`, restricted to edges between
-    two known objects (external/unresolved call targets have no row in
-    `objects` and are excluded here, since they can't be traversed to), and
-    to CALL_LIKE_EDGE_KINDS specifically - the real extraction format loads
-    every dependency type (including DDIC/message/transaction references)
-    into object_calls, and the step 3 brief's "1 hop (calls or is called
-    by)" means genuine calls, not any shared reference. Preserves existing
-    structural-scoring behavior unchanged rather than silently widening it.
+    two known objects that are BOTH in one of `packages` (external/
+    unresolved call targets have no row in `objects` and are excluded here,
+    since they can't be traversed to; objects outside `packages` are
+    excluded the same way, since they're outside the developer's given
+    scope and must not appear as reachable candidates or hop-distance
+    intermediaries), and to CALL_LIKE_EDGE_KINDS specifically - the real
+    extraction format loads every dependency type (including DDIC/message/
+    transaction references) into object_calls, and the step 3 brief's "1
+    hop (calls or is called by)" means genuine calls, not any shared
+    reference. Preserves existing structural-scoring behavior unchanged
+    other than the new package scope.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -211,8 +244,10 @@ def _fetch_bidirectional_adjacency(conn: psycopg.Connection) -> dict[str, set[st
             JOIN objects o1 ON o1.name = oc.source_object
             JOIN objects o2 ON o2.name = oc.target_object
             WHERE oc.edge_kind = ANY(%(edge_kinds)s)
+              AND o1.package = ANY(%(packages)s)
+              AND o2.package = ANY(%(packages)s)
             """,
-            {"edge_kinds": list(CALL_LIKE_EDGE_KINDS)},
+            {"edge_kinds": list(CALL_LIKE_EDGE_KINDS), "packages": packages},
         )
         rows = cur.fetchall()
     adjacency: dict[str, set[str]] = {}
@@ -222,16 +257,25 @@ def _fetch_bidirectional_adjacency(conn: psycopg.Connection) -> dict[str, set[st
     return adjacency
 
 
-def _fetch_object_tables(conn: psycopg.Connection) -> dict[str, set[str]]:
-    """Object -> set of DDIC *table* names it uses. Scoped to ddic_type =
-    'TABL' specifically (not DOMA/DTEL/TTYP, which object_uses_table can
-    also hold now) to preserve the step 3 brief's literal "shares a DDIC
-    table" bonus criterion unchanged - broadening it to any DDIC reference
-    would be a scoring-behavior change, out of scope for this update.
+def _fetch_object_tables(
+    conn: psycopg.Connection, packages: list[str]
+) -> dict[str, set[str]]:
+    """Object -> set of DDIC *table* names it uses, restricted to objects in
+    `packages`. Scoped to ddic_type = 'TABL' specifically (not DOMA/DTEL/
+    TTYP, which object_uses_table can also hold now) to preserve the step 3
+    brief's literal "shares a DDIC table" bonus criterion unchanged -
+    broadening it to any DDIC reference would be a scoring-behavior change,
+    out of scope for this update.
     """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT object_name, ddic_object_name FROM object_uses_table WHERE ddic_type = 'TABL'"
+            """
+            SELECT ut.object_name, ut.ddic_object_name
+            FROM object_uses_table ut
+            JOIN objects o ON o.name = ut.object_name
+            WHERE ut.ddic_type = 'TABL' AND o.package = ANY(%s)
+            """,
+            (packages,),
         )
         rows = cur.fetchall()
     tables: dict[str, set[str]] = {}
@@ -266,17 +310,23 @@ def _bfs_hop_distances(
 # =============================================================================
 
 
-def resolve_scoping_note(conn: psycopg.Connection, scoping_note: str | None) -> list[str]:
-    """Resolves a free-text scoping note to known object names: exact match
-    first, then case-insensitive full match, then substring match (in either
-    direction). Returns [] if nothing resolves — callers must not treat that
-    as an error (see brief: unresolved notes are useful signal, not failure).
+def resolve_scoping_note(
+    conn: psycopg.Connection, scoping_note: str | None, packages: list[str]
+) -> list[str]:
+    """Resolves a free-text scoping note to known object names within
+    `packages`: exact match first, then case-insensitive full match, then
+    substring match (in either direction). Returns [] if nothing resolves —
+    callers must not treat that as an error (see brief: unresolved notes are
+    useful signal, not failure). Restricted to `packages` for the same
+    reason as every other lookup in this module: an object of the same or
+    similar name in a package outside the developer's given scope must not
+    silently become the resolved target.
     """
     if not scoping_note:
         return []
 
     with conn.cursor() as cur:
-        cur.execute("SELECT name FROM objects")
+        cur.execute("SELECT name FROM objects WHERE package = ANY(%s)", (packages,))
         all_names = [r[0] for r in cur.fetchall()]
 
     note = scoping_note.strip()
@@ -320,15 +370,21 @@ def compute_semantic_scores(
     min_chunk_length: int = MIN_CHUNK_LENGTH,
 ) -> dict[str, dict]:
     """Returns {object_name: {"score": float 0-1, "chunks": [ChunkMatch, ...]}}
-    for every object, using max cosine similarity across that object's
-    non-trivial chunks (see MIN_CHUNK_LENGTH), normalized from [-1,1] to
-    [0,1]. Objects with no surviving chunks get score 0.0 and an empty list.
+    for every object in `all_object_names`, using max cosine similarity
+    across that object's non-trivial chunks (see MIN_CHUNK_LENGTH),
+    normalized from [-1,1] to [0,1]. Objects with no surviving chunks get
+    score 0.0 and an empty list.
+
+    `all_object_names` is expected to already be package-scoped (see
+    retrieve()) - filtering the chunk query to it here means an object
+    outside scope can never enter `result` in the first place, rather than
+    relying on the caller's later iteration to ignore it.
     """
     with conn.cursor() as cur:
         cur.execute(
             "SELECT object_name, chunk_index, chunk_text, embedding::text "
-            "FROM code_chunks WHERE length(chunk_text) >= %s",
-            (min_chunk_length,),
+            "FROM code_chunks WHERE length(chunk_text) >= %s AND object_name = ANY(%s)",
+            (min_chunk_length, all_object_names),
         )
         rows = cur.fetchall()
 
@@ -388,11 +444,26 @@ def compute_structural_scores(
 
 def retrieve(
     requirement: str,
+    packages: list[str],
     scoping_note: str | None = None,
     confidence: Confidence | None = None,
     top_n: int = DEFAULT_TOP_N,
     conn: psycopg.Connection | None = None,
 ) -> RetrievalResult:
+    """`packages` is mandatory: the caller must name the specific package(s)
+    an application actually lives in. Retrieval was originally built to
+    search every object loaded in the database regardless of package, which
+    is fine for a single-package dev/test database but wrong for the real
+    use case - a developer working on one application in a system that may
+    have thousands of loaded packages, where an unscoped search would both
+    return irrelevant cross-package noise and slow down for no benefit (see
+    reports/step3_real_data_validation_report.md, check 1, for a real
+    instance of exactly this: a "nonsense" requirement scored a genuine
+    match purely because an unrelated second package happened to be loaded
+    in the same database). An unknown package name is a hard error (see
+    _validate_packages) rather than silently searching nothing, since a
+    typo'd package could otherwise produce a false likely_new_object.
+    """
     if scoping_note and confidence is None:
         raise ValueError("confidence is required when scoping_note is given")
     if not scoping_note and confidence is not None:
@@ -404,12 +475,14 @@ def retrieve(
         conn = connect(config)
 
     try:
-        objects = _fetch_all_objects(conn)
+        _validate_packages(conn, packages)
+
+        objects = _fetch_all_objects(conn, packages)
         object_names = [o["name"] for o in objects]
         objects_by_name = {o["name"]: o for o in objects}
 
-        adjacency = _fetch_bidirectional_adjacency(conn)
-        tables_by_object = _fetch_object_tables(conn)
+        adjacency = _fetch_bidirectional_adjacency(conn, packages)
+        tables_by_object = _fetch_object_tables(conn, packages)
 
         requirement_vector = embed_requirement(requirement, config.embedding_model)
         semantic = compute_semantic_scores(conn, requirement_vector, object_names)
@@ -432,7 +505,7 @@ def retrieve(
 
         # --- scoping note resolution ---
         disagreements: list[Disagreement] = []
-        named_objects = resolve_scoping_note(conn, scoping_note) if scoping_note else []
+        named_objects = resolve_scoping_note(conn, scoping_note, packages) if scoping_note else []
         unresolved_note = bool(scoping_note) and not named_objects
         if unresolved_note:
             disagreements.append(
@@ -578,18 +651,20 @@ def retrieve(
                 likely_new_object = True
                 new_object_reason = (
                     f"Top candidate's base_score ({top_base:.3f}) is below the floor "
-                    f"({NEW_OBJECT_SCORE_FLOOR})."
+                    f"({NEW_OBJECT_SCORE_FLOOR}) in package(s) {sorted(packages)}. This may "
+                    "be new work, or it may belong to a package outside the given scope."
                 )
             elif len(ranking_for_new_check) >= 2 and spread < NEW_OBJECT_SPREAD_THRESHOLD:
                 likely_new_object = True
                 new_object_reason = (
                     f"Spread between top and #{fifth_index + 1} candidate base_score "
-                    f"({spread:.3f}) is below threshold ({NEW_OBJECT_SPREAD_THRESHOLD}) - "
-                    "nothing stands out."
+                    f"({spread:.3f}) is below threshold ({NEW_OBJECT_SPREAD_THRESHOLD}) in "
+                    f"package(s) {sorted(packages)} - nothing stands out. This may be new "
+                    "work, or it may belong to a package outside the given scope."
                 )
         else:
             likely_new_object = True
-            new_object_reason = "No candidates available at all."
+            new_object_reason = f"No candidates available at all in package(s) {sorted(packages)}."
 
         def _build_candidate(name: str, score: float, tier_label: str) -> Candidate:
             obj = objects_by_name[name]
@@ -620,6 +695,7 @@ def retrieve(
 
         query_metadata = {
             "requirement": requirement,
+            "packages": packages,
             "scoping_note": scoping_note,
             "confidence": confidence,
             "resolved_named_objects": named_objects,
@@ -672,6 +748,7 @@ def _build_metadata_block(result: RetrievalResult) -> str:
     meta = result.query_metadata
     lines = [_METADATA_START]
     lines.append(f"REQUIREMENT: {meta['requirement']}")
+    lines.append(f"PACKAGES: {', '.join(sorted(meta['packages']))}")
     lines.append(f"SCOPING_NOTE: {meta['scoping_note'] or '(none)'}")
     lines.append(f"CONFIDENCE: {meta['confidence'] or '(none)'}")
     lines.append(f"LIKELY_NEW_OBJECT: {result.likely_new_object}")
@@ -746,6 +823,20 @@ def export_candidates_to_file(
     that object's chunks back together in chunk_index order (this is why a
     connection is needed even though `result` already carries top-matching
     chunks per candidate — those are a filtered subset, not the full object).
+
+    Each object block's header also carries FINAL_SCORE, SEMANTIC_SCORE,
+    STRUCTURAL_SCORE, and TIER_ADJUSTMENT_APPLIED — retrieval metadata about
+    the candidate, not something ABAP itself produced, which is why these
+    live alongside TYPE/PACKAGE rather than inside DEPENDENCIES. Exposing
+    the two score components separately (not just the blended FINAL_SCORE)
+    is deliberate: per the real-data validation report, structural
+    proximity has held up against real requirements while semantic
+    similarity alone has not, and a consumer reasoning over these
+    candidates needs to be able to tell which kind of evidence actually
+    supports a given score rather than trusting one opaque number.
+    lld_step2.parser tolerates these fields' presence (skips, does not
+    parse them) but never emits or requires them itself - they are
+    exclusively a step 3 export concept.
     """
     config = load_config()
     owns_conn = conn is None
@@ -782,6 +873,10 @@ def export_candidates_to_file(
                 f"=== OBJECT: {candidate.object_name} ===\n"
                 f"TYPE: {candidate.type}\n"
                 f"PACKAGE: {candidate.package}\n"
+                f"FINAL_SCORE: {candidate.final_score:.4f}\n"
+                f"SEMANTIC_SCORE: {candidate.semantic_score:.4f}\n"
+                f"STRUCTURAL_SCORE: {candidate.structural_score:.4f}\n"
+                f"TIER_ADJUSTMENT_APPLIED: {candidate.tier_adjustment}\n"
                 f"\n"
                 f"--- SOURCE ---\n"
                 f"{source}\n"

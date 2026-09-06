@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from lld_step2.graph_loader import CALL_LIKE_EDGE_KINDS
+from lld_step2.mock_generator import generate
 from lld_step2.parser import parse_extraction_file
 from lld_step2.pipeline import run_pipeline
 from lld_step2.retrieval import (
@@ -42,11 +43,24 @@ def zorder_conn(db_config):
         pytest.skip(f"Postgres not reachable at {db_config.database_url}: {exc}")
         return
 
+    # Autocommit, not the psycopg default (autocommit=False): this connection
+    # is module-scoped and stays open across every read-only test in this
+    # file. Without autocommit, each SELECT starts an implicit transaction
+    # that's never explicitly committed, so the connection accumulates one
+    # long-lived open transaction holding shared locks for the whole
+    # module's run - which then deadlocks any other test in this file that
+    # needs an exclusive lock (e.g. a TRUNCATE via the function-scoped
+    # db_conn fixture, used by the cross-package scoping test below): that
+    # TRUNCATE can't proceed until zorder_conn's transaction ends, but
+    # zorder_conn's fixture teardown can't run until every test in the
+    # module (including the blocked one) finishes. Found the hard way via a
+    # genuine multi-minute hang, not a theoretical concern.
+    conn.autocommit = True
+
     with conn.cursor() as cur:
         cur.execute(
             "TRUNCATE object_calls, object_uses_table, code_chunks, ddic_objects, objects CASCADE"
         )
-    conn.commit()
 
     run_pipeline(str(ZORDER_FILE), conn=conn)
 
@@ -85,12 +99,50 @@ def _objects_using_table(conn, table_name: str) -> set[str]:
 
 def test_scoping_note_requires_confidence(zorder_conn):
     with pytest.raises(ValueError):
-        retrieve("some requirement", scoping_note="ZCL_ORDER_LOGGER", confidence=None, conn=zorder_conn)
+        retrieve(
+            "some requirement",
+            packages=["ZORDER_MGMT"],
+            scoping_note="ZCL_ORDER_LOGGER",
+            confidence=None,
+            conn=zorder_conn,
+        )
 
 
 def test_confidence_requires_scoping_note(zorder_conn):
     with pytest.raises(ValueError):
-        retrieve("some requirement", scoping_note=None, confidence="certain", conn=zorder_conn)
+        retrieve(
+            "some requirement",
+            packages=["ZORDER_MGMT"],
+            scoping_note=None,
+            confidence="certain",
+            conn=zorder_conn,
+        )
+
+
+# =============================================================================
+# `packages` is mandatory and hard-fails on an unknown package
+# =============================================================================
+
+
+def test_packages_is_required_and_rejects_empty_list(zorder_conn):
+    with pytest.raises(ValueError):
+        retrieve("some requirement", packages=[], conn=zorder_conn)
+
+
+def test_unknown_package_is_a_hard_error(zorder_conn):
+    with pytest.raises(ValueError, match="Unknown package"):
+        retrieve("some requirement", packages=["ZTOTALLY_MADE_UP_PACKAGE"], conn=zorder_conn)
+
+
+def test_unknown_package_in_mixed_list_is_still_a_hard_error(zorder_conn):
+    # A real package alongside a typo'd one must still fail loudly, not
+    # silently fall back to searching only the valid one.
+    with pytest.raises(ValueError, match="Unknown package"):
+        retrieve(
+            "some requirement",
+            packages=["ZORDER_MGMT", "ZTOTALLY_MADE_UP_PACKAGE"],
+            conn=zorder_conn,
+        )
 
 
 # =============================================================================
@@ -108,6 +160,7 @@ def test_clear_match_ranks_top_object_first(zorder_conn):
     result = retrieve(
         "Add a purge job that deletes old log entries older than a given number "
         "of days from the order log table",
+        packages=["ZORDER_MGMT"],
         conn=zorder_conn,
     )
     assert result.candidates[0].object_name == "ZCL_ORDER_LOGGER"
@@ -127,6 +180,7 @@ def test_certain_filtering_excludes_out_of_scope_objects(zorder_conn):
     result = retrieve(
         "Add a purge job that deletes old log entries older than a given number "
         "of days from the order log table",
+        packages=["ZORDER_MGMT"],
         scoping_note="ZCL_TAX_CALCULATOR",
         confidence="certain",
         conn=zorder_conn,
@@ -146,6 +200,7 @@ def test_likely_boost_overridden_by_better_independent_match(zorder_conn):
     unadjusted = retrieve(
         "Add a purge job that deletes old log entries older than a given number "
         "of days from the order log table",
+        packages=["ZORDER_MGMT"],
         conn=zorder_conn,
     )
     independent_top = unadjusted.candidates[0].object_name
@@ -154,6 +209,7 @@ def test_likely_boost_overridden_by_better_independent_match(zorder_conn):
     result = retrieve(
         "Add a purge job that deletes old log entries older than a given number "
         "of days from the order log table",
+        packages=["ZORDER_MGMT"],
         scoping_note="ZCL_TAX_CALCULATOR",
         confidence="likely",
         conn=zorder_conn,
@@ -172,6 +228,7 @@ def test_certain_hint_conflict_flagged(zorder_conn):
     result = retrieve(
         "Add a purge job that deletes old log entries older than a given number "
         "of days from the order log table",
+        packages=["ZORDER_MGMT"],
         scoping_note="ZCL_TAX_CALCULATOR",
         confidence="certain",
         conn=zorder_conn,
@@ -196,6 +253,7 @@ def test_certain_hint_conflict_flagged(zorder_conn):
 def test_unresolvable_scoping_note_warns_not_crashes(zorder_conn):
     result = retrieve(
         "Add a purge job for old log entries",
+        packages=["ZORDER_MGMT"],
         scoping_note="ZCL_TOTALLY_MADE_UP_OBJECT_9000",
         confidence="certain",
         conn=zorder_conn,
@@ -215,7 +273,7 @@ def test_unresolvable_scoping_note_warns_not_crashes(zorder_conn):
 
 @pytest.mark.parametrize("requirement", NONSENSE_REQUIREMENTS)
 def test_likely_new_object_fires_on_unrelated_requirement(zorder_conn, requirement):
-    result = retrieve(requirement, conn=zorder_conn)
+    result = retrieve(requirement, packages=["ZORDER_MGMT"], conn=zorder_conn)
     assert result.likely_new_object is True
     assert result.likely_new_object_reason
 
@@ -238,9 +296,70 @@ def test_likely_new_object_fires_on_unrelated_requirement(zorder_conn, requireme
     ],
 )
 def test_likely_new_object_false_on_grounded_requirement(zorder_conn, requirement, expected_top):
-    result = retrieve(requirement, conn=zorder_conn)
+    result = retrieve(requirement, packages=["ZORDER_MGMT"], conn=zorder_conn)
     assert result.likely_new_object is False
     assert result.candidates[0].object_name == expected_top
+
+
+# =============================================================================
+# 6b. `packages` actually scopes the search when multiple packages are loaded
+# =============================================================================
+
+
+def test_packages_excludes_objects_outside_given_scope(tmp_path, db_conn):
+    # db_conn (unlike zorder_conn) starts truncated per-test, so this test can
+    # load a second, unrelated package into the same database without
+    # disturbing the module-scoped ZORDER_MGMT fixture used everywhere else.
+    order_path = tmp_path / "order.txt"
+    order_path.write_text(ZORDER_FILE.read_text(encoding="utf-8"), encoding="utf-8")
+    run_pipeline(str(order_path), conn=db_conn)
+
+    other_text, other_specs = generate(count=6, seed=7, package="ZMOCK_OTHER")
+    other_path = tmp_path / "other.txt"
+    other_path.write_text(other_text, encoding="utf-8")
+    run_pipeline(str(other_path), conn=db_conn)
+
+    with db_conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT package FROM objects ORDER BY package")
+        loaded_packages = {r[0] for r in cur.fetchall()}
+    assert loaded_packages == {"ZORDER_MGMT", "ZMOCK_OTHER"}
+
+    # Same requirement that correctly matches ZCL_ORDER_LOGGER package-wide
+    # (see test_clear_match_ranks_top_object_first) but scoped to the OTHER
+    # package only -- must never surface a ZORDER_MGMT object, however well
+    # it would otherwise score.
+    result = retrieve(
+        "Add a purge job that deletes old log entries older than a given number "
+        "of days from the order log table",
+        packages=["ZMOCK_OTHER"],
+        conn=db_conn,
+    )
+    returned_packages = {c.package for c in result.candidates}
+    assert returned_packages <= {"ZMOCK_OTHER"}
+    returned_names = {c.object_name for c in result.candidates}
+    assert "ZCL_ORDER_LOGGER" not in returned_names
+
+    # Scoped to ZORDER_MGMT only, behaves exactly as the unscoped-but-single-
+    # package tests above already prove.
+    result_scoped = retrieve(
+        "Add a purge job that deletes old log entries older than a given number "
+        "of days from the order log table",
+        packages=["ZORDER_MGMT"],
+        conn=db_conn,
+    )
+    assert result_scoped.candidates[0].object_name == "ZCL_ORDER_LOGGER"
+    assert all(c.package == "ZORDER_MGMT" for c in result_scoped.candidates)
+
+    # Given both packages, either may appear -- the point is only that scope
+    # is a strict superset/subset relationship, not that it changes the
+    # ranking outcome here.
+    result_both = retrieve(
+        "Add a purge job that deletes old log entries older than a given number "
+        "of days from the order log table",
+        packages=["ZORDER_MGMT", "ZMOCK_OTHER"],
+        conn=db_conn,
+    )
+    assert result_both.candidates[0].object_name == "ZCL_ORDER_LOGGER"
 
 
 # =============================================================================
@@ -253,6 +372,7 @@ def test_export_parses_with_step2_parser_and_contains_flag_header(zorder_conn, t
     result = retrieve(
         "Add a purge job that deletes old log entries older than a given number "
         "of days from the order log table",
+        packages=["ZORDER_MGMT"],
         scoping_note="ZCL_TAX_CALCULATOR",
         confidence="certain",
         conn=zorder_conn,
@@ -279,8 +399,56 @@ def test_export_parses_with_step2_parser_and_contains_flag_header(zorder_conn, t
     assert parsed_names == {c.object_name for c in result.candidates}
 
 
+# =============================================================================
+# 7b. Exported per-candidate scores match retrieve()'s own computed values,
+#     and the parser tolerates their presence without choking on them.
+# =============================================================================
+
+
+def test_export_score_fields_match_retrieve_computed_values(zorder_conn, tmp_path):
+    result = retrieve(
+        "Calculate the shipping cost for an order based on customer location zone "
+        "and item count",
+        packages=["ZORDER_MGMT"],
+        scoping_note="ZCL_STOCK_MANAGER",
+        confidence="likely",
+        conn=zorder_conn,
+    )
+    assert result.candidates  # sanity
+
+    out_path = tmp_path / "candidates_with_scores.txt"
+    export_candidates_to_file(result, str(out_path), conn=zorder_conn)
+    full_text = out_path.read_text(encoding="utf-8")
+
+    for candidate in result.candidates:
+        block_start = full_text.index(f"=== OBJECT: {candidate.object_name} ===")
+        block_end = full_text.index("--- SOURCE ---", block_start)
+        header = full_text[block_start:block_end]
+
+        # Exact string match against the same f"{:.4f}" formatting the
+        # exporter uses -- not just "parses to a close-enough float" --
+        # since the point is verifying the artifact reflects retrieve()'s
+        # real numbers, not merely that some number is present.
+        assert f"FINAL_SCORE: {candidate.final_score:.4f}" in header
+        assert f"SEMANTIC_SCORE: {candidate.semantic_score:.4f}" in header
+        assert f"STRUCTURAL_SCORE: {candidate.structural_score:.4f}" in header
+        assert f"TIER_ADJUSTMENT_APPLIED: {candidate.tier_adjustment}" in header
+
+    # Round-trip: the parser must tolerate these new fields' presence
+    # (skip, not choke), per the "parser doesn't need to use these fields
+    # but must not break on them" requirement.
+    objects_text = extract_object_blocks(full_text)
+    extraction = parse_extraction_file(objects_text)
+    assert {p.name for p in extraction.objects} == {c.object_name for c in result.candidates}
+
+
 def test_top_n_and_unadjusted_ranking_sizes(zorder_conn):
-    result = retrieve("Calculate the shipping cost for an order", top_n=2, conn=zorder_conn)
+    result = retrieve(
+        "Calculate the shipping cost for an order",
+        packages=["ZORDER_MGMT"],
+        top_n=2,
+        conn=zorder_conn,
+    )
     assert len(result.candidates) <= 2
     assert len(result.unadjusted_ranking) <= 5
 
@@ -318,6 +486,8 @@ def test_order_numbering_semantic_ranking_miss(zorder_conn):
     assert callers_of_number_get_next == {"ZFM_ORDER_NUMBER_RANGE"}
 
     result = retrieve(
-        "Generate the next order number using a number range object", conn=zorder_conn
+        "Generate the next order number using a number range object",
+        packages=["ZORDER_MGMT"],
+        conn=zorder_conn,
     )
     assert result.candidates[0].object_name == "ZFM_ORDER_NUMBER_RANGE"

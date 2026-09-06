@@ -1,7 +1,7 @@
 """Manual-testing CLI for step 3 retrieval.
 
     python -m lld_step2.retrieval_cli "Allow partial shipment when stock is insufficient" \\
-        --scoping-note "ZCL_STOCK_MANAGER" --confidence likely --export out.txt
+        --packages ZORDER_MGMT --scoping-note "ZCL_STOCK_MANAGER" --confidence likely --export out.txt
 """
 from __future__ import annotations
 
@@ -32,6 +32,13 @@ def _print_candidate(rank: int, c) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("requirement", help="plain-English business requirement")
+    parser.add_argument(
+        "--packages",
+        required=True,
+        help="required, comma-separated package name(s) the application lives in "
+        "(e.g. ZZBA91 or ZZBA91,ZZBA92) - retrieval only searches these packages' "
+        "loaded data; an unknown package name is a hard error",
+    )
     parser.add_argument("--scoping-note", default=None, help="optional object/flow name(s)")
     parser.add_argument(
         "--confidence",
@@ -42,15 +49,18 @@ def main() -> None:
     parser.add_argument("--top-n", type=int, default=5)
     parser.add_argument("--export", default=None, help="optional path to export the candidate file")
     args = parser.parse_args()
+    packages = [p.strip() for p in args.packages.split(",") if p.strip()]
 
     result = retrieve(
         requirement=args.requirement,
+        packages=packages,
         scoping_note=args.scoping_note,
         confidence=args.confidence,
         top_n=args.top_n,
     )
 
     print(f"Requirement: {args.requirement}")
+    print(f"Packages: {packages}")
     if args.scoping_note:
         print(f"Scoping note: {args.scoping_note!r} (confidence: {args.confidence})")
         resolved = result.query_metadata["resolved_named_objects"]

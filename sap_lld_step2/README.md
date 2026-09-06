@@ -167,27 +167,47 @@ for the findings and recommendation.
 
 ## Step 3 — retrieval + tiering
 
-Given a plain-English business requirement (plus an optional developer scoping note),
-queries the step-2 graph and vector store and produces a small, ranked, explainable
-candidate set — the input to a later LLM step (step 4, not built yet). No LLM calls, no
-UI, deterministic scoring only. See [`lld_step2/retrieval.py`](lld_step2/retrieval.py).
+Given a plain-English business requirement, the package(s) it belongs to, and an
+optional developer scoping note, queries the step-2 graph and vector store and produces
+a small, ranked, explainable candidate set — the input to a later LLM step (step 4, not
+built yet). No LLM calls, no UI, deterministic scoring only. See
+[`lld_step2/retrieval.py`](lld_step2/retrieval.py).
 
 ### Running it
 
 ```bash
 python -m lld_step2.retrieval_cli "Allow partial order shipment when stock is insufficient" \
-    --scoping-note "ZCL_STOCK_MANAGER" --confidence likely --top-n 5 --export candidates.txt
+    --packages ZORDER_MGMT --scoping-note "ZCL_STOCK_MANAGER" --confidence likely --top-n 5 --export candidates.txt
 ```
 
+- `--packages` is **required**: a comma-separated list of the package(s) the
+  application being worked on actually lives in (e.g. `ZZBA91` or `ZZBA91,ZZBA92`).
+  Retrieval only ever searches loaded data scoped to these packages — an application in
+  a real system may share one database with thousands of unrelated packages, and a
+  developer working on it knows which one or two they're in, so an unscoped search
+  across everything loaded would return irrelevant cross-package noise at best and a
+  false match at worst (see `reports/step3_real_data_validation_report.md` for a real
+  instance of this: a "nonsense" requirement scored a genuine match purely because an
+  unrelated second package happened to be loaded in the same database). Naming a
+  package with no loaded data is a **hard error**, raised before any other processing —
+  silently searching nothing on a typo'd package name would be a worse failure mode
+  than failing loudly.
 - `--scoping-note` is optional free text naming object(s)/flow(s) the developer suspects
-  are relevant. `--confidence` (`certain` | `likely` | `unsure`) is required if and only if
-  a scoping note is given.
+  are relevant, resolved only against objects within `--packages`. `--confidence`
+  (`certain` | `likely` | `unsure`) is required if and only if a scoping note is given.
 - `--export PATH` writes the result to a text file in the same block format as a SAP
-  extraction file, with a `=== RETRIEVAL METADATA ===` header (disagreements +
-  `likely_new_object`) in front of the object blocks — this is what step 4 will read.
-  Strip the header with `lld_step2.retrieval.extract_object_blocks()` before feeding the
-  file to `lld_step2.parser.parse_extraction_file` (the parser itself is unmodified and
-  only understands `=== OBJECT: ===` blocks).
+  extraction file, with a `=== RETRIEVAL METADATA ===` header (requirement, packages,
+  scoping note, disagreements, `likely_new_object`) in front of the object blocks —
+  this is what step 4 will read. Each object block's header also carries
+  `FINAL_SCORE`/`SEMANTIC_SCORE`/`STRUCTURAL_SCORE`/`TIER_ADJUSTMENT_APPLIED` for that
+  candidate, exposed as separate components (not just the blended score) since
+  structural proximity and semantic similarity are not equally trustworthy on real
+  data — see `reports/step3_real_data_validation_report.md`. Strip the header with
+  `lld_step2.retrieval.extract_object_blocks()` before feeding the file to
+  `lld_step2.parser.parse_extraction_file` — the parser tolerates these four
+  retrieval-only fields on an object's header line (skips them; a real step 1
+  extraction file never has them) but otherwise only understands `=== OBJECT: ===`
+  blocks.
 
 ### Tunable constants
 

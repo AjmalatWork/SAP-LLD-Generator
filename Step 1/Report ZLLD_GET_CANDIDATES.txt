@@ -750,6 +750,44 @@ FORM compute_requirement_vector.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
+*&      Form  FINALIZE_CHUNK_GROUP
+*&---------------------------------------------------------------------*
+*       Turns one chunk's accumulated (dot, norm_sq) into a cosine score
+*       and, if it beats that object's current best, updates CT_BEST.
+*       Factored out of COMPUTE_SEMANTIC_SCORES so the exact same logic
+*       runs both for a group closed by the next row's chunk_id change
+*       AND for the final group in the table (which no next row closes).
+*&---------------------------------------------------------------------*
+FORM finalize_chunk_group USING iv_object   TYPE string
+                                 iv_chunk_id TYPE sysuuid_x16
+                                 iv_dot      TYPE f
+                                 iv_norm_sq  TYPE f
+                           CHANGING ct_best  TYPE tt_score.
+  DATA: lv_chunk_norm TYPE f,
+        lv_cosine     TYPE f.
+
+  CHECK iv_object IS NOT INITIAL.
+
+  lv_chunk_norm = sqrt( iv_norm_sq ).
+  lv_cosine = COND #( WHEN gv_req_norm > 0 AND lv_chunk_norm > 0
+                       THEN iv_dot / ( gv_req_norm * lv_chunk_norm )
+                       ELSE 0 ).
+
+  READ TABLE ct_best ASSIGNING FIELD-SYMBOL(<fs_best>) WITH KEY object_name = iv_object.
+  IF sy-subrc = 0.
+    IF lv_cosine > <fs_best>-score.
+      <fs_best>-score = lv_cosine.
+      <fs_best>-chunk_id = iv_chunk_id.
+      <fs_best>-dbg_dot = iv_dot.
+      <fs_best>-dbg_norm = lv_chunk_norm.
+    ENDIF.
+  ELSE.
+    INSERT VALUE #( object_name = iv_object score = lv_cosine chunk_id = iv_chunk_id
+                     dbg_dot = iv_dot dbg_norm = lv_chunk_norm ) INTO TABLE ct_best.
+  ENDIF.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
 *&      Form  COMPUTE_SEMANTIC_SCORES
 *&---------------------------------------------------------------------*
 *       Max cosine similarity across an object's chunks (same "max not
@@ -757,34 +795,52 @@ ENDFORM.
 *       matching chunk in a large object is real signal). GT_SCOPE_TOKENS
 *       is sorted by CHUNK_ID here (was sorted by TOKEN for the IDF pass
 *       above) so each chunk's full token set can be walked in one
-*       contiguous group via AT NEW/AT END OF CHUNK_ID - this gives both
-*       the chunk's own vector norm (over ALL its tokens) and its dot
-*       product with the requirement vector (only the tokens the two
-*       share contribute) in a single pass per chunk, which is what a
-*       correct cosine similarity (not a masked/partial one) requires.
+*       contiguous group. Group boundaries are detected with an explicit
+*       "did CHUNK_ID change since the last row" comparison, NOT
+*       AT NEW/AT END OF CHUNK_ID - confirmed live (via a from-scratch
+*       recompute in DUMP_TOP_CANDIDATE_EVIDENCE) that AT NEW/AT END OF
+*       fired on almost every single row instead of once per chunk. Per
+*       ABAP's own control-break rule, "AT NEW f" also fires whenever
+*       any field to f's LEFT in the row structure changes - and
+*       TS_CHUNK_TOKEN_ROW declares TOKEN before CHUNK_ID, so a token
+*       change (true on nearly every row) was spuriously re-triggering
+*       the "new chunk" boundary. That silently shrank most chunks down
+*       to tiny 1-2 token fragments, undercounting the true dot product/
+*       norm by an order of magnitude and letting unrelated objects tie
+*       whenever their best surviving fragment reduced to the same
+*       single shared token. Explicit comparison has no such field-order
+*       sensitivity.
 *&---------------------------------------------------------------------*
 FORM compute_semantic_scores.
-  DATA: lv_dot        TYPE f,
-        lv_norm_sq    TYPE f,
-        lv_idf        TYPE f,
-        lv_weight     TYPE f,
-        lv_cosine     TYPE f,
-        lv_chunk_norm TYPE f,
-        lt_best       TYPE tt_score.
+  DATA: lv_dot          TYPE f,
+        lv_norm_sq      TYPE f,
+        lv_idf          TYPE f,
+        lv_weight       TYPE f,
+        lv_cur_chunk_id TYPE sysuuid_x16,
+        lv_cur_object   TYPE string,
+        lv_group_open   TYPE abap_bool,
+        lt_best         TYPE tt_score.
 
   CLEAR gt_obj_score.
 
   SORT gt_scope_tokens BY chunk_id.
-  DATA lv_cur_chunk_id TYPE sysuuid_x16.
-  DATA lv_cur_object   TYPE string.
 
   LOOP AT gt_scope_tokens INTO DATA(ls_row).
-    AT NEW chunk_id.
+    IF lv_group_open = abap_false OR ls_row-chunk_id <> lv_cur_chunk_id.
+      " A new chunk group starts here - finalize the previous one first
+      " (unless this is the very first row of the whole table).
+      IF lv_group_open = abap_true.
+        PERFORM finalize_chunk_group USING lv_cur_object lv_cur_chunk_id lv_dot lv_norm_sq
+                                      CHANGING lt_best.
+      ENDIF.
+
       lv_dot = 0.
       lv_norm_sq = 0.
+      lv_cur_chunk_id = ls_row-chunk_id.
+      lv_group_open = abap_true.
       READ TABLE gt_scope_chunks INTO DATA(ls_chunk_lookup) WITH KEY chunk_id = ls_row-chunk_id.
       lv_cur_object = COND #( WHEN sy-subrc = 0 THEN ls_chunk_lookup-object_name ELSE '' ).
-    ENDAT.
+    ENDIF.
 
     READ TABLE gt_idf INTO DATA(ls_idf) WITH KEY token = ls_row-token BINARY SEARCH.
     lv_idf = COND #( WHEN sy-subrc = 0 THEN ls_idf-idf ELSE 0 ).
@@ -795,29 +851,13 @@ FORM compute_semantic_scores.
     IF sy-subrc = 0.
       lv_dot = lv_dot + lv_weight * ls_req-weight.
     ENDIF.
-
-    AT END OF chunk_id.
-      lv_chunk_norm = sqrt( lv_norm_sq ).
-      lv_cosine = COND #( WHEN gv_req_norm > 0 AND lv_chunk_norm > 0
-                           THEN lv_dot / ( gv_req_norm * lv_chunk_norm )
-                           ELSE 0 ).
-
-      IF lv_cur_object IS NOT INITIAL.
-        READ TABLE lt_best ASSIGNING FIELD-SYMBOL(<fs_best>) WITH KEY object_name = lv_cur_object.
-        IF sy-subrc = 0.
-          IF lv_cosine > <fs_best>-score.
-            <fs_best>-score = lv_cosine.
-            <fs_best>-chunk_id = ls_row-chunk_id.
-            <fs_best>-dbg_dot = lv_dot.
-            <fs_best>-dbg_norm = lv_chunk_norm.
-          ENDIF.
-        ELSE.
-          INSERT VALUE #( object_name = lv_cur_object score = lv_cosine chunk_id = ls_row-chunk_id
-                           dbg_dot = lv_dot dbg_norm = lv_chunk_norm ) INTO TABLE lt_best.
-        ENDIF.
-      ENDIF.
-    ENDAT.
   ENDLOOP.
+
+  " Finalize the last group in the table (no further row triggers it).
+  IF lv_group_open = abap_true.
+    PERFORM finalize_chunk_group USING lv_cur_object lv_cur_chunk_id lv_dot lv_norm_sq
+                                  CHANGING lt_best.
+  ENDIF.
 
   " Seed GT_OBJ_SCORE with every object in scope (score 0 for objects
   " with no surviving chunks at all), then overlay the best cosine found.

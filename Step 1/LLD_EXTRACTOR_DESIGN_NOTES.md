@@ -267,12 +267,10 @@ themselves and the code that touches them use the real names.
   all — the small owner-rollup duplication this costs is worth that guarantee.
   Both duplicates call the exact same, unmodified
   `GET_SOURCE_FOR_LLD_OBJECT`/`BUILD_DEPENDENCY_FOR_OBJECT`.
-- **"Also write file copy" re-runs source/dependency extraction a second time**
-  rather than reusing what DB-mode staging already computed. Avoiding that would
-  mean threading extra output parameters through `EXTRACT_LLD_OBJECT` or otherwise
-  touching it. Fine at the pilot scale the brief describes this checkbox for
-  ("side-by-side debugging during the transition period"); not recommended against
-  a large package on every routine DB-mode run.
+- **The optional "Also write file copy" checkbox (`P_ALSOFL`) was dropped** — not
+  needed, per explicit instruction. DB mode now only ever stages/loads; if a
+  file-mode copy of the same run is wanted for comparison, run the report a second
+  time in File mode against the same package instead.
 - **`APPEND_FILE_HEADER`'s removed-objects-list logic was extracted into
   `BUILD_REMOVED_OBJECTS_LIST`, called by both file and DB mode.** This is a
   behavior-preserving refactor — same loop, same string, same output — not new
@@ -322,11 +320,6 @@ Run these against a real test package once the four tables and the stub FM exist
    that status/message surfaces correctly via `DISPLAY_DB_MODE_RESULT`. Separately
    confirm the `ZLLD_STG_RUN` row's own `STATUS`/`ERROR_MESSAGE` columns were updated
    to match (a DB check, not something visible from the confirmation screen alone).
-5. **"Also write file copy" (if built).** With DB mode + the checkbox both selected,
-   confirm both a DB-mode result screen AND a downloaded file appear, and that the
-   file's content matches what a plain File-mode run against the same package would
-   produce (same caveat as #1 — `EXTRACTED_AT` aside).
-
 ## Native processing (`step2_native_processing_brief.md`)
 
 **Written without SAP access, same caveat as everything above.** Originally built as

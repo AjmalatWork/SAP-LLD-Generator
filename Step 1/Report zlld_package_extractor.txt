@@ -237,25 +237,10 @@ SELECTION-SCREEN END OF BLOCK b1.
 SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE text-002.
 PARAMETERS: p_mfile RADIOBUTTON GROUP outm DEFAULT 'X',
             p_mdb   RADIOBUTTON GROUP outm.
-PARAMETERS: p_alsofl TYPE abap_bool AS CHECKBOX DEFAULT abap_false.
 SELECTION-SCREEN END OF BLOCK b2.
 
 AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
   PERFORM f4_output_folder CHANGING p_file.
-
-*&---------------------------------------------------------------------*
-*&      "Also write file copy" is only meaningful (and only enabled)
-*&      when Database mode is selected - low-priority nice-to-have for
-*&      side-by-side debugging during the transition period, per the
-*&      brief. Standard LOOP AT SCREEN enable/disable pattern.
-*&---------------------------------------------------------------------*
-AT SELECTION-SCREEN OUTPUT.
-  LOOP AT SCREEN.
-    IF screen-name = 'P_ALSOFL'.
-      screen-input = COND #( WHEN p_mdb = abap_true THEN 1 ELSE 0 ).
-      MODIFY SCREEN.
-    ENDIF.
-  ENDLOOP.
 
 *&---------------------------------------------------------------------*
 *& Main
@@ -330,18 +315,6 @@ FORM main.
       PERFORM finalize_sync_state USING p_pack gv_run_type gv_new_hwm.
       PERFORM call_extract_to_db USING gv_run_id.
       PERFORM display_db_mode_result.
-
-      " Optional debugging aid, not the primary path - re-runs the whole
-      " source/dependency extraction a second time rather than reusing
-      " what BUILD_AND_STAGE_LLD_DB already computed, since that would
-      " mean either restructuring EXTRACT_LLD_OBJECT (touching existing,
-      " already-validated extraction logic) or threading extra output
-      " parameters through it. Fine at the pilot scale this checkbox is
-      " for; not recommended against a large package on every DB-mode run.
-      IF p_alsofl = abap_true.
-        PERFORM build_and_write_lld_file.
-        PERFORM download_output_file.
-      ENDIF.
 
     WHEN OTHERS.  " 'FILE' - the default, byte-for-byte unchanged from
                   " before this brief.

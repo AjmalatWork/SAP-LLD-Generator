@@ -100,20 +100,29 @@ TYPES: zlld_tt_edge_map TYPE STANDARD TABLE OF zdccrt_ekind_map WITH EMPTY KEY.
 FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
                     CHANGING ev_status TYPE char12
                              ev_message TYPE string.
-  DATA: ls_stg_run        TYPE zdccrt_stg_run,
-        lv_found          TYPE abap_bool,
-        lt_edge_map       TYPE zlld_tt_edge_map,
-        lv_stopword_csv   TYPE string,
-        lt_stopwords      TYPE string_table,
-        lv_min_lines_str  TYPE string,
-        lv_min_lines      TYPE i,
-        lt_removed        TYPE zlld_tt_obj_key,
-        lt_staged_objects TYPE STANDARD TABLE OF zdccrt_stg_obj,
-        lv_failed         TYPE abap_bool,
-        lv_error_message  TYPE string,
-        lv_objects_done   TYPE i.
+  DATA: ls_stg_run          TYPE zdccrt_stg_run,
+        lv_found            TYPE abap_bool,
+        lt_edge_map         TYPE zlld_tt_edge_map,
+        lv_stopword_csv     TYPE string,
+        lt_stopwords        TYPE string_table,
+        lv_min_lines_str    TYPE string,
+        lv_min_lines        TYPE i,
+        lt_removed          TYPE zlld_tt_obj_key,
+        lt_staged_objects   TYPE STANDARD TABLE OF zdccrt_stg_obj,
+        lv_failed           TYPE abap_bool,
+        lv_error_message    TYPE string,
+        lv_objects_done     TYPE i,
+        lv_calls_written    TYPE i,
+        lv_ddref_written    TYPE i,
+        lv_chunks_written   TYPE i,
+        lv_tokens_written   TYPE i,
+        lv_ddic_written     TYPE i,
+        lv_dep_staged_count TYPE i,
+        lv_ddic_staged_count TYPE i.
 
-  CLEAR: ev_status, ev_message, lv_failed, lv_error_message, lv_objects_done.
+  CLEAR: ev_status, ev_message, lv_failed, lv_error_message, lv_objects_done,
+         lv_calls_written, lv_ddref_written, lv_chunks_written, lv_tokens_written,
+         lv_ddic_written.
 
   PERFORM zlld_read_stg_run USING iv_run_id CHANGING ls_stg_run lv_found.
   IF lv_found = abap_false.
@@ -167,7 +176,9 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
                                         lt_edge_map
                                         lv_min_lines
                                         lt_stopwords
-                                  CHANGING lv_failed lv_error_message.
+                                  CHANGING lv_failed lv_error_message
+                                           lv_calls_written lv_ddref_written
+                                           lv_chunks_written lv_tokens_written.
     IF lv_failed = abap_true.
       EXIT.
     ENDIF.
@@ -183,7 +194,8 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
   " run type, rather than trying to diff it against removed/staged
   " objects the way the object-scoped tables above do.
   IF lv_failed = abap_false.
-    PERFORM zlld_load_ddic_snapshot USING iv_run_id ls_stg_run-zpackage.
+    PERFORM zlld_load_ddic_snapshot USING iv_run_id ls_stg_run-zpackage
+                                     CHANGING lv_ddic_written.
   ENDIF.
 
   IF lv_failed = abap_false.
@@ -194,6 +206,27 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
 
     ev_status  = 'PROCESSED'.
     ev_message = |Loaded { lv_objects_done } object(s) into the graph/chunk/token tables for run { iv_run_id }.|.
+
+    " Per-table row-count summary, written to the list (spool when run
+    " in background) - staging counts are read fresh via COUNT(*) since
+    " ZDCCRT_STG_OBJ/_DEP/_DDIC are run-scoped and cheap to re-query;
+    " final-table counts are the running totals accumulated above, since
+    " those tables carry no RUN_ID to count against directly.
+    SELECT COUNT(*) FROM zdccrt_stg_dep INTO lv_dep_staged_count WHERE run_id = iv_run_id.
+    SELECT COUNT(*) FROM zdccrt_stg_ddic INTO lv_ddic_staged_count WHERE run_id = iv_run_id.
+
+    WRITE: / '--- DB-mode load summary for run', iv_run_id, '---'.
+    WRITE: / 'Staged (input to this run):'.
+    WRITE: / '  ZDCCRT_STG_OBJ  :', lines( lt_staged_objects ).
+    WRITE: / '  ZDCCRT_STG_DEP  :', lv_dep_staged_count.
+    WRITE: / '  ZDCCRT_STG_DDIC :', lv_ddic_staged_count.
+    WRITE: / 'Loaded (query-ready tables, rows written this run):'.
+    WRITE: / '  ZDCCRT_OBJECTS  :', lv_objects_done.
+    WRITE: / '  ZDCCRT_OBJ_CALLS:', lv_calls_written.
+    WRITE: / '  ZDCCRT_OBJ_DDREF:', lv_ddref_written.
+    WRITE: / '  ZDCCRT_CHUNKS   :', lv_chunks_written.
+    WRITE: / '  ZDCCRT_CHUNK_TOK:', lv_tokens_written.
+    WRITE: / '  ZDCCRT_DDIC_OBJ :', lv_ddic_written.
   ELSE.
     ROLLBACK WORK.
 
@@ -656,6 +689,13 @@ ENDFORM.
 *       ZLLD_DELETE_OBJECT_ROWS's own IV_OBJ_NAME - its only caller
 *       (EXTRACT_TO_DB) always passes a genuine CHAR30 object name
 *       (ZDCCRT_STG_OBJ-OBJ_NAME).
+*
+*       CV_CALLS_WRITTEN/CV_DDREF_WRITTEN/CV_CHUNKS_WRITTEN/
+*       CV_TOKENS_WRITTEN are running-total ACCUMULATORS, not per-call
+*       outputs - the caller passes the same variables across every
+*       object in its loop and reads the final totals afterward, since
+*       none of these four final tables carry a RUN_ID to COUNT(*)
+*       against directly (unlike the staging tables).
 *&---------------------------------------------------------------------*
 FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
                                   iv_obj_name TYPE seoclsname
@@ -665,7 +705,11 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
                                   iv_min_chunk_lines TYPE i
                                   it_stopwords TYPE string_table
                             CHANGING cv_failed TYPE abap_bool
-                                     cv_error_message TYPE string.
+                                     cv_error_message TYPE string
+                                     cv_calls_written TYPE i
+                                     cv_ddref_written TYPE i
+                                     cv_chunks_written TYPE i
+                                     cv_tokens_written TYPE i.
   DATA: ls_stg_object TYPE zdccrt_stg_obj,
         lt_deps       TYPE STANDARD TABLE OF zdccrt_stg_dep,
         lt_chunks     TYPE zlld_tt_chunk,
@@ -710,6 +754,7 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
                                              edge_kind       = lv_edge_kind
                                              signature_json  = ls_dep-signature_json ).
     MODIFY zdccrt_obj_calls FROM ls_call.
+    cv_calls_written = cv_calls_written + 1.
 
     " DDIC-shaped dependency types also get a structured secondary index
     " in ZDCCRT_OBJ_DDREF, covering every DDIC type (not just TABL) -
@@ -735,6 +780,7 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
                                                 ddic_type        = ls_dep-dependency_type
                                                 ddic_object_name = ls_dep-dependency_name ).
       MODIFY zdccrt_obj_ddref FROM ls_ddref.
+      cv_ddref_written = cv_ddref_written + 1.
     ENDIF.
   ENDLOOP.
 
@@ -748,6 +794,7 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
                                                chunk_index = ls_chunk-chunk_index
                                                chunk_text  = ls_chunk-chunk_text ).
     INSERT zdccrt_chunks FROM ls_chunk_row.
+    cv_chunks_written = cv_chunks_written + 1.
 
     PERFORM zlld_tokenize_chunk USING ls_chunk-chunk_text it_stopwords CHANGING lt_tokens.
 
@@ -756,6 +803,7 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
                                                   chunk_id       = lv_chunk_id
                                                   term_frequency = ls_tok-tf ).
       MODIFY zdccrt_chunk_tok FROM ls_tok_row.
+      cv_tokens_written = cv_tokens_written + 1.
     ENDLOOP.
   ENDLOOP.
 ENDFORM.
@@ -767,9 +815,11 @@ ENDFORM.
 *       FULL/INCR - see this form's caller for why.
 *&---------------------------------------------------------------------*
 FORM zlld_load_ddic_snapshot USING iv_run_id TYPE sysuuid_x16
-                                     iv_package TYPE devclass.
+                                     iv_package TYPE devclass
+                               CHANGING cv_ddic_written TYPE i.
   DATA lt_stg_ddic TYPE STANDARD TABLE OF zdccrt_stg_ddic.
 
+  CLEAR cv_ddic_written.
   DELETE FROM zdccrt_ddic_obj WHERE zpackage = iv_package.
 
   SELECT * FROM zdccrt_stg_ddic INTO TABLE lt_stg_ddic WHERE run_id = iv_run_id.
@@ -780,5 +830,6 @@ FORM zlld_load_ddic_snapshot USING iv_run_id TYPE sysuuid_x16
                                                 ddic_name   = ls_ddic-ddic_name
                                                 detail_json = ls_ddic-detail_json ).
     MODIFY zdccrt_ddic_obj FROM ls_ddic_row.
+    cv_ddic_written = cv_ddic_written + 1.
   ENDLOOP.
 ENDFORM.

@@ -398,7 +398,7 @@ FORM fetch_all_objects.
 
   LOOP AT lt_raw INTO DATA(ls_raw).
     APPEND VALUE #( name = ls_raw-obj_name type = ls_raw-obj_type package = ls_raw-zpackage ) TO gt_objects.
-    APPEND ls_raw-object_name TO gt_object_names.
+    APPEND ls_raw-obj_name TO gt_object_names.
   ENDLOOP.
 
   SORT gt_object_names.

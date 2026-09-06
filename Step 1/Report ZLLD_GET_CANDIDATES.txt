@@ -212,7 +212,7 @@ TABLES: zdccrt_objects.
 
 * text-001: maintain via SE38 Text Elements, e.g. "Requirement Input"
 SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.
-SELECT-OPTIONS: s_pack FOR zdccrt_objects-zpackage OBLIGATORY.
+SELECT-OPTIONS: s_pack FOR zdccrt_objects-zpackage OBLIGATORY NO INTERVALS.
 PARAMETERS: p_req  TYPE string OBLIGATORY LOWER CASE,
             p_note TYPE string LOWER CASE,
             p_conf TYPE char7  AS LISTBOX VISIBLE LENGTH 20,   " blank / UNSURE / LIKELY / CERTAIN

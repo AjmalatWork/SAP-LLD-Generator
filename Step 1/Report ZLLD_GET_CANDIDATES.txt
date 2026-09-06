@@ -1665,8 +1665,11 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 FORM dump_spool_to_file.
   TYPES: BEGIN OF ts_spool_line, line TYPE string, END OF ts_spool_line.
+  " LISTASCI must be a table of a fixed-length C line, not STRING - a
+  " deep/variable-length type here dumps OBJECTS_NOT_CHAR inside
+  " LIST_TO_ASCI. TEXT255 comfortably covers this report's list width.
   DATA: lt_listobject TYPE TABLE OF abaplist,
-        lt_listasci   TYPE TABLE OF string,
+        lt_listasci   TYPE TABLE OF text255,
         lt_out        TYPE STANDARD TABLE OF ts_spool_line WITH EMPTY KEY,
         lv_folder     TYPE string,
         lv_spool_path TYPE string.

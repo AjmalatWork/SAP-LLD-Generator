@@ -196,11 +196,11 @@ section has been syntax-checked, activated, or run.
 1. Create the four staging tables (`ZLLD_STG_RUN`/`_OBJECT`/`_DEPENDENCY`/`_DDIC`) —
    see `DDIC_TABLES_TO_CREATE_LLD.txt`'s new section. **Not created yet** — File mode
    needs none of this and works exactly as before regardless.
-2. ~~Create function module `ZLLD_PROCESS_EXTRACTION_RUN` in SE37~~ — superseded:
-   this stub was renamed to `ZLLD_EXTRACT_TO_DB` and given real logic by
-   `step2_native_processing_brief.md` before ever being built in the system — see
-   "Native processing" below, and build `ZLLD_EXTRACT_TO_DB` directly rather than
-   the stub described here.
+2. ~~Create function module `ZLLD_PROCESS_EXTRACTION_RUN` in SE37~~ — superseded
+   twice over: first renamed to `ZLLD_EXTRACT_TO_DB` with real logic, then folded
+   directly into `ZLLD_PACKAGE_EXTRACTOR` as a plain `INCLUDE` (no function module
+   at all) — see "Native processing" below and create
+   `Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt` instead.
 3. Maintain text element `text-002` (the new selection-screen block title) via SE38
    Text Elements — e.g. "Output Mode".
 4. Work through "New assumptions to verify" below before trusting DB-mode output.
@@ -290,11 +290,13 @@ Run these against a real test package once the four tables and the stub FM exist
    validated for file mode (see the existing test plan above, items 2-4) — this
    only checks that the same, unmodified sync logic now also flows correctly down
    the DB-mode path, not new sync behavior.
-4. **Hand-off contract.** Confirm `ZLLD_PROCESS_EXTRACTION_RUN` is actually called,
-   returns `ev_status = 'STUB_OK'`, and that status/message surfaces correctly via
-   `DISPLAY_DB_MODE_RESULT`. Separately confirm the `ZLLD_STG_RUN` row's own
-   `STATUS` column was updated to `'STUB_OK'` by the stub (a DB check, not something
-   visible from the confirmation screen alone).
+4. **Hand-off contract.** Confirm `EXTRACT_TO_DB` (the include's own form, PERFORMed
+   from `CALL_EXTRACT_TO_DB` — see "Native processing" below, this superseded the
+   original stub-FM hand-off entirely) is actually reached, returns
+   `ev_status = 'PROCESSED'` (or `'FAILED'` with a message on a genuine failure), and
+   that status/message surfaces correctly via `DISPLAY_DB_MODE_RESULT`. Separately
+   confirm the `ZLLD_STG_RUN` row's own `STATUS`/`ERROR_MESSAGE` columns were updated
+   to match (a DB check, not something visible from the confirmation screen alone).
 5. **"Also write file copy" (if built).** With DB mode + the checkbox both selected,
    confirm both a DB-mode result screen AND a downloaded file appear, and that the
    file's content matches what a plain File-mode run against the same package would
@@ -302,9 +304,14 @@ Run these against a real test package once the four tables and the stub FM exist
 
 ## Native processing (`step2_native_processing_brief.md`)
 
-**Written without SAP access, same caveat as everything above.** Supersedes the
-`ZLLD_PROCESS_EXTRACTION_RUN` stub — renamed to `ZLLD_EXTRACT_TO_DB`, now with real
-logic, per the brief's explicit "rename it... rather than leaving both around."
+**Written without SAP access, same caveat as everything above.** Originally built as
+a separate function module (`ZLLD_PROCESS_EXTRACTION_RUN`, then renamed to
+`ZLLD_EXTRACT_TO_DB`) — folded directly into `ZLLD_PACKAGE_EXTRACTOR` as a plain
+`INCLUDE` instead, on request, since a separate function module bought nothing here
+but SE37/function-group setup ceremony: this report already organizes its own DB-mode
+staging logic as forms in the same program, and the load logic is just more forms
+called the same way. `EXTRACT_TO_DB` is a `FORM`, PERFORMed from `CALL_EXTRACT_TO_DB`
+right where the function-module call used to be.
 
 ### What to do before activating
 
@@ -314,22 +321,18 @@ logic, per the brief's explicit "rename it... rather than leaving both around."
    section. **Not created yet.**
 2. Add the `ERROR_MESSAGE` field (`TYPE STRING`) to the already-created
    `ZLLD_STG_RUN` table.
-3. Rename the existing `ZLLD_PROCESS_EXTRACTION_RUN` function module to
-   `ZLLD_EXTRACT_TO_DB` (or delete it and create fresh under the new name — SE37
-   doesn't support in-place renaming of a function module, only of its function
-   group) and replace its body with
-   `Step 1/Function Module ZLLD_EXTRACT_TO_DB.txt`.
-4. Create a new include (e.g. `LZ<fgrp>F01`) in that function module's function
-   group containing `Step 1/Include LZLLD_EXTR_F01 (forms for
-   ZLLD_EXTRACT_TO_DB).txt`'s content, and add it to the group's top include (or
-   via SE80's "Create > Include" on the function group) so the `PERFORM`s in
-   `ZLLD_EXTRACT_TO_DB` resolve. **This is a real ABAP constraint, not a project
-   convention**: a function module's own source cannot contain `FORM`/`ENDFORM`
-   directly.
-5. Run `Report ZLLD_SEED_CONFIG_TABLES.txt` once, after the tables exist, to seed
+3. Create `Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt` as a normal ABAP program (SE38,
+   program type "Include") named `ZLLD_EXTRACT_TO_DB_F01` — the exact name must match
+   the `INCLUDE zlld_extract_to_db_f01.` statement already added near the top of
+   `ZLLD_PACKAGE_EXTRACTOR` (rename one side or the other if a naming-convention
+   check forces a different name in SE38). No function group, no SE37 function
+   module, no earlier `ZLLD_PROCESS_EXTRACTION_RUN`/`ZLLD_EXTRACT_TO_DB` FM to build
+   or rename — this replaces that whole approach.
+4. Run `Report ZLLD_SEED_CONFIG_TABLES.txt` once, after the tables exist, to seed
    `ZLLD_EDGE_KIND_MAP` (18 rows) and `ZLLD_CONFIG` (stopwords +
-   `CHUNK_MERGE_MIN_LINES`). Safe to re-run later (uses `MODIFY`).
-6. Work through "New assumptions to verify" below before trusting the loaded
+   `CHUNK_MERGE_MIN_LINES`, plus the retrieval-report keys added later — see
+   "Native retrieval" below). Safe to re-run later (uses `MODIFY`).
+5. Work through "New assumptions to verify" below before trusting the loaded
    tables.
 
 ### New assumptions to verify against the real system

@@ -1,21 +1,44 @@
 *&---------------------------------------------------------------------*
-*& Include LZLLD_EXTR_F01 (name is a placeholder - VERIFY the real
-*& generated include name for whichever function group
-*& ZLLD_EXTRACT_TO_DB lives in, and rename this file/include to match)
+*& Include ZLLD_EXTRACT_TO_DB_F01
 *&---------------------------------------------------------------------*
-*  FORM subroutines for ZLLD_EXTRACT_TO_DB. A function module's own
-*  source text cannot contain FORM/ENDFORM directly (an ABAP language
-*  restriction) - these must live in a separate include assigned to the
-*  function group (SE80: function group -> right-click -> Create ->
-*  Include, or the function group's Attributes screen), added to the
-*  group's top include via a line like:
-*    INCLUDE lzlld_extr_f01.
-*  before ZLLD_EXTRACT_TO_DB's own generated include so the PERFORM
-*  calls in that function resolve. TYPES declared at this include's top
-*  level become visible to every function module in the group, same as
-*  the group's own top-include TYPES/DATA would be.
+*  Native chunk/token/graph load (step2_native_processing_brief.md),
+*  folded directly into ZLLD_PACKAGE_EXTRACTOR as an INCLUDE rather than
+*  a separate function module - no SE37/function group ceremony needed,
+*  just a plain include + PERFORM, the same way this report already
+*  organizes every other piece of its own logic. Add
+*    INCLUDE zlld_extract_to_db_f01.
+*  near the top of ZLLD_PACKAGE_EXTRACTOR (see that report's own
+*  "REQUIRES" header comment and its CALL_EXTRACT_TO_DB form, which
+*  PERFORMs EXTRACT_TO_DB below).
 *
-*  VERIFY: none of this has been created/tested in the system.
+*  Reads the already-staged ZLLD_STG_RUN/_OBJECT/_DEPENDENCY/_DDIC rows
+*  (written by ZLLD_PACKAGE_EXTRACTOR's own DB-mode staging forms) and
+*  loads them into six final, query-ready tables (ZLLD_OBJECTS,
+*  ZLLD_OBJ_CALLS, ZLLD_OBJ_DDIC_REF, ZLLD_DDIC_OBJECTS, ZLLD_CHUNKS,
+*  ZLLD_CHUNK_TOKENS) plus edge-kind derivation via ZLLD_EDGE_KIND_MAP.
+*  Direct port of the Python pipeline.py/graph_loader.py logic, with
+*  vector embeddings replaced by lexical tokenization throughout (per
+*  the real-data evidence that the embedding model wasn't earning its
+*  keep). Does no JSON parsing of its own - ZLLD_STG_DEPENDENCY/_DDIC
+*  already have DEPENDENCY_TYPE/NAME/SIGNATURE_JSON and
+*  DDIC_TYPE/NAME/DETAIL_JSON split into columns by
+*  ZLLD_PACKAGE_EXTRACTOR's own JSON walker.
+*
+*  REQUIRES (see DDIC_TABLES_TO_CREATE_LLD.txt - NOT YET CREATED):
+*    - Table ZLLD_OBJECTS
+*    - Table ZLLD_OBJ_CALLS
+*    - Table ZLLD_OBJ_DDIC_REF
+*    - Table ZLLD_DDIC_OBJECTS
+*    - Table ZLLD_CHUNKS
+*    - Table ZLLD_CHUNK_TOKENS
+*    - Table ZLLD_EDGE_KIND_MAP (seed via Report ZLLD_SEED_CONFIG_TABLES)
+*    - Table ZLLD_CONFIG (seed via Report ZLLD_SEED_CONFIG_TABLES)
+*    - ZLLD_STG_RUN needs a new ERROR_MESSAGE field (TYPE STRING)
+*
+*  VERIFY: this has not been created/tested in the system - written
+*  without SAP access, like everything else in this project originally
+*  was. See LLD_EXTRACTOR_DESIGN_NOTES.md's "Native processing" section
+*  for the full assumptions list and acceptance-criteria test plan.
 *&---------------------------------------------------------------------*
 
 *&---------------------------------------------------------------------*
@@ -45,6 +68,131 @@ TYPES: BEGIN OF zlld_ts_token_count,
 TYPES: zlld_tt_edge_map TYPE STANDARD TABLE OF zlld_edge_kind_map WITH EMPTY KEY.
 
 *&=======================================================================*
+*& Orchestration
+*&=======================================================================*
+
+*&---------------------------------------------------------------------*
+*&      Form  EXTRACT_TO_DB
+*&---------------------------------------------------------------------*
+*       Called from ZLLD_PACKAGE_EXTRACTOR's CALL_EXTRACT_TO_DB form
+*       right after DB-mode staging completes. FULL vs INCREMENTAL,
+*       single commit/rollback unit for every final-table write this
+*       run makes - only COMMIT once everything succeeded; on any
+*       failure, roll back so nothing partially-loaded looks
+*       superficially complete, then persist FAILED/ERROR_MESSAGE in its
+*       own fresh LUW.
+*&---------------------------------------------------------------------*
+FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
+                    CHANGING ev_status TYPE char12
+                             ev_message TYPE string.
+  DATA: ls_stg_run        TYPE zlld_stg_run,
+        lv_found          TYPE abap_bool,
+        lt_edge_map       TYPE zlld_tt_edge_map,
+        lv_stopword_csv   TYPE string,
+        lt_stopwords      TYPE string_table,
+        lv_min_lines_str  TYPE string,
+        lv_min_lines      TYPE i,
+        lt_removed        TYPE zlld_tt_obj_key,
+        lt_staged_objects TYPE STANDARD TABLE OF zlld_stg_object,
+        lv_failed         TYPE abap_bool,
+        lv_error_message  TYPE string,
+        lv_objects_done   TYPE i.
+
+  CLEAR: ev_status, ev_message, lv_failed, lv_error_message, lv_objects_done.
+
+  PERFORM zlld_read_stg_run USING iv_run_id CHANGING ls_stg_run lv_found.
+  IF lv_found = abap_false.
+    ev_status  = 'FAILED'.
+    ev_message = |No ZLLD_STG_RUN row found for RUN_ID { iv_run_id }. Nothing to process.|.
+    RETURN.
+  ENDIF.
+
+  PERFORM zlld_load_edge_kind_map CHANGING lt_edge_map.
+
+  " STOPWORDS/CHUNK_MERGE_MIN_LINES both live in ZLLD_CONFIG so they can
+  " be tuned via SM30 without a transport - see the brief. Missing rows
+  " fall back to safe defaults rather than erroring, matching this
+  " project's open-vocabulary/no-hard-fail philosophy for anything
+  " tunable via a maintainable table.
+  PERFORM zlld_get_config_value USING 'STOPWORDS' '' CHANGING lv_stopword_csv.
+  PERFORM zlld_parse_stopwords USING lv_stopword_csv CHANGING lt_stopwords.
+
+  PERFORM zlld_get_config_value USING 'CHUNK_MERGE_MIN_LINES' '3' CHANGING lv_min_lines_str.
+  lv_min_lines = lv_min_lines_str.
+
+  " FULL vs INCREMENTAL, same semantics as the already-validated Python
+  " loader (see graph_loader.py) - untouched-row guarantee: an object
+  " neither removed nor present in this run's staged data is never
+  " referenced by any DELETE/INSERT/MODIFY statement below.
+  IF ls_stg_run-run_type = 'FULL'.
+    PERFORM zlld_delete_package_rows USING ls_stg_run-zpackage.
+  ELSE.
+    PERFORM zlld_parse_removed_list USING ls_stg_run-removed_objects CHANGING lt_removed.
+    LOOP AT lt_removed INTO DATA(ls_removed).
+      PERFORM zlld_delete_object_rows USING ls_removed-obj_name.
+    ENDLOOP.
+  ENDIF.
+
+  SELECT * FROM zlld_stg_object INTO TABLE lt_staged_objects WHERE run_id = iv_run_id.
+
+  LOOP AT lt_staged_objects INTO DATA(ls_staged).
+    IF ls_stg_run-run_type = 'INCR'.
+      " FULL already cleared the whole package above; INCR only cleared
+      " REMOVED_OBJECTS so far - a touched-but-not-removed object's own
+      " prior rows still need clearing before it's reloaded (delete-then-
+      " reinsert one object at a time, same reasoning as the Python
+      " loader: simpler and safer than diffing individual edges).
+      PERFORM zlld_delete_object_rows USING ls_staged-object_name.
+    ENDIF.
+
+    PERFORM zlld_load_one_object USING iv_run_id
+                                        ls_staged-object_name
+                                        ls_staged-object_type
+                                        ls_stg_run-zpackage
+                                        lt_edge_map
+                                        lv_min_lines
+                                        lt_stopwords
+                                  CHANGING lv_failed lv_error_message.
+    IF lv_failed = abap_true.
+      EXIT.
+    ENDIF.
+
+    lv_objects_done = lv_objects_done + 1.
+  ENDLOOP.
+
+  " DDIC snapshot is package-wide, not object-scoped (ZLLD_STG_DDIC is
+  " always the package's full current DOMA/DTEL/TABL/STRU/TTYP catalog,
+  " staged fresh on both FULL and INCR runs - see this report's own
+  " STAGE_PACKAGE_DDIC, called unconditionally) - so it's simplest and
+  " correct to always fully replace it for this package, regardless of
+  " run type, rather than trying to diff it against removed/staged
+  " objects the way the object-scoped tables above do.
+  IF lv_failed = abap_false.
+    PERFORM zlld_load_ddic_snapshot USING iv_run_id ls_stg_run-zpackage.
+  ENDIF.
+
+  IF lv_failed = abap_false.
+    ls_stg_run-status        = 'PROCESSED'.
+    ls_stg_run-error_message = ''.
+    MODIFY zlld_stg_run FROM ls_stg_run.
+    COMMIT WORK.
+
+    ev_status  = 'PROCESSED'.
+    ev_message = |Loaded { lv_objects_done } object(s) into the graph/chunk/token tables for run { iv_run_id }.|.
+  ELSE.
+    ROLLBACK WORK.
+
+    ls_stg_run-status        = 'FAILED'.
+    ls_stg_run-error_message = lv_error_message.
+    MODIFY zlld_stg_run FROM ls_stg_run.
+    COMMIT WORK.
+
+    ev_status  = 'FAILED'.
+    ev_message = lv_error_message.
+  ENDIF.
+ENDFORM.
+
+*&=======================================================================*
 *& Staged-run reading / parsing
 *&=======================================================================*
 
@@ -66,9 +214,8 @@ ENDFORM.
 *&      Form  ZLLD_PARSE_REMOVED_LIST
 *&---------------------------------------------------------------------*
 *       Parses the SAME "TYPE:NAME, TYPE:NAME" / "NONE" format
-*       ZLLD_PACKAGE_EXTRACTOR's BUILD_REMOVED_OBJECTS_LIST produces
-*       (ZLLD_STG_RUN-REMOVED_OBJECTS is staged in that exact format) -
-*       this is its inverse.
+*       BUILD_REMOVED_OBJECTS_LIST produces (ZLLD_STG_RUN-REMOVED_OBJECTS
+*       is staged in that exact format) - this is its inverse.
 *&---------------------------------------------------------------------*
 FORM zlld_parse_removed_list USING iv_list TYPE string
                               CHANGING ct_objs TYPE zlld_tt_obj_key.
@@ -370,11 +517,16 @@ ENDFORM.
 *       codebase's naming convention), lowercases, filters IT_STOPWORDS,
 *       and counts term frequency per distinct token. No IDF/document-
 *       frequency weighting computed here - that's a corpus-wide
-*       statistic left as a query-time aggregate for the future
-*       retrieval report, per the brief (materializing it here would
-*       need re-deriving on every incremental change - the same class of
-*       staleness risk the untouched-row guarantee already exists to
-*       avoid elsewhere on this project).
+*       statistic left as a query-time aggregate for the retrieval
+*       report (ZLLD_RETRIEVE_CANDIDATES), per the brief (materializing
+*       it here would need re-deriving on every incremental change - the
+*       same class of staleness risk the untouched-row guarantee already
+*       exists to avoid elsewhere on this project).
+*
+*       IMPORTANT: ZLLD_RETRIEVE_CANDIDATES duplicates this exact
+*       tokenizer (its own TOKENIZE_TEXT form) so the requirement vector
+*       and these stored chunk-token vectors share one vocabulary - keep
+*       both in lockstep if this ever changes.
 *&---------------------------------------------------------------------*
 FORM zlld_tokenize_chunk USING iv_text TYPE string
                                 it_stopwords TYPE string_table
@@ -407,9 +559,13 @@ ENDFORM.
 *&=======================================================================*
 
 *&---------------------------------------------------------------------*
-*&      Form  ZLLD_GENERATE_UUID
+*&      Form  ZLLD_GENERATE_CHUNK_UUID
 *&---------------------------------------------------------------------*
-FORM zlld_generate_uuid CHANGING cv_uuid TYPE sysuuid_x16.
+*       Named distinctly from the report's own GENERATE_RUN_ID (same
+*       CL_SYSTEM_UUID call, different purpose/caller) so both can
+*       coexist in the same program without a name clash.
+*&---------------------------------------------------------------------*
+FORM zlld_generate_chunk_uuid CHANGING cv_uuid TYPE sysuuid_x16.
   TRY.
       cv_uuid = cl_system_uuid=>create_uuid_x16_static( ).
     CATCH cx_uuid_error.
@@ -529,8 +685,8 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
     " in ZLLD_OBJ_DDIC_REF, covering every DDIC type (not just TABL) -
     " per the brief, this table supports either table-sharing-bonus
     " scope going forward without a schema change; which DDIC_TYPE(s)
-    " actually count toward that bonus is the future retrieval report's
-    " own, separately evidence-backed decision, not made here.
+    " actually count toward that bonus is the retrieval report's own,
+    " separately evidence-backed decision, not made here.
     IF ls_dep-dependency_type = 'DOMA' OR ls_dep-dependency_type = 'DTEL'
     OR ls_dep-dependency_type = 'TABL' OR ls_dep-dependency_type = 'STRU'
     OR ls_dep-dependency_type = 'TTYP'.
@@ -543,7 +699,7 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
   PERFORM zlld_chunk_source USING ls_stg_object-source iv_min_chunk_lines CHANGING lt_chunks.
 
   LOOP AT lt_chunks INTO DATA(ls_chunk).
-    PERFORM zlld_generate_uuid CHANGING lv_chunk_id.
+    PERFORM zlld_generate_chunk_uuid CHANGING lv_chunk_id.
 
     INSERT zlld_chunks FROM VALUE #( chunk_id    = lv_chunk_id
                                       object_name = iv_obj_name

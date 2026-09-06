@@ -137,11 +137,10 @@ Native processing / query-ready tables (step2_native_processing_brief.md)
 STATUS: NOT YET CREATED
 ===========================================================================
 Written without SAP access, same caveat as the DB-mode section above.
-Built for ZLLD_EXTRACT_TO_DB (renamed from the ZLLD_PROCESS_EXTRACTION_RUN
-stub) - see Step 1/Function Module ZLLD_EXTRACT_TO_DB.txt and Step 1/Include
-LZLLD_EXTR_F01.txt. These are the tables a future retrieval report queries -
-none of them are staging tables, and none are touched by
-ZLLD_PACKAGE_EXTRACTOR directly.
+Built for EXTRACT_TO_DB, a FORM folded directly into ZLLD_PACKAGE_EXTRACTOR
+via "INCLUDE zlld_extract_to_db_f01." (no separate function module - see
+Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt). These are the tables
+ZLLD_RETRIEVE_CANDIDATES queries - none of them are staging tables.
 
 7) Table ZLLD_OBJECTS ("one row per final, query-ready object")
    Short text: LLD Extractor - Query-Ready Objects

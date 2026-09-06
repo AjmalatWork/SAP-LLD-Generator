@@ -22,17 +22,21 @@ REPORT zlld_package_extractor.
 *    - Table ZDCCRT_SYNC_LOG
 *    - Table ZDCCRT_SYNC_OBJ
 *
-*  REQUIRES for DB output mode (step1_db_mode_brief.md - NOT YET CREATED,
-*  see DDIC_TABLES_TO_CREATE_LLD.txt for specs to build in SE11 first):
+*  REQUIRES for DB output mode (step1_db_mode_brief.md +
+*  step2_native_processing_brief.md - NOT YET CREATED, see
+*  DDIC_TABLES_TO_CREATE_LLD.txt for specs to build in SE11 first):
 *    - Table ZLLD_STG_RUN (now also needs an ERROR_MESSAGE field - see
 *      DDIC_TABLES_TO_CREATE_LLD.txt)
 *    - Table ZLLD_STG_OBJECT
 *    - Table ZLLD_STG_DEPENDENCY
 *    - Table ZLLD_STG_DDIC
-*    - Function module ZLLD_EXTRACT_TO_DB (renamed from the earlier
-*      ZLLD_PROCESS_EXTRACTION_RUN stub - now a real implementation, per
-*      step2_native_processing_brief.md - see
-*      Step 1/Function Module ZLLD_EXTRACT_TO_DB.txt)
+*    - Tables ZLLD_OBJECTS/ZLLD_OBJ_CALLS/ZLLD_OBJ_DDIC_REF/
+*      ZLLD_DDIC_OBJECTS/ZLLD_CHUNKS/ZLLD_CHUNK_TOKENS/
+*      ZLLD_EDGE_KIND_MAP/ZLLD_CONFIG
+*    - The native chunk/token/graph load itself is a plain INCLUDE, not
+*      a function module (no SE37/function group setup needed) - see
+*      "INCLUDE zlld_extract_to_db_f01." below and
+*      Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt.
 *  File mode (the default) needs none of the above and is unchanged.
 *
 *  SEVERAL FM CALLS BELOW ARE FLAGGED "VERIFY" - their exact parameter
@@ -41,6 +45,14 @@ REPORT zlld_package_extractor.
 *  SE37 before activating. See LLD_EXTRACTOR_DESIGN_NOTES.md for the
 *  full list and for the acceptance-criteria test plan.
 *&---------------------------------------------------------------------*
+
+* Native chunk/token/graph load (step2_native_processing_brief.md) -
+* only exercised by the DB-mode path (CALL_EXTRACT_TO_DB below PERFORMs
+* EXTRACT_TO_DB, defined in this include). Create this include as a
+* normal ABAP program (SE38, program type "Include") from
+* Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt before activating DB mode -
+* file mode does not need it at all.
+INCLUDE zlld_extract_to_db_f01.
 
 *&---------------------------------------------------------------------*
 *& Local Types
@@ -1544,12 +1556,11 @@ ENDFORM.
 *&
 *& Stages the SAME already-computed data FILE mode writes to GT_OUTPUT -
 *& instead as rows in ZLLD_STG_RUN/_OBJECT/_DEPENDENCY/_DDIC - then hands
-*& off to ZLLD_EXTRACT_TO_DB (real logic now - see
-*& Step 1/Function Module ZLLD_EXTRACT_TO_DB.txt; renamed from the
-*& earlier ZLLD_PROCESS_EXTRACTION_RUN stub). This report's own staging
-*& forms below still do not derive EDGE_KIND or otherwise interpret
-*& DEPENDENCY_TYPE - that stays ZLLD_EXTRACT_TO_DB's job, unchanged from
-*& the original design.
+*& off to EXTRACT_TO_DB (real logic, defined in the included
+*& Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt - see the INCLUDE statement
+*& near the top of this report). This report's own staging forms below
+*& still do not derive EDGE_KIND or otherwise interpret DEPENDENCY_TYPE
+*& - that stays EXTRACT_TO_DB's job, unchanged from the original design.
 *&
 *& EXTRACT_LLD_OBJECT_DB and PROCESS_CHECKED_LLD_OBJECTS_DB below are
 *& deliberate near-duplicates of EXTRACT_LLD_OBJECT/
@@ -2054,21 +2065,16 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  CALL_EXTRACT_TO_DB
 *&---------------------------------------------------------------------*
-*       ZLLD_EXTRACT_TO_DB (renamed from the earlier
-*       ZLLD_PROCESS_EXTRACTION_RUN stub, per
-*       step2_native_processing_brief.md) - real chunking, tokenization,
-*       edge_kind derivation, and graph/DDIC loading into query-ready
-*       tables. See Step 1/Function Module ZLLD_EXTRACT_TO_DB.txt.
+*       EXTRACT_TO_DB (real chunking, tokenization, edge_kind
+*       derivation, and graph/DDIC loading into query-ready tables) is
+*       defined in the INCLUDE zlld_extract_to_db_f01 pulled in near the
+*       top of this report - a plain PERFORM, no function module/SE37
+*       ceremony needed. See Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt.
 *&---------------------------------------------------------------------*
 FORM call_extract_to_db USING iv_run_id TYPE sysuuid_x16.
   CLEAR: gv_db_status, gv_db_message.
 
-  CALL FUNCTION 'ZLLD_EXTRACT_TO_DB'
-    EXPORTING
-      iv_run_id  = iv_run_id
-    IMPORTING
-      ev_status  = gv_db_status
-      ev_message = gv_db_message.
+  PERFORM extract_to_db USING iv_run_id CHANGING gv_db_status gv_db_message.
 ENDFORM.
 
 *&---------------------------------------------------------------------*

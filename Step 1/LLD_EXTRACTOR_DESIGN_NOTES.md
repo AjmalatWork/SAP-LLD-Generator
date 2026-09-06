@@ -188,14 +188,22 @@ Run these against a real test package once activated:
 
 ## DB output mode (`step1_db_mode_brief.md`)
 
-**Written without SAP access, same caveat as everything above.** Nothing in this
-section has been syntax-checked, activated, or run.
+**Written without SAP access, same caveat as everything above.** The four staging
+tables described in this section by their original `ZLLD_*` names have since been
+**created** under renamed, as-built names (`ZDCCRT_STG_RUN`/`_OBJ`/`_DEP`/`_DDIC`) —
+see `DDIC_TABLES_TO_CREATE_LLD.txt`'s "DB output mode" section for the exact
+old-name → new-name/field map, and note its flagged **outstanding issue**:
+`ZDCCRT_STG_DEP`'s key is missing `DEPENDENCY_SEQ`, which must be added before DB
+mode can run against any object with more than one dependency. The ABAP source
+(`ZLLD_PACKAGE_EXTRACTOR.txt`) has been updated to the as-built names; the
+walkthrough below keeps its original `ZLLD_*` names for readability but the tables
+themselves and the code that touches them use the real names.
 
 ### What to do before activating DB mode
 
-1. Create the four staging tables (`ZLLD_STG_RUN`/`_OBJECT`/`_DEPENDENCY`/`_DDIC`) —
-   see `DDIC_TABLES_TO_CREATE_LLD.txt`'s new section. **Not created yet** — File mode
-   needs none of this and works exactly as before regardless.
+1. ~~Create the four staging tables (`ZLLD_STG_RUN`/`_OBJECT`/`_DEPENDENCY`/`_DDIC`)~~
+   — **done**, as `ZDCCRT_STG_RUN`/`_OBJ`/`_DEP`/`_DDIC` (see the as-built note above).
+   Fix the `ZDCCRT_STG_DEP` key issue before proceeding.
 2. ~~Create function module `ZLLD_PROCESS_EXTRACTION_RUN` in SE37~~ — superseded
    twice over: first renamed to `ZLLD_EXTRACT_TO_DB` with real logic, then folded
    directly into `ZLLD_PACKAGE_EXTRACTOR` as a plain `INCLUDE` (no function module
@@ -330,14 +338,21 @@ staging logic as forms in the same program, and the load logic is just more form
 called the same way. `EXTRACT_TO_DB` is a `FORM`, PERFORMed from `CALL_EXTRACT_TO_DB`
 right where the function-module call used to be.
 
+**As-built note:** all eight final/config tables described below by their original
+`ZLLD_*` names have since been **created** under renamed names (`ZDCCRT_OBJECTS`,
+`ZDCCRT_OBJ_CALLS`, `ZDCCRT_OBJ_DDREF`, `ZDCCRT_DDIC_OBJ`, `ZDCCRT_CHUNKS`,
+`ZDCCRT_CHUNK_TOK`, `ZDCCRT_EKIND_MAP`, `ZDCCRT_CONFIG`) — see
+`DDIC_TABLES_TO_CREATE_LLD.txt`'s "Native processing" section for the exact
+old-name → new-name/field map. `Include ZLLD_EXTRACT_TO_DB_F01.txt` and
+`ZLLD_RETRIEVE_CANDIDATES.txt` have both been updated to the as-built names. One item
+still needs a manual SE11 check: confirm `ZDCCRT_STG_DDIC` actually has a
+`DETAIL_JSON` field (see the DB-mode section's table 6).
+
 ### What to do before activating
 
-1. Create the eight new final/config tables (`ZLLD_OBJECTS`, `ZLLD_OBJ_CALLS`,
-   `ZLLD_OBJ_DDIC_REF`, `ZLLD_DDIC_OBJECTS`, `ZLLD_CHUNKS`, `ZLLD_CHUNK_TOKENS`,
-   `ZLLD_EDGE_KIND_MAP`, `ZLLD_CONFIG`) — see `DDIC_TABLES_TO_CREATE_LLD.txt`'s new
-   section. **Not created yet.**
-2. Add the `ERROR_MESSAGE` field (`TYPE STRING`) to the already-created
-   `ZLLD_STG_RUN` table.
+1. ~~Create the eight new final/config tables~~ — **done**, under the renamed
+   `ZDCCRT_*` names (see the as-built note above).
+2. ~~Add the `ERROR_MESSAGE` field~~ — **done** on `ZDCCRT_STG_RUN`.
 3. Create `Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt` as a normal ABAP program (SE38,
    program type "Include") named `ZLLD_EXTRACT_TO_DB_F01` — the exact name must match
    the `INCLUDE zlld_extract_to_db_f01.` statement already added near the top of

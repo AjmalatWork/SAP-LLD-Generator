@@ -177,7 +177,7 @@ DATA: gt_pack_names   TYPE STANDARD TABLE OF devclass WITH EMPTY KEY,
 *&---------------------------------------------------------------------*
 * text-001: maintain via SE38 Text Elements, e.g. "Requirement Input"
 SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.
-SELECT-OPTIONS: s_pack FOR zlld_objects-package OBLIGATORY.
+SELECT-OPTIONS: s_pack FOR zdccrt_objects-zpackage OBLIGATORY.
 PARAMETERS: p_req  TYPE string OBLIGATORY LOWER CASE,
             p_note TYPE string LOWER CASE,
             p_conf TYPE char7  LOWER CASE,   " blank / UNSURE / LIKELY / CERTAIN
@@ -315,7 +315,7 @@ ENDFORM.
 FORM get_config_value USING iv_key TYPE string iv_default TYPE string
                        CHANGING cv_value TYPE string.
   CLEAR cv_value.
-  SELECT SINGLE config_value FROM zlld_config INTO cv_value WHERE config_key = iv_key.
+  SELECT SINGLE config_value FROM zdccrt_config INTO cv_value WHERE config_key = iv_key.
   IF sy-subrc <> 0.
     cv_value = iv_default.
   ENDIF.
@@ -355,7 +355,7 @@ FORM validate_packages.
   SORT gt_pack_names.
   DELETE ADJACENT DUPLICATES FROM gt_pack_names.
 
-  SELECT DISTINCT package FROM zlld_objects INTO TABLE lt_known.
+  SELECT DISTINCT zpackage FROM zdccrt_objects INTO TABLE lt_known.
 
   LOOP AT gt_pack_names INTO DATA(lv_pack).
     lv_found = abap_false.
@@ -380,16 +380,16 @@ ENDFORM.
 *&      Form  FETCH_ALL_OBJECTS
 *&---------------------------------------------------------------------*
 FORM fetch_all_objects.
-  DATA: lt_raw  TYPE STANDARD TABLE OF zlld_objects,
+  DATA: lt_raw  TYPE STANDARD TABLE OF zdccrt_objects,
         lr_pack TYPE RANGE OF devclass.
 
   CLEAR: gt_objects, gt_object_names.
   PERFORM gt_pack_names_range CHANGING lr_pack.
 
-  SELECT * FROM zlld_objects INTO TABLE @lt_raw WHERE package IN @lr_pack.
+  SELECT * FROM zdccrt_objects INTO TABLE @lt_raw WHERE zpackage IN @lr_pack.
 
   LOOP AT lt_raw INTO DATA(ls_raw).
-    APPEND VALUE #( name = ls_raw-object_name type = ls_raw-object_type package = ls_raw-package ) TO gt_objects.
+    APPEND VALUE #( name = ls_raw-obj_name type = ls_raw-obj_type package = ls_raw-zpackage ) TO gt_objects.
     APPEND ls_raw-object_name TO gt_object_names.
   ENDLOOP.
 
@@ -433,14 +433,14 @@ FORM fetch_adjacency.
   PERFORM gt_pack_names_range CHANGING lr_pack.
 
   SELECT oc~source_object AS node, oc~target_object AS neighbor
-    FROM zlld_obj_calls AS oc
-    INNER JOIN zlld_objects AS o1 ON o1~object_name = oc~source_object
-    INNER JOIN zlld_objects AS o2 ON o2~object_name = oc~target_object
-    INNER JOIN zlld_edge_kind_map AS ekm ON ekm~dependency_type = oc~dependency_type
+    FROM zdccrt_obj_calls AS oc
+    INNER JOIN zdccrt_objects AS o1 ON o1~obj_name = oc~source_object
+    INNER JOIN zdccrt_objects AS o2 ON o2~obj_name = oc~target_object
+    INNER JOIN zdccrt_ekind_map AS ekm ON ekm~dependency_type = oc~dependency_type
     INTO TABLE @lt_raw
     WHERE ekm~is_call_like = @abap_true
-      AND o1~package IN @lr_pack
-      AND o2~package IN @lr_pack.
+      AND o1~zpackage IN @lr_pack
+      AND o2~zpackage IN @lr_pack.
 
   LOOP AT lt_raw INTO DATA(ls_edge).
     INSERT VALUE #( node = ls_edge-node neighbor = ls_edge-neighbor ) INTO TABLE gt_adjacency.
@@ -462,12 +462,12 @@ FORM fetch_object_tables.
   CLEAR gt_obj_tables.
   PERFORM gt_pack_names_range CHANGING lr_pack.
 
-  SELECT dr~object_name, dr~ddic_object_name AS table_name
-    FROM zlld_obj_ddic_ref AS dr
-    INNER JOIN zlld_objects AS o ON o~object_name = dr~object_name
+  SELECT dr~obj_name AS object_name, dr~ddic_object_name AS table_name
+    FROM zdccrt_obj_ddref AS dr
+    INNER JOIN zdccrt_objects AS o ON o~obj_name = dr~obj_name
     INTO TABLE @lt_raw
     WHERE dr~ddic_type = 'TABL'
-      AND o~package IN @lr_pack.
+      AND o~zpackage IN @lr_pack.
 
   LOOP AT lt_raw INTO DATA(ls_row).
     INSERT ls_row INTO TABLE gt_obj_tables.
@@ -565,7 +565,7 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 FORM compute_idf_table.
   DATA: lt_chunks_raw TYPE tt_chunk_ref,
-        lt_tokens_raw TYPE STANDARD TABLE OF zlld_chunk_tokens,
+        lt_tokens_raw TYPE STANDARD TABLE OF zdccrt_chunk_tok,
         lt_chunk_ids  TYPE STANDARD TABLE OF sysuuid_x16,
         lr_pack       TYPE RANGE OF devclass,
         lv_doc_freq   TYPE i.
@@ -573,11 +573,11 @@ FORM compute_idf_table.
   CLEAR: gt_idf, gv_total_chunks, gt_scope_chunks, gt_scope_tokens.
   PERFORM gt_pack_names_range CHANGING lr_pack.
 
-  SELECT c~chunk_id, c~object_name
-    FROM zlld_chunks AS c
-    INNER JOIN zlld_objects AS o ON o~object_name = c~object_name
+  SELECT c~chunk_id, c~obj_name AS object_name
+    FROM zdccrt_chunks AS c
+    INNER JOIN zdccrt_objects AS o ON o~obj_name = c~obj_name
     INTO TABLE @lt_chunks_raw
-    WHERE o~package IN @lr_pack
+    WHERE o~zpackage IN @lr_pack
       AND strlen( c~chunk_text ) >= @gc_min_chunk_length.
 
   LOOP AT lt_chunks_raw INTO DATA(ls_c).
@@ -588,7 +588,7 @@ FORM compute_idf_table.
 
   CHECK lt_chunk_ids IS NOT INITIAL.
 
-  SELECT * FROM zlld_chunk_tokens INTO TABLE @lt_tokens_raw
+  SELECT * FROM zdccrt_chunk_tok INTO TABLE @lt_tokens_raw
     FOR ALL ENTRIES IN @lt_chunk_ids
     WHERE chunk_id = @lt_chunk_ids-table_line.
 
@@ -1235,7 +1235,7 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 FORM build_dependencies_json USING iv_object_name TYPE string iv_object_type TYPE char4
                               CHANGING cv_json TYPE string.
-  DATA: lt_calls    TYPE STANDARD TABLE OF zlld_obj_calls,
+  DATA: lt_calls    TYPE STANDARD TABLE OF zdccrt_obj_calls,
         lt_entries  TYPE string_t,
         lv_type_esc TYPE string,
         lv_name_esc TYPE string,
@@ -1243,7 +1243,7 @@ FORM build_dependencies_json USING iv_object_name TYPE string iv_object_type TYP
         lv_outer_type_esc TYPE string,
         lv_outer_name_esc TYPE string.
 
-  SELECT * FROM zlld_obj_calls INTO TABLE lt_calls
+  SELECT * FROM zdccrt_obj_calls INTO TABLE lt_calls
     WHERE source_object = iv_object_name
     ORDER BY target_object.
 
@@ -1279,8 +1279,8 @@ ENDFORM.
 FORM build_source_text USING iv_object_name TYPE string CHANGING cv_source TYPE string.
   DATA lt_texts TYPE string_t.
 
-  SELECT chunk_text FROM zlld_chunks INTO TABLE lt_texts
-    WHERE object_name = iv_object_name
+  SELECT chunk_text FROM zdccrt_chunks INTO TABLE lt_texts
+    WHERE obj_name = iv_object_name
     ORDER BY chunk_index.
 
   cv_source = concat_lines_of( table = lt_texts sep = |\n\n| ).

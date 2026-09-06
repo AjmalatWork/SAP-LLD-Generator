@@ -3,8 +3,10 @@ REPORT zlld_seed_config_tables.
 *&---------------------------------------------------------------------*
 *& ZLLD_SEED_CONFIG_TABLES
 *&---------------------------------------------------------------------*
-*  One-time (idempotent - safe to re-run) seeding of ZLLD_EDGE_KIND_MAP
-*  and ZLLD_CONFIG, covering both ZLLD_EXTRACT_TO_DB (per
+*  One-time (idempotent - safe to re-run) seeding of ZDCCRT_EKIND_MAP
+*  (as-built name for the originally-proposed ZLLD_EDGE_KIND_MAP - see
+*  DDIC_TABLES_TO_CREATE_LLD.txt) and ZDCCRT_CONFIG (as-built name for
+*  ZLLD_CONFIG), covering both ZLLD_EXTRACT_TO_DB (per
 *  step2_native_processing_brief.md) and ZLLD_RETRIEVE_CANDIDATES (per
 *  zlld_retrieve_candidates_brief.md's deliverable #3 - scoring weights,
 *  score thresholds, tier multipliers). Run this ONCE after creating all
@@ -15,7 +17,7 @@ REPORT zlld_seed_config_tables.
 *  Deliberately a table, not a hardcoded CASE - see ZLLD_EXTRACT_TO_DB's
 *  ZLLD_LOOKUP_EDGE_KIND form. Adding a row here for a newly-observed
 *  DEPENDENCY_TYPE never needs a transport for logic, only a data change
-*  (SM30 on ZLLD_EDGE_KIND_MAP directly also works going forward - this
+*  (SM30 on ZDCCRT_EKIND_MAP directly also works going forward - this
 *  report is just the bulk one-time load).
 *
 *  EDGE_KIND/IS_CALL_LIKE values below are a straight port of
@@ -30,13 +32,13 @@ REPORT zlld_seed_config_tables.
 START-OF-SELECTION.
   PERFORM seed_edge_kind_map.
   PERFORM seed_config.
-  WRITE: / 'ZLLD_EDGE_KIND_MAP and ZLLD_CONFIG seeded (or re-seeded, unchanged if already current).'.
+  WRITE: / 'ZDCCRT_EKIND_MAP and ZDCCRT_CONFIG seeded (or re-seeded, unchanged if already current).'.
 
 *&---------------------------------------------------------------------*
 *&      Form  SEED_EDGE_KIND_MAP
 *&---------------------------------------------------------------------*
 FORM seed_edge_kind_map.
-  TYPES: tt_edge_seed TYPE STANDARD TABLE OF zlld_edge_kind_map WITH EMPTY KEY.
+  TYPES: tt_edge_seed TYPE STANDARD TABLE OF zdccrt_ekind_map WITH EMPTY KEY.
 
   DATA(lt_seed) = VALUE tt_edge_seed(
     ( dependency_type = 'METH' edge_kind = 'calls_method'        is_call_like = abap_true  )
@@ -60,7 +62,7 @@ FORM seed_edge_kind_map.
   ).
 
   LOOP AT lt_seed INTO DATA(ls_seed).
-    MODIFY zlld_edge_kind_map FROM ls_seed.
+    MODIFY zdccrt_ekind_map FROM ls_seed.
   ENDLOOP.
 ENDFORM.
 
@@ -70,7 +72,7 @@ ENDFORM.
 *       Short, tunable-without-a-transport stopword list of ABAP-generic
 *       noise tokens that would otherwise dominate every chunk
 *       indiscriminately - kept deliberately short per the brief. Add/
-*       remove words directly in SM30 on ZLLD_CONFIG afterward; this
+*       remove words directly in SM30 on ZDCCRT_CONFIG afterward; this
 *       report only sets the initial baseline. CHUNK_MERGE_MIN_LINES is
 *       a placeholder default (3) - the brief flags it as a knob to
 *       tune, not a calibrated value from real-data evidence yet.
@@ -91,7 +93,7 @@ ENDFORM.
 *       real values once this is activated against real data.
 *&---------------------------------------------------------------------*
 FORM seed_config.
-  TYPES: tt_config_seed TYPE STANDARD TABLE OF zlld_config WITH EMPTY KEY.
+  TYPES: tt_config_seed TYPE STANDARD TABLE OF zdccrt_config WITH EMPTY KEY.
 
   DATA(lt_seed) = VALUE tt_config_seed(
     ( config_key = 'STOPWORDS'
@@ -112,6 +114,6 @@ FORM seed_config.
   ).
 
   LOOP AT lt_seed INTO DATA(ls_seed).
-    MODIFY zlld_config FROM ls_seed.
+    MODIFY zdccrt_config FROM ls_seed.
   ENDLOOP.
 ENDFORM.

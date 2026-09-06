@@ -23,20 +23,25 @@ REPORT zlld_package_extractor.
 *    - Table ZDCCRT_SYNC_OBJ
 *
 *  REQUIRES for DB output mode (step1_db_mode_brief.md +
-*  step2_native_processing_brief.md - NOT YET CREATED, see
-*  DDIC_TABLES_TO_CREATE_LLD.txt for specs to build in SE11 first):
-*    - Table ZLLD_STG_RUN (now also needs an ERROR_MESSAGE field - see
-*      DDIC_TABLES_TO_CREATE_LLD.txt)
-*    - Table ZLLD_STG_OBJECT
-*    - Table ZLLD_STG_DEPENDENCY
-*    - Table ZLLD_STG_DDIC
-*    - Tables ZLLD_OBJECTS/ZLLD_OBJ_CALLS/ZLLD_OBJ_DDIC_REF/
-*      ZLLD_DDIC_OBJECTS/ZLLD_CHUNKS/ZLLD_CHUNK_TOKENS/
-*      ZLLD_EDGE_KIND_MAP/ZLLD_CONFIG
+*  step2_native_processing_brief.md - created, but see
+*  DDIC_TABLES_TO_CREATE_LLD.txt's "as-built" notes: several of these
+*  were renamed/retyped from the original ZLLD_* proposal to match this
+*  system's own naming convention and its rejection of STRING as a table
+*  key component - the ABAP code below uses the AS-BUILT names):
+*    - Table ZDCCRT_STG_RUN, ZDCCRT_STG_OBJ, ZDCCRT_STG_DEP, ZDCCRT_STG_DDIC
+*    - Table ZDCCRT_OBJECTS, ZDCCRT_OBJ_CALLS, ZDCCRT_OBJ_DDREF,
+*      ZDCCRT_DDIC_OBJ, ZDCCRT_CHUNKS, ZDCCRT_CHUNK_TOK, ZDCCRT_EKIND_MAP,
+*      ZDCCRT_CONFIG
 *    - The native chunk/token/graph load itself is a plain INCLUDE, not
 *      a function module (no SE37/function group setup needed) - see
 *      "INCLUDE zlld_extract_to_db_f01." below and
 *      Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt.
+*    - OUTSTANDING: ZDCCRT_STG_DEP's key is missing DEPENDENCY_SEQ - add
+*      it (MANDT, RUN_ID, OBJ_NAME, DEPENDENCY_SEQ) before running DB
+*      mode against any object with more than one dependency, or every
+*      dependency after the first for that object fails to insert.
+*      Separately, confirm ZDCCRT_STG_DDIC actually has a DETAIL_JSON
+*      field (TYPE STRING, non-key) - see STAGE_DDIC_SECTION's own note.
 *  File mode (the default) needs none of the above and is unchanged.
 *
 *  SEVERAL FM CALLS BELOW ARE FLAGGED "VERIFY" - their exact parameter
@@ -1610,9 +1615,15 @@ FORM stage_extraction_run USING iv_run_id   TYPE sysuuid_x16
                                  iv_package  TYPE devclass
                                  iv_run_type TYPE char4
                                  it_removed  TYPE tt_lld_obj.
-  DATA: ls_stg_run TYPE zlld_stg_run,
-        lv_ts      TYPE timestamp.
+  DATA: ls_stg_run TYPE zdccrt_stg_run,
+        lv_ts      TYPE timestampl.
 
+  " ZDCCRT_STG_RUN-EXTRACTED_AT was built as TIMESTAMPL (long form, with
+  " fractional seconds - same data element ZDCCRT_SYNC_LOG-LAST_SYNC_TS
+  " already uses), not the plain TIMESTAMP originally proposed - LV_TS
+  " matches that real field type so GET TIME STAMP FIELD populates it
+  " correctly rather than relying on an implicit TIMESTAMP->TIMESTAMPL
+  " conversion.
   GET TIME STAMP FIELD lv_ts.
 
   ls_stg_run-run_id       = iv_run_id.
@@ -1622,7 +1633,7 @@ FORM stage_extraction_run USING iv_run_id   TYPE sysuuid_x16
   PERFORM build_removed_objects_list USING it_removed CHANGING ls_stg_run-removed_objects.
   ls_stg_run-status       = 'EXTRACTED'.
 
-  INSERT zlld_stg_run FROM ls_stg_run.
+  INSERT zdccrt_stg_run FROM ls_stg_run.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
@@ -1692,15 +1703,15 @@ FORM stage_lld_object USING iv_run_id   TYPE sysuuid_x16
                              iv_package  TYPE devclass
                              it_source   TYPE tt_code_line
                              iv_dep_json TYPE string.
-  DATA ls_stg_object TYPE zlld_stg_object.
+  DATA ls_stg_object TYPE zdccrt_stg_obj.
 
-  ls_stg_object-run_id      = iv_run_id.
-  ls_stg_object-object_name = iv_obj_name.
-  ls_stg_object-object_type = iv_obj_type.
-  ls_stg_object-zpackage    = iv_package.
+  ls_stg_object-run_id   = iv_run_id.
+  ls_stg_object-obj_name = iv_obj_name.
+  ls_stg_object-obj_type = iv_obj_type.
+  ls_stg_object-zpackage = iv_package.
   PERFORM join_source_lines USING it_source CHANGING ls_stg_object-source.
 
-  INSERT zlld_stg_object FROM ls_stg_object.
+  INSERT zdccrt_stg_obj FROM ls_stg_object.
 
   PERFORM parse_and_stage_dependencies USING iv_run_id iv_obj_name iv_dep_json.
 ENDFORM.
@@ -1967,7 +1978,7 @@ FORM parse_and_stage_dependencies USING iv_run_id   TYPE sysuuid_x16
         lv_deps_raw      TYPE string,
         lt_dep_entries   TYPE string_table,
         lv_seq           TYPE i,
-        ls_stg_dep       TYPE zlld_stg_dependency.
+        ls_stg_dep       TYPE zdccrt_stg_dep.
 
   CHECK iv_dep_json IS NOT INITIAL.
 
@@ -1989,14 +2000,14 @@ FORM parse_and_stage_dependencies USING iv_run_id   TYPE sysuuid_x16
 
     CLEAR ls_stg_dep.
     ls_stg_dep-run_id         = iv_run_id.
-    ls_stg_dep-object_name    = iv_obj_name.
+    ls_stg_dep-obj_name       = iv_obj_name.
     ls_stg_dep-dependency_seq = lv_seq.
 
     PERFORM extract_json_string_field USING lv_dep_entry 'TYPE' CHANGING ls_stg_dep-dependency_type.
     PERFORM extract_json_string_field USING lv_dep_entry 'NAME' CHANGING ls_stg_dep-dependency_name.
     PERFORM extract_json_raw_field    USING lv_dep_entry 'SIGNATURE' CHANGING ls_stg_dep-signature_json.
 
-    INSERT zlld_stg_dependency FROM ls_stg_dep.
+    INSERT zdccrt_stg_dep FROM ls_stg_dep.
   ENDLOOP.
 ENDFORM.
 
@@ -2037,7 +2048,7 @@ FORM stage_ddic_section USING iv_run_id    TYPE sysuuid_x16
                                iv_ddic_type TYPE char4.
   DATA: lv_section_body TYPE string,
         lt_entries      TYPE string_table,
-        ls_stg_ddic     TYPE zlld_stg_ddic.
+        ls_stg_ddic     TYPE zdccrt_stg_ddic.
 
   PERFORM extract_json_raw_field USING iv_pkg_entry iv_section CHANGING lv_section_body.
   CHECK lv_section_body IS NOT INITIAL.
@@ -2055,10 +2066,14 @@ FORM stage_ddic_section USING iv_run_id    TYPE sysuuid_x16
 
     " MODIFY, not INSERT: cheap insurance against the same DDIC object
     " appearing more than once (e.g. a future multi-package-scoped DDIC
-    " blob) colliding on ZLLD_STG_DDIC's (RUN_ID, DDIC_TYPE, DDIC_NAME)
+    " blob) colliding on ZDCCRT_STG_DDIC's (RUN_ID, DDIC_TYPE, DDIC_NAME)
     " key - not expected from this report's own single-package
     " BUILD_PACKAGE_DDIC_JSON call, but harmless either way.
-    MODIFY zlld_stg_ddic FROM ls_stg_ddic.
+    " VERIFY: confirm ZDCCRT_STG_DDIC actually has a DETAIL_JSON field -
+    " it wasn't visible in the SE11 field list this table was built
+    " from; add it (TYPE STRING, non-key) if missing, or this MODIFY
+    " fails.
+    MODIFY zdccrt_stg_ddic FROM ls_stg_ddic.
   ENDLOOP.
 ENDFORM.
 

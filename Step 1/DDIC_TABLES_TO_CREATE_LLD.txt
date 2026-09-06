@@ -53,69 +53,71 @@ actually built.
      it is a full snapshot each time, not an append-only log.
 
 ===========================================================================
-DB output mode (step1_db_mode_brief.md) - STATUS: NOT YET CREATED
+DB output mode (step1_db_mode_brief.md) - STATUS: created, as-built names below
 ===========================================================================
-Written without SAP access, like everything else in this doc originally was.
-Field names below proactively apply the ZPACKAGE convention already used for
-ZDCCRT_SYNC_LOG/OBJ (a bare PACKAGE component name was avoided there) -
-expect these names to be finalized/renamed during real SE11 creation the
-same way ZDCCRT_SYNC_LOG/OBJ's were, and this doc updated to match afterward.
+Renamed the same way ZDCCRT_SYNC_LOG/OBJ were: ZLLD_ prefix -> ZDCCRT_, plus
+per-table shortenings (STG_OBJECT -> STG_OBJ, STG_DEPENDENCY -> STG_DEP) and
+OBJECT_NAME -> OBJ_NAME throughout. ZLLD_PACKAGE_EXTRACTOR.txt has been
+updated to match - see the field tables below for what was actually built.
 
-3) Table ZLLD_STG_RUN  ("one row per DB-mode extraction run")
+OUTSTANDING ISSUE, NOT YET FIXED IN SE11: ZDCCRT_STG_DEP's key is missing
+DEPENDENCY_SEQ. As built, the key is only (MANDT, RUN_ID, OBJ_NAME) - since
+an object can have (and almost always does have) more than one dependency
+row, every dependency after the first for a given object will fail to
+INSERT with a duplicate-key error. Add DEPENDENCY_SEQ to the key in SE11
+before running DB mode against any real object.
+
+3) Table ZDCCRT_STG_RUN  ("one row per DB-mode extraction run")
    Short text: LLD Extractor - DB-Mode Run Header
 
    Field            Key   Data Element   Data Type   Length   Notes
    ---------------  ----  -------------  ----------  -------  ----------------------------------
    MANDT            X     MANDT          CLNT        3        client
    RUN_ID           X     SYSUUID_X16    RAW         16       generated at start of DB-mode run (CL_SYSTEM_UUID)
-   ZPACKAGE               DEVCLASS       CHAR        30       package (same rename precedent as ZDCCRT_SYNC_LOG)
+   ZPACKAGE               DEVCLASS       CHAR        30       package
    RUN_TYPE               CHAR4          CHAR        4        'FULL' or 'INCR' - from existing sync logic, unchanged
-   EXTRACTED_AT            TIMESTAMP      DEC         15       UTC timestamp (GET TIME STAMP FIELD)
-   REMOVED_OBJECTS          STRING         STRING      -        comma-separated "TYPE:NAME" list, or 'NONE' - same format/logic as the file header's REMOVED_OBJECTS line (BUILD_REMOVED_OBJECTS_LIST)
+   EXTRACTED_AT            TIMESTAMPL     DEC         21,7     UTC timestamp - built as TIMESTAMPL (long form, same data element ZDCCRT_SYNC_LOG-LAST_SYNC_TS uses), not the plain TIMESTAMP originally proposed; ZLLD_PACKAGE_EXTRACTOR.txt's STAGE_EXTRACTION_RUN was updated to declare its local timestamp variable as TIMESTAMPL to match
+   REMOVED_OBJECTS          Z_STRING (STRING)  STRING  -      comma-separated "TYPE:NAME" list, or 'NONE' - same format/logic as the file header's REMOVED_OBJECTS line (BUILD_REMOVED_OBJECTS_LIST); Z_STRING is a locally-created data element wrapping STRING, not a rename of the field itself
    STATUS                    CHAR12         CHAR        12       'EXTRACTED' / 'PROCESSED' / 'FAILED' - report sets 'EXTRACTED'; ZLLD_EXTRACT_TO_DB sets 'PROCESSED' or 'FAILED' (the earlier stub's 'STUB_OK' value no longer applies now that ZLLD_EXTRACT_TO_DB has real logic - see step2_native_processing_brief.md)
-   ERROR_MESSAGE            STRING         STRING      -        NEW (step2_native_processing_brief.md): set by ZLLD_EXTRACT_TO_DB on a FAILED run, cleared on PROCESSED - lets a failure be diagnosed without SM21/debugging, per that brief's "rather than leaving a partially loaded state that looks superficially complete" requirement
+   ERROR_MESSAGE            Z_STRING (STRING)  STRING  -      set by ZLLD_EXTRACT_TO_DB on a FAILED run, cleared on PROCESSED - lets a failure be diagnosed without SM21/debugging
 
    Notes:
    - RUN_ID is the join key across all four staging tables.
-   - VERIFY: SYSUUID_X16 as a data element name may not exist as a
-     reusable DDIC data element on your system the way DEVCLASS/CHAR4 do -
-     if SE11 rejects it, define the field directly as RAW 16 instead.
-   - ERROR_MESSAGE is an ADD to the already-created table (this table was
-     built once already for step1_db_mode_brief.md's stub - add this one
-     field via SE11 rather than recreating the table).
+   - CONFIRMED built with RAW 16 via the SYSUUID_X16 data element - no
+     issue on this system.
 
-4) Table ZLLD_STG_OBJECT  ("one row per staged object")
+4) Table ZDCCRT_STG_OBJ  ("one row per staged object")
    Short text: LLD Extractor - DB-Mode Staged Objects
 
    Field         Key   Data Element   Data Type   Length   Notes
    ------------  ----  -------------  ----------  -------  --------------------------------------
    MANDT         X     MANDT          CLNT        3        client
    RUN_ID        X     SYSUUID_X16    RAW         16
-   OBJECT_NAME   X     SEOCLSNAME     CHAR        30       widen if a real PROG/FUNC name ever exceeds this - SEOCLSNAME is a CLAS-oriented data element reused here for convenience, per the brief
-   OBJECT_TYPE         CHAR4          CHAR        4        'CLAS' / 'PROG' / 'FUNC' (E071-OBJECT's short codes, not the LLD_TYPE long name file mode's TYPE: line uses)
+   OBJ_NAME      X     SEOCLSNAME     CHAR        30       renamed from OBJECT_NAME; widen if a real PROG/FUNC name ever exceeds this
+   OBJ_TYPE            CHAR4          CHAR        4        renamed from OBJECT_TYPE; 'CLAS' / 'PROG' / 'FUNC' (E071-OBJECT's short codes, not the LLD_TYPE long name file mode's TYPE: line uses)
    ZPACKAGE            DEVCLASS       CHAR        30
-   SOURCE              STRING         STRING      -        full source, newline-joined, exactly as GET_SOURCE_FOR_LLD_OBJECT already returns it
+   SOURCE              Z_STRING (STRING)  STRING  -        full source, newline-joined, exactly as GET_SOURCE_FOR_LLD_OBJECT already returns it
 
    Notes:
-   - Same (RUN_ID, OBJECT_NAME) key as ZLLD_STG_DEPENDENCY - a run never
-     extracts the same object name twice (BUILD_UNIQUE_LLD_OBJECTS already
-     dedupes upstream), so this is a safe primary key, not just a
-     convenience.
+   - Same (RUN_ID, OBJ_NAME) key as ZDCCRT_STG_DEP (once that table's key
+     is fixed per the OUTSTANDING ISSUE above) - a run never extracts the
+     same object name twice (BUILD_UNIQUE_LLD_OBJECTS already dedupes
+     upstream), so OBJ_NAME within a run is a safe key component.
 
-5) Table ZLLD_STG_DEPENDENCY  ("one row per dependency entry")
+5) Table ZDCCRT_STG_DEP  ("one row per dependency entry")
    Short text: LLD Extractor - DB-Mode Staged Dependencies
 
    Field            Key   Data Element   Data Type   Length   Notes
    ---------------  ----  -------------  ----------  -------  ----------------------------------
    MANDT            X     MANDT          CLNT        3        client
    RUN_ID           X     SYSUUID_X16    RAW         16
-   OBJECT_NAME      X     SEOCLSNAME     CHAR        30       the object this dependency belongs to
-   DEPENDENCY_SEQ   X     INT4           INT4        10       preserves original array order
-   DEPENDENCY_TYPE        STRING         STRING      -        raw type exactly as ZCR_GET_DEPENDENCY_OBJ_NEW emits it - METH/OM/CLAS/TABL/etc, open vocabulary, no CHECK constraint
-   DEPENDENCY_NAME        STRING         STRING      -
-   SIGNATURE_JSON         STRING         STRING      -        kept as an opaque blob - not touched by step 2/3-equivalent scoring, only read by a later processing step
+   OBJ_NAME         X     SEOCLSNAME     CHAR        30       renamed from OBJECT_NAME; the object this dependency belongs to
+   DEPENDENCY_SEQ   X     INT4           INT4        10       MISSING FROM THE KEY AS BUILT - see OUTSTANDING ISSUE above; must be added
+   DEPENDENCY_TYPE        Z_STRING (STRING)  STRING  -        raw type exactly as ZCR_GET_DEPENDENCY_OBJ_NEW emits it - METH/OM/CLAS/TABL/etc, open vocabulary, no CHECK constraint
+   DEPENDENCY_NAME        Z_STRING (STRING)  STRING  -
+   SIGNATURE_JSON         Z_STRING (STRING)  STRING  -        kept as an opaque blob - not touched by step 2/3-equivalent scoring, only read by a later processing step
 
-6) Table ZLLD_STG_DDIC  ("one row per DDIC object referenced by the package")
+6) Table ZDCCRT_STG_DDIC  ("one row per DDIC object referenced by the package")
    Short text: LLD Extractor - DB-Mode Staged DDIC Info
 
    Field         Key   Data Element   Data Type   Length   Notes
@@ -123,8 +125,8 @@ same way ZDCCRT_SYNC_LOG/OBJ's were, and this doc updated to match afterward.
    MANDT         X     MANDT          CLNT        3        client
    RUN_ID        X     SYSUUID_X16    RAW         16
    DDIC_TYPE     X     CHAR4          CHAR        4        DOMA / DTEL / TABL / STRU / TTYP
-   DDIC_NAME     X     CHAR30         CHAR        30       CONFIRMED: this system rejects STRING as a table key component - real DDIC object names are max 30 chars anyway (same scale as DEVCLASS elsewhere in this file), so CHAR 30 loses nothing
-   DETAIL_JSON             STRING         STRING      -        kept as an opaque blob for the same reason as SIGNATURE_JSON above
+   DDIC_NAME     X     CHAR30         CHAR        30       built with CHAR 30 directly (STRING rejected in keys, as flagged) - real DDIC object names are max 30 chars anyway, so this loses nothing
+   DETAIL_JSON             Z_STRING (STRING)  STRING  -    VERIFY: not visible in the field list this table was built from - confirm it exists (TYPE STRING/Z_STRING, non-key); if missing, STAGE_DDIC_SECTION's MODIFY will fail
 
    Notes:
    - STAGE_PACKAGE_DDIC (in the report) uses MODIFY, not INSERT, so a
@@ -134,25 +136,33 @@ same way ZDCCRT_SYNC_LOG/OBJ's were, and this doc updated to match afterward.
 
 ===========================================================================
 Native processing / query-ready tables (step2_native_processing_brief.md)
-STATUS: NOT YET CREATED
+STATUS: created, as-built names below
 ===========================================================================
-Written without SAP access, same caveat as the DB-mode section above.
 Built for EXTRACT_TO_DB, a FORM folded directly into ZLLD_PACKAGE_EXTRACTOR
 via "INCLUDE zlld_extract_to_db_f01." (no separate function module - see
 Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt). These are the tables
 ZLLD_RETRIEVE_CANDIDATES queries - none of them are staging tables.
 
-7) Table ZLLD_OBJECTS ("one row per final, query-ready object")
+Renamed the same way as the DB-mode tables above: ZLLD_ prefix -> ZDCCRT_,
+plus OBJECT_NAME -> OBJ_NAME (ZDCCRT_OBJECTS, ZDCCRT_CHUNKS), OBJECT_TYPE ->
+OBJ_TYPE (ZDCCRT_OBJECTS), PACKAGE -> ZPACKAGE (ZDCCRT_OBJECTS,
+ZDCCRT_DDIC_OBJ), and NAME -> DDIC_NAME (ZDCCRT_DDIC_OBJ). ZLLD_OBJ_DDIC_REF
+-> ZDCCRT_OBJ_DDREF and ZLLD_DDIC_OBJECTS -> ZDCCRT_DDIC_OBJ shortened the
+table name itself too. Both ZLLD_PACKAGE_EXTRACTOR.txt's EXTRACT_TO_DB
+include and ZLLD_RETRIEVE_CANDIDATES.txt have been updated to the as-built
+names/fields below.
+
+7) Table ZDCCRT_OBJECTS ("one row per final, query-ready object")
    Short text: LLD Extractor - Query-Ready Objects
 
    Field         Key   Data Element   Data Type   Length   Notes
    ------------  ----  -------------  ----------  -------  --------------------------------------
    MANDT         X     MANDT          CLNT        3        client
-   OBJECT_NAME   X     SEOCLSNAME     CHAR        30       same widen-if-needed caveat as ZLLD_STG_OBJECT
-   OBJECT_TYPE         CHAR4          CHAR        4        CLAS / PROG / FUNC
-   PACKAGE             DEVCLASS       CHAR        30
+   OBJ_NAME      X     SEOCLSNAME     CHAR        30       renamed from OBJECT_NAME; same widen-if-needed caveat as ZDCCRT_STG_OBJ
+   OBJ_TYPE            CHAR4          CHAR        4        renamed from OBJECT_TYPE; CLAS / PROG / FUNC
+   ZPACKAGE            DEVCLASS       CHAR        30       renamed from PACKAGE, for consistency with every other table in this file
 
-8) Table ZLLD_OBJ_CALLS ("one row per dependency edge - every
+8) Table ZDCCRT_OBJ_CALLS ("one row per dependency edge - every
    DEPENDENCY_TYPE, not just call-like ones")
    Short text: LLD Extractor - Object Dependency Edges
 
@@ -160,10 +170,10 @@ ZLLD_RETRIEVE_CANDIDATES queries - none of them are staging tables.
    ---------------  ----  -------------  ----------  -------  ----------------------------------
    MANDT            X     MANDT          CLNT        3        client
    SOURCE_OBJECT    X     SEOCLSNAME     CHAR        30       the object the dependency belongs to
-   TARGET_OBJECT    X     CHAR60         CHAR        60       no FK - may be external/unresolved, same open-vocabulary approach as the Python schema; CHAR 60 (not 30) because a METH-type dependency name is CLSNAME(30)+METHNAME(up to 30) concatenated with no separator - see ZLLD_EXTRACT_TO_DB_F01's ADD_CLASS_METHODS-style name-building
-   DEPENDENCY_TYPE  X     CHAR10         CHAR        10       raw type exactly as staged - open vocabulary; CHAR 10 matches ZLLD_EDGE_KIND_MAP-DEPENDENCY_TYPE below exactly (real types observed are all <=4 chars, so this also keeps the two tables' join-friendly for a future retrieval report)
-   EDGE_KIND              STRING         STRING      -        normalized, via ZLLD_EDGE_KIND_MAP
-   SIGNATURE_JSON          STRING         STRING      -        copied through verbatim from ZLLD_STG_DEPENDENCY, never parsed by ZLLD_EXTRACT_TO_DB
+   TARGET_OBJECT    X     CHAR60_CP      CHAR        60       no FK - may be external/unresolved, same open-vocabulary approach as the Python schema; CHAR 60 (not 30) because a METH-type dependency name is CLSNAME(30)+METHNAME(up to 30) concatenated with no separator
+   DEPENDENCY_TYPE  X     CHAR10         CHAR        10       raw type exactly as staged - open vocabulary; CHAR 10 matches ZDCCRT_EKIND_MAP-DEPENDENCY_TYPE below exactly (real types observed are all <=4 chars, so this also keeps the two tables join-friendly for the retrieval report)
+   EDGE_KIND              Z_STRING (STRING)  STRING  -        normalized, via ZDCCRT_EKIND_MAP
+   SIGNATURE_JSON          Z_STRING (STRING)  STRING  -        copied through verbatim from ZDCCRT_STG_DEP, never parsed by ZLLD_EXTRACT_TO_DB
 
    Notes:
    - Key is (SOURCE_OBJECT, TARGET_OBJECT, DEPENDENCY_TYPE) per the
@@ -175,16 +185,16 @@ ZLLD_RETRIEVE_CANDIDATES queries - none of them are staging tables.
      LLD_EXTRACTOR_DESIGN_NOTES.md as something to watch for if the
      ZZBA91 acceptance-criteria row count (474) doesn't match exactly.
 
-9) Table ZLLD_OBJ_DDIC_REF ("structured index of DDIC-type dependencies,
-   split out of ZLLD_OBJ_CALLS for the future table-sharing bonus")
+9) Table ZDCCRT_OBJ_DDREF ("structured index of DDIC-type dependencies,
+   split out of ZDCCRT_OBJ_CALLS for the future table-sharing bonus")
    Short text: LLD Extractor - Object to DDIC References
 
    Field             Key   Data Element   Data Type   Length   Notes
    ----------------  ----  -------------  ----------  -------  --------------------------------------
    MANDT             X     MANDT          CLNT        3        client
-   OBJECT_NAME       X     SEOCLSNAME     CHAR        30
+   OBJ_NAME          X     SEOCLSNAME     CHAR        30       renamed from OBJECT_NAME
    DDIC_TYPE         X     CHAR4          CHAR        4        DOMA / DTEL / TABL / STRU / TTYP
-   DDIC_OBJECT_NAME  X     CHAR30         CHAR        30       CONFIRMED: STRING rejected in keys on this system - real DDIC object names are max 30 chars, same as ZLLD_STG_DDIC-DDIC_NAME above
+   DDIC_OBJECT_NAME  X     CHAR30         CHAR        30       built with CHAR 30 directly - real DDIC object names are max 30 chars
 
    Notes:
    - Populated for EVERY DDIC-shaped dependency type, not just TABL -
@@ -194,61 +204,61 @@ ZLLD_RETRIEVE_CANDIDATES queries - none of them are staging tables.
      DDIC_TYPE(s) actually count toward that bonus is decided later,
      with real lexical-score evidence, not here.
 
-10) Table ZLLD_DDIC_OBJECTS ("package-wide DDIC catalog, final form of
-    ZLLD_STG_DDIC")
+10) Table ZDCCRT_DDIC_OBJ ("package-wide DDIC catalog, final form of
+    ZDCCRT_STG_DDIC")
     Short text: LLD Extractor - Query-Ready DDIC Objects
 
     Field         Key   Data Element   Data Type   Length   Notes
     ------------  ----  -------------  ----------  -------  --------------------------------------
     MANDT         X     MANDT          CLNT        3        client
-    PACKAGE       X     DEVCLASS       CHAR        30
+    ZPACKAGE      X     DEVCLASS       CHAR        30       renamed from PACKAGE
     DDIC_TYPE     X     CHAR4          CHAR        4        DOMA / DTEL / TABL / STRU / TTYP
-    NAME          X     CHAR30         CHAR        30       CONFIRMED: STRING rejected in keys on this system - real DDIC object names are max 30 chars, same as above
-    DETAIL_JSON         STRING         STRING      -        copied through verbatim from ZLLD_STG_DDIC
+    DDIC_NAME     X     CHAR30         CHAR        30       renamed from NAME (the bare word NAME likely collided with a reserved/awkward field name in SE11); real DDIC object names are max 30 chars
+    DETAIL_JSON         Z_STRING (STRING)  STRING  -        copied through verbatim from ZDCCRT_STG_DDIC
 
     Notes:
     - Always fully replaced for the package on every run (FULL or INCR) -
-      ZLLD_STG_DDIC is itself always a fresh full package snapshot every
+      ZDCCRT_STG_DDIC is itself always a fresh full package snapshot every
       run (see ZLLD_PACKAGE_EXTRACTOR's STAGE_PACKAGE_DDIC), so there is
       no meaningful "untouched DDIC row" the way there is for objects.
 
-11) Table ZLLD_CHUNKS ("one row per source chunk")
+11) Table ZDCCRT_CHUNKS ("one row per source chunk")
     Short text: LLD Extractor - Source Chunks
 
     Field         Key   Data Element   Data Type   Length   Notes
     ------------  ----  -------------  ----------  -------  --------------------------------------
     MANDT         X     MANDT          CLNT        3        client
-    CHUNK_ID      X     SYSUUID_X16    RAW         16       generated per chunk (CL_SYSTEM_UUID), same VERIFY as ZLLD_STG_RUN-RUN_ID
-    OBJECT_NAME         SEOCLSNAME     CHAR        30       not part of the key - CHUNK_ID alone is unique
+    CHUNK_ID      X     SYSUUID_X16    RAW         16       generated per chunk (CL_SYSTEM_UUID)
+    OBJ_NAME            SEOCLSNAME     CHAR        30       renamed from OBJECT_NAME; not part of the key - CHUNK_ID alone is unique
     CHUNK_INDEX         I              INT4        10       0-based, in source order, after the minimum-length merge pass
-    CHUNK_TEXT          STRING         STRING      -        the chunk's source lines, newline-joined
+    CHUNK_TEXT          Z_STRING (STRING)  STRING  -        the chunk's source lines, newline-joined
 
-12) Table ZLLD_CHUNK_TOKENS ("inverted index: one row per distinct
+12) Table ZDCCRT_CHUNK_TOK ("inverted index: one row per distinct
     token per chunk")
     Short text: LLD Extractor - Chunk Token Index
 
     Field            Key   Data Element   Data Type   Length   Notes
     ---------------  ----  -------------  ----------  -------  ----------------------------------
     MANDT            X     MANDT          CLNT        3        client
-    TOKEN            X     CHAR40         CHAR        40       lowercased, stopword-filtered; CONFIRMED: STRING rejected in keys on this system - CHAR 40 covers any realistic lexical token (ABAP identifier fragments are rarely longer), a token that legitimately exceeds this is silently truncated on insert - acceptable for a lexical-scoring feature, not an identifier used for lookups elsewhere
+    TOKEN            X     CHAR40         CHAR        40       lowercased, stopword-filtered; CHAR 40 covers any realistic lexical token (ABAP identifier fragments are rarely longer), a token that legitimately exceeds this is silently truncated on insert - acceptable for a lexical-scoring feature, not an identifier used for lookups elsewhere
     CHUNK_ID         X     SYSUUID_X16    RAW         16
     TERM_FREQUENCY         I              INT4        10       count of this token within this one chunk
 
     Notes:
     - No document-frequency/IDF column anywhere in this table by design
       - see the brief's "leave IDF-style weighting as a query-time
-        aggregate" and ZLLD_EXTRACT_TO_DB's ZLLD_TOKENIZE_CHUNK form.
+        aggregate" and ZLLD_EXTRACT_TO_DB_F01's ZLLD_TOKENIZE_CHUNK form.
 
-13) Table ZLLD_EDGE_KIND_MAP ("maintainable DEPENDENCY_TYPE -> EDGE_KIND
+13) Table ZDCCRT_EKIND_MAP ("maintainable DEPENDENCY_TYPE -> EDGE_KIND
     mapping, not a hardcoded CASE statement")
     Short text: LLD Extractor - Edge Kind Mapping
 
     Field            Key   Data Element   Data Type   Length   Notes
     ---------------  ----  -------------  ----------  -------  ----------------------------------
     MANDT            X     MANDT          CLNT        3        client
-    DEPENDENCY_TYPE  X     CHAR10         CHAR        10       raw type (METH/OM/CLAS/TABL/etc.) - CONFIRMED: STRING rejected in keys on this system; CHAR 10 is more than enough (real types observed are all <=4 chars) - matches ZLLD_OBJ_CALLS-DEPENDENCY_TYPE's type exactly (see above), which matters since a future retrieval report joins the two
-    EDGE_KIND              STRING         STRING      -        normalized category (calls_method/class_ref/table_ref/etc.)
-    IS_CALL_LIKE            ABAP_BOOL      CHAR        1        replaces Python's CALL_LIKE_EDGE_KINDS tuple
+    DEPENDENCY_TYPE  X     CHAR10         CHAR        10       raw type (METH/OM/CLAS/TABL/etc.) - matches ZDCCRT_OBJ_CALLS-DEPENDENCY_TYPE's type exactly (see above), which matters since ZLLD_RETRIEVE_CANDIDATES joins the two
+    EDGE_KIND              Z_STRING (STRING)  STRING  -        normalized category (calls_method/class_ref/table_ref/etc.)
+    IS_CALL_LIKE            FLAG           CHAR        1        built with the FLAG data element rather than ABAP_BOOL - functionally identical (both CHAR1, 'X'/space), no code impact since ABAP compares against the abap_true constant either way
 
     Notes:
     - Seeded via Report ZLLD_SEED_CONFIG_TABLES with the exact mapping
@@ -261,19 +271,19 @@ ZLLD_RETRIEVE_CANDIDATES queries - none of them are staging tables.
       a newly-observed type later is a data change (SM30), not a
       transport.
 
-14) Table ZLLD_CONFIG ("small tunable-without-a-transport key/value
+14) Table ZDCCRT_CONFIG ("small tunable-without-a-transport key/value
     store")
     Short text: LLD Extractor - Tunable Configuration
 
     Field            Key   Data Element   Data Type   Length   Notes
     ---------------  ----  -------------  ----------  -------  ----------------------------------
     MANDT            X     MANDT          CLNT        3        client
-    CONFIG_KEY       X     CHAR40         CHAR        40       CONFIRMED: STRING rejected in keys on this system; CHAR 40 is plenty (longest real key so far is 'NEW_OBJECT_SPREAD_THRESHOLD' at 28 chars)
-    CONFIG_VALUE           STRING         STRING      -
+    CONFIG_KEY       X     CHAR40         CHAR        40       longest real key so far is 'NEW_OBJECT_SPREAD_THRESHOLD' at 28 chars
+    CONFIG_VALUE           Z_STRING (STRING)  STRING  -
 
     Notes:
-    - Seeded via Report ZLLD_SEED_CONFIG_TABLES with STOPWORDS and
-      CHUNK_MERGE_MIN_LINES - see that report's own header comment for
-      exactly what is and is NOT seeded (scoring weights/tier
-      multipliers/seed-eligibility floor are explicitly deferred to a
-      future, evidence-backed brief).
+    - Seeded via Report ZLLD_SEED_CONFIG_TABLES with STOPWORDS,
+      CHUNK_MERGE_MIN_LINES, SEMANTIC_WEIGHT, STRUCTURAL_WEIGHT, the three
+      (placeholder, uncalibrated) score thresholds, and the three tier
+      multipliers - see that report's own header comment for exactly what
+      is and is NOT seeded.

@@ -11,34 +11,39 @@
 *  "REQUIRES" header comment and its CALL_EXTRACT_TO_DB form, which
 *  PERFORMs EXTRACT_TO_DB below).
 *
-*  Reads the already-staged ZLLD_STG_RUN/_OBJECT/_DEPENDENCY/_DDIC rows
-*  (written by ZLLD_PACKAGE_EXTRACTOR's own DB-mode staging forms) and
-*  loads them into six final, query-ready tables (ZLLD_OBJECTS,
-*  ZLLD_OBJ_CALLS, ZLLD_OBJ_DDIC_REF, ZLLD_DDIC_OBJECTS, ZLLD_CHUNKS,
-*  ZLLD_CHUNK_TOKENS) plus edge-kind derivation via ZLLD_EDGE_KIND_MAP.
-*  Direct port of the Python pipeline.py/graph_loader.py logic, with
-*  vector embeddings replaced by lexical tokenization throughout (per
-*  the real-data evidence that the embedding model wasn't earning its
-*  keep). Does no JSON parsing of its own - ZLLD_STG_DEPENDENCY/_DDIC
-*  already have DEPENDENCY_TYPE/NAME/SIGNATURE_JSON and
-*  DDIC_TYPE/NAME/DETAIL_JSON split into columns by
-*  ZLLD_PACKAGE_EXTRACTOR's own JSON walker.
+*  Reads the already-staged ZDCCRT_STG_RUN/_OBJ/_DEP/_DDIC rows (written
+*  by ZLLD_PACKAGE_EXTRACTOR's own DB-mode staging forms) and loads them
+*  into six final, query-ready tables (ZDCCRT_OBJECTS, ZDCCRT_OBJ_CALLS,
+*  ZDCCRT_OBJ_DDREF, ZDCCRT_DDIC_OBJ, ZDCCRT_CHUNKS, ZDCCRT_CHUNK_TOK)
+*  plus edge-kind derivation via ZDCCRT_EKIND_MAP. Direct port of the
+*  Python pipeline.py/graph_loader.py logic, with vector embeddings
+*  replaced by lexical tokenization throughout (per the real-data
+*  evidence that the embedding model wasn't earning its keep). Does no
+*  JSON parsing of its own - ZDCCRT_STG_DEP/_DDIC already have
+*  DEPENDENCY_TYPE/NAME/SIGNATURE_JSON and DDIC_TYPE/NAME/DETAIL_JSON
+*  split into columns by ZLLD_PACKAGE_EXTRACTOR's own JSON walker.
 *
-*  REQUIRES (see DDIC_TABLES_TO_CREATE_LLD.txt - NOT YET CREATED):
-*    - Table ZLLD_OBJECTS
-*    - Table ZLLD_OBJ_CALLS
-*    - Table ZLLD_OBJ_DDIC_REF
-*    - Table ZLLD_DDIC_OBJECTS
-*    - Table ZLLD_CHUNKS
-*    - Table ZLLD_CHUNK_TOKENS
-*    - Table ZLLD_EDGE_KIND_MAP (seed via Report ZLLD_SEED_CONFIG_TABLES)
-*    - Table ZLLD_CONFIG (seed via Report ZLLD_SEED_CONFIG_TABLES)
-*    - ZLLD_STG_RUN needs a new ERROR_MESSAGE field (TYPE STRING)
+*  TABLE/FIELD NAMES BELOW ARE THE AS-BUILT NAMES (this system renamed
+*  several from the original ZLLD_* proposal in DDIC_TABLES_TO_CREATE_LLD.txt,
+*  the same way ZDCCRT_SYNC_LOG/OBJ were renamed earlier in this project -
+*  see that doc's own "as-built" notes for the full old-name -> new-name
+*  map). All 12 tables are created:
+*    - Table ZDCCRT_STG_RUN, ZDCCRT_STG_OBJ, ZDCCRT_STG_DEP, ZDCCRT_STG_DDIC
+*    - Table ZDCCRT_OBJECTS, ZDCCRT_OBJ_CALLS, ZDCCRT_OBJ_DDREF,
+*      ZDCCRT_DDIC_OBJ, ZDCCRT_CHUNKS, ZDCCRT_CHUNK_TOK, ZDCCRT_EKIND_MAP,
+*      ZDCCRT_CONFIG
+*  IMPORTANT - one real problem found in the as-built ZDCCRT_STG_DEP:
+*  DEPENDENCY_SEQ must be part of its key (MANDT, RUN_ID, OBJ_NAME,
+*  DEPENDENCY_SEQ) - without it, only the first dependency staged per
+*  object would insert; every subsequent one for that same object fails
+*  on a duplicate-key error. Fix this in SE11 before running DB mode
+*  against any real object with more than one dependency.
 *
-*  VERIFY: this has not been created/tested in the system - written
-*  without SAP access, like everything else in this project originally
-*  was. See LLD_EXTRACTOR_DESIGN_NOTES.md's "Native processing" section
-*  for the full assumptions list and acceptance-criteria test plan.
+*  VERIFY: the logic below has not been created/tested in the system -
+*  written without SAP access, like everything else in this project
+*  originally was. See LLD_EXTRACTOR_DESIGN_NOTES.md's "Native
+*  processing" section for the full assumptions list and acceptance-
+*  criteria test plan.
 *&---------------------------------------------------------------------*
 
 *&---------------------------------------------------------------------*
@@ -65,7 +70,7 @@ TYPES: BEGIN OF zlld_ts_token_count,
        END OF zlld_ts_token_count,
        zlld_tt_token_count TYPE STANDARD TABLE OF zlld_ts_token_count WITH EMPTY KEY.
 
-TYPES: zlld_tt_edge_map TYPE STANDARD TABLE OF zlld_edge_kind_map WITH EMPTY KEY.
+TYPES: zlld_tt_edge_map TYPE STANDARD TABLE OF zdccrt_ekind_map WITH EMPTY KEY.
 
 *&=======================================================================*
 *& Orchestration
@@ -85,7 +90,7 @@ TYPES: zlld_tt_edge_map TYPE STANDARD TABLE OF zlld_edge_kind_map WITH EMPTY KEY
 FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
                     CHANGING ev_status TYPE char12
                              ev_message TYPE string.
-  DATA: ls_stg_run        TYPE zlld_stg_run,
+  DATA: ls_stg_run        TYPE zdccrt_stg_run,
         lv_found          TYPE abap_bool,
         lt_edge_map       TYPE zlld_tt_edge_map,
         lv_stopword_csv   TYPE string,
@@ -93,7 +98,7 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
         lv_min_lines_str  TYPE string,
         lv_min_lines      TYPE i,
         lt_removed        TYPE zlld_tt_obj_key,
-        lt_staged_objects TYPE STANDARD TABLE OF zlld_stg_object,
+        lt_staged_objects TYPE STANDARD TABLE OF zdccrt_stg_obj,
         lv_failed         TYPE abap_bool,
         lv_error_message  TYPE string,
         lv_objects_done   TYPE i.
@@ -103,7 +108,7 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
   PERFORM zlld_read_stg_run USING iv_run_id CHANGING ls_stg_run lv_found.
   IF lv_found = abap_false.
     ev_status  = 'FAILED'.
-    ev_message = |No ZLLD_STG_RUN row found for RUN_ID { iv_run_id }. Nothing to process.|.
+    ev_message = |No ZDCCRT_STG_RUN row found for RUN_ID { iv_run_id }. Nothing to process.|.
     RETURN.
   ENDIF.
 
@@ -133,7 +138,7 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
     ENDLOOP.
   ENDIF.
 
-  SELECT * FROM zlld_stg_object INTO TABLE lt_staged_objects WHERE run_id = iv_run_id.
+  SELECT * FROM zdccrt_stg_obj INTO TABLE lt_staged_objects WHERE run_id = iv_run_id.
 
   LOOP AT lt_staged_objects INTO DATA(ls_staged).
     IF ls_stg_run-run_type = 'INCR'.
@@ -142,12 +147,12 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
       " prior rows still need clearing before it's reloaded (delete-then-
       " reinsert one object at a time, same reasoning as the Python
       " loader: simpler and safer than diffing individual edges).
-      PERFORM zlld_delete_object_rows USING ls_staged-object_name.
+      PERFORM zlld_delete_object_rows USING ls_staged-obj_name.
     ENDIF.
 
     PERFORM zlld_load_one_object USING iv_run_id
-                                        ls_staged-object_name
-                                        ls_staged-object_type
+                                        ls_staged-obj_name
+                                        ls_staged-obj_type
                                         ls_stg_run-zpackage
                                         lt_edge_map
                                         lv_min_lines
@@ -174,7 +179,7 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
   IF lv_failed = abap_false.
     ls_stg_run-status        = 'PROCESSED'.
     ls_stg_run-error_message = ''.
-    MODIFY zlld_stg_run FROM ls_stg_run.
+    MODIFY zdccrt_stg_run FROM ls_stg_run.
     COMMIT WORK.
 
     ev_status  = 'PROCESSED'.
@@ -184,7 +189,7 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
 
     ls_stg_run-status        = 'FAILED'.
     ls_stg_run-error_message = lv_error_message.
-    MODIFY zlld_stg_run FROM ls_stg_run.
+    MODIFY zdccrt_stg_run FROM ls_stg_run.
     COMMIT WORK.
 
     ev_status  = 'FAILED'.
@@ -200,11 +205,11 @@ ENDFORM.
 *&      Form  ZLLD_READ_STG_RUN
 *&---------------------------------------------------------------------*
 FORM zlld_read_stg_run USING iv_run_id TYPE sysuuid_x16
-                        CHANGING es_stg_run TYPE zlld_stg_run
+                        CHANGING es_stg_run TYPE zdccrt_stg_run
                                  cv_found   TYPE abap_bool.
   CLEAR: es_stg_run, cv_found.
 
-  SELECT SINGLE * FROM zlld_stg_run INTO es_stg_run WHERE run_id = iv_run_id.
+  SELECT SINGLE * FROM zdccrt_stg_run INTO es_stg_run WHERE run_id = iv_run_id.
   IF sy-subrc = 0.
     cv_found = abap_true.
   ENDIF.
@@ -250,7 +255,7 @@ FORM zlld_get_config_value USING iv_key TYPE string
                             CHANGING cv_value TYPE string.
   CLEAR cv_value.
 
-  SELECT SINGLE config_value FROM zlld_config INTO cv_value WHERE config_key = iv_key.
+  SELECT SINGLE config_value FROM zdccrt_config INTO cv_value WHERE config_key = iv_key.
   IF sy-subrc <> 0.
     cv_value = iv_default.
   ENDIF.
@@ -286,7 +291,7 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 FORM zlld_load_edge_kind_map CHANGING ct_map TYPE zlld_tt_edge_map.
   CLEAR ct_map.
-  SELECT * FROM zlld_edge_kind_map INTO TABLE ct_map.
+  SELECT * FROM zdccrt_ekind_map INTO TABLE ct_map.
   SORT ct_map BY dependency_type.
 ENDFORM.
 
@@ -586,16 +591,16 @@ ENDFORM.
 FORM zlld_delete_object_rows USING iv_obj_name TYPE string.
   DATA lt_chunk_ids TYPE STANDARD TABLE OF sysuuid_x16.
 
-  SELECT chunk_id FROM zlld_chunks INTO TABLE lt_chunk_ids WHERE object_name = iv_obj_name.
+  SELECT chunk_id FROM zdccrt_chunks INTO TABLE lt_chunk_ids WHERE obj_name = iv_obj_name.
 
   LOOP AT lt_chunk_ids INTO DATA(lv_cid).
-    DELETE FROM zlld_chunk_tokens WHERE chunk_id = lv_cid.
+    DELETE FROM zdccrt_chunk_tok WHERE chunk_id = lv_cid.
   ENDLOOP.
 
-  DELETE FROM zlld_chunks WHERE object_name = iv_obj_name.
-  DELETE FROM zlld_obj_ddic_ref WHERE object_name = iv_obj_name.
-  DELETE FROM zlld_obj_calls WHERE source_object = iv_obj_name.
-  DELETE FROM zlld_objects WHERE object_name = iv_obj_name.
+  DELETE FROM zdccrt_chunks WHERE obj_name = iv_obj_name.
+  DELETE FROM zdccrt_obj_ddref WHERE obj_name = iv_obj_name.
+  DELETE FROM zdccrt_obj_calls WHERE source_object = iv_obj_name.
+  DELETE FROM zdccrt_objects WHERE obj_name = iv_obj_name.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
@@ -607,13 +612,13 @@ ENDFORM.
 FORM zlld_delete_package_rows USING iv_package TYPE devclass.
   DATA lt_names TYPE STANDARD TABLE OF seoclsname.
 
-  SELECT object_name FROM zlld_objects INTO TABLE lt_names WHERE package = iv_package.
+  SELECT obj_name FROM zdccrt_objects INTO TABLE lt_names WHERE zpackage = iv_package.
 
   LOOP AT lt_names INTO DATA(lv_name).
     PERFORM zlld_delete_object_rows USING lv_name.
   ENDLOOP.
 
-  DELETE FROM zlld_ddic_objects WHERE package = iv_package.
+  DELETE FROM zdccrt_ddic_obj WHERE zpackage = iv_package.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
@@ -638,8 +643,8 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
                                   it_stopwords TYPE string_table
                             CHANGING cv_failed TYPE abap_bool
                                      cv_error_message TYPE string.
-  DATA: ls_stg_object TYPE zlld_stg_object,
-        lt_deps       TYPE STANDARD TABLE OF zlld_stg_dependency,
+  DATA: ls_stg_object TYPE zdccrt_stg_obj,
+        lt_deps       TYPE STANDARD TABLE OF zdccrt_stg_dep,
         lt_chunks     TYPE zlld_tt_chunk,
         lt_tokens     TYPE zlld_tt_token_count,
         lv_edge_kind  TYPE string,
@@ -648,25 +653,25 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
 
   CLEAR: cv_failed, cv_error_message.
 
-  SELECT SINGLE * FROM zlld_stg_object INTO ls_stg_object
-    WHERE run_id = iv_run_id AND object_name = iv_obj_name.
+  SELECT SINGLE * FROM zdccrt_stg_obj INTO ls_stg_object
+    WHERE run_id = iv_run_id AND obj_name = iv_obj_name.
   IF sy-subrc <> 0.
     cv_failed = abap_true.
     cv_error_message = |No staged source found for { iv_obj_name } (run { iv_run_id }).|.
     RETURN.
   ENDIF.
 
-  MODIFY zlld_objects FROM VALUE #( object_name = iv_obj_name
-                                     object_type = iv_obj_type
-                                     package     = iv_package ).
+  MODIFY zdccrt_objects FROM VALUE #( obj_name = iv_obj_name
+                                       obj_type = iv_obj_type
+                                       zpackage = iv_package ).
   IF sy-subrc <> 0.
     cv_failed = abap_true.
-    cv_error_message = |Failed writing ZLLD_OBJECTS for { iv_obj_name }.|.
+    cv_error_message = |Failed writing ZDCCRT_OBJECTS for { iv_obj_name }.|.
     RETURN.
   ENDIF.
 
-  SELECT * FROM zlld_stg_dependency INTO TABLE lt_deps
-    WHERE run_id = iv_run_id AND object_name = iv_obj_name
+  SELECT * FROM zdccrt_stg_dep INTO TABLE lt_deps
+    WHERE run_id = iv_run_id AND obj_name = iv_obj_name
     ORDER BY dependency_seq.
 
   LOOP AT lt_deps INTO DATA(ls_dep).
@@ -675,14 +680,14 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
     PERFORM zlld_lookup_edge_kind USING ls_dep-dependency_type it_edge_map
                                    CHANGING lv_edge_kind lv_call_like.
 
-    MODIFY zlld_obj_calls FROM VALUE #( source_object   = iv_obj_name
-                                         target_object   = ls_dep-dependency_name
-                                         dependency_type = ls_dep-dependency_type
-                                         edge_kind       = lv_edge_kind
-                                         signature_json  = ls_dep-signature_json ).
+    MODIFY zdccrt_obj_calls FROM VALUE #( source_object   = iv_obj_name
+                                           target_object   = ls_dep-dependency_name
+                                           dependency_type = ls_dep-dependency_type
+                                           edge_kind       = lv_edge_kind
+                                           signature_json  = ls_dep-signature_json ).
 
     " DDIC-shaped dependency types also get a structured secondary index
-    " in ZLLD_OBJ_DDIC_REF, covering every DDIC type (not just TABL) -
+    " in ZDCCRT_OBJ_DDREF, covering every DDIC type (not just TABL) -
     " per the brief, this table supports either table-sharing-bonus
     " scope going forward without a schema change; which DDIC_TYPE(s)
     " actually count toward that bonus is the retrieval report's own,
@@ -690,9 +695,9 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
     IF ls_dep-dependency_type = 'DOMA' OR ls_dep-dependency_type = 'DTEL'
     OR ls_dep-dependency_type = 'TABL' OR ls_dep-dependency_type = 'STRU'
     OR ls_dep-dependency_type = 'TTYP'.
-      MODIFY zlld_obj_ddic_ref FROM VALUE #( object_name      = iv_obj_name
-                                              ddic_type        = ls_dep-dependency_type
-                                              ddic_object_name = ls_dep-dependency_name ).
+      MODIFY zdccrt_obj_ddref FROM VALUE #( obj_name         = iv_obj_name
+                                             ddic_type        = ls_dep-dependency_type
+                                             ddic_object_name = ls_dep-dependency_name ).
     ENDIF.
   ENDLOOP.
 
@@ -701,17 +706,17 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
   LOOP AT lt_chunks INTO DATA(ls_chunk).
     PERFORM zlld_generate_chunk_uuid CHANGING lv_chunk_id.
 
-    INSERT zlld_chunks FROM VALUE #( chunk_id    = lv_chunk_id
-                                      object_name = iv_obj_name
-                                      chunk_index = ls_chunk-chunk_index
-                                      chunk_text  = ls_chunk-chunk_text ).
+    INSERT zdccrt_chunks FROM VALUE #( chunk_id    = lv_chunk_id
+                                        obj_name    = iv_obj_name
+                                        chunk_index = ls_chunk-chunk_index
+                                        chunk_text  = ls_chunk-chunk_text ).
 
     PERFORM zlld_tokenize_chunk USING ls_chunk-chunk_text it_stopwords CHANGING lt_tokens.
 
     LOOP AT lt_tokens INTO DATA(ls_tok).
-      MODIFY zlld_chunk_tokens FROM VALUE #( token          = ls_tok-token
-                                              chunk_id       = lv_chunk_id
-                                              term_frequency = ls_tok-tf ).
+      MODIFY zdccrt_chunk_tok FROM VALUE #( token          = ls_tok-token
+                                             chunk_id       = lv_chunk_id
+                                             term_frequency = ls_tok-tf ).
     ENDLOOP.
   ENDLOOP.
 ENDFORM.
@@ -724,16 +729,16 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 FORM zlld_load_ddic_snapshot USING iv_run_id TYPE sysuuid_x16
                                      iv_package TYPE devclass.
-  DATA lt_stg_ddic TYPE STANDARD TABLE OF zlld_stg_ddic.
+  DATA lt_stg_ddic TYPE STANDARD TABLE OF zdccrt_stg_ddic.
 
-  DELETE FROM zlld_ddic_objects WHERE package = iv_package.
+  DELETE FROM zdccrt_ddic_obj WHERE zpackage = iv_package.
 
-  SELECT * FROM zlld_stg_ddic INTO TABLE lt_stg_ddic WHERE run_id = iv_run_id.
+  SELECT * FROM zdccrt_stg_ddic INTO TABLE lt_stg_ddic WHERE run_id = iv_run_id.
 
   LOOP AT lt_stg_ddic INTO DATA(ls_ddic).
-    MODIFY zlld_ddic_objects FROM VALUE #( package     = iv_package
-                                            ddic_type   = ls_ddic-ddic_type
-                                            name        = ls_ddic-ddic_name
-                                            detail_json = ls_ddic-detail_json ).
+    MODIFY zdccrt_ddic_obj FROM VALUE #( zpackage    = iv_package
+                                          ddic_type   = ls_ddic-ddic_type
+                                          ddic_name   = ls_ddic-ddic_name
+                                          detail_json = ls_ddic-detail_json ).
   ENDLOOP.
 ENDFORM.

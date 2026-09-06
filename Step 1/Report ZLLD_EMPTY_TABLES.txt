@@ -3,16 +3,16 @@ REPORT zlld_empty_tables.
 *&---------------------------------------------------------------------*
 *& ZLLD_EMPTY_TABLES
 *&---------------------------------------------------------------------*
-*  One-shot utility to empty all 14 ZDCCRT_* tables before a fresh test
-*  run of ZLLD_PACKAGE_EXTRACTOR / ZLLD_GET_CANDIDATES. Every DELETE is
-*  unconditional (no WHERE clause) - this clears ALL rows for ALL
-*  packages/runs in the current client, not a per-package reset.
+*  One-shot utility to empty the 12 run-data ZDCCRT_* tables before a
+*  fresh test run of ZLLD_PACKAGE_EXTRACTOR / ZLLD_GET_CANDIDATES. Every
+*  DELETE is unconditional (no WHERE clause) - this clears ALL rows for
+*  ALL packages/runs in the current client, not a per-package reset.
 *
-*  Includes ZDCCRT_EKIND_MAP and ZDCCRT_CONFIG (the seed/config
-*  tables) since they are ZDCCRT_* tables too - re-run
-*  ZLLD_SEED_CONFIG_TABLES afterward, otherwise ZLLD_EXTRACT_TO_DB_F01's
-*  edge_kind derivation and ZLLD_GET_CANDIDATES' scoring weights/
-*  thresholds have nothing to read until reseeded.
+*  Deliberately EXCLUDES ZDCCRT_EKIND_MAP and ZDCCRT_CONFIG - those are
+*  one-time seed/config tables (see ZLLD_SEED_CONFIG_TABLES), not
+*  per-run data, and clearing them would silently break edge_kind
+*  derivation and ZLLD_GET_CANDIDATES' scoring weights/thresholds until
+*  manually reseeded.
 *
 *  Asks for an explicit confirmation popup before deleting anything -
 *  this is destructive and cannot be undone.
@@ -32,8 +32,8 @@ FORM confirm_and_empty_tables.
 
   CALL FUNCTION 'POPUP_TO_CONFIRM'
     EXPORTING
-      titlebar       = 'Empty all ZDCCRT_* tables'
-      text_question  = 'This deletes ALL rows from all 14 ZDCCRT_* tables (sync-state, staging, query-ready, and config/seed). This cannot be undone. Continue?'
+      titlebar       = 'Empty ZDCCRT_* run-data tables'
+      text_question  = 'This deletes ALL rows from the 12 ZDCCRT_* run-data tables (sync-state, staging, query-ready) - ZDCCRT_EKIND_MAP and ZDCCRT_CONFIG are left untouched. This cannot be undone. Continue?'
       text_button_1  = 'Yes, empty all'
       text_button_2  = 'Cancel'
       default_button = '2'
@@ -58,11 +58,9 @@ FORM confirm_and_empty_tables.
     ( 'ZDCCRT_DDIC_OBJ'  )
     ( 'ZDCCRT_CHUNKS'    )
     ( 'ZDCCRT_CHUNK_TOK' )
-    ( 'ZDCCRT_EKIND_MAP' )
-    ( 'ZDCCRT_CONFIG'    )
   ).
 
-  WRITE: / 'Emptying all ZDCCRT_* tables', /.
+  WRITE: / 'Emptying ZDCCRT_* run-data tables (ZDCCRT_EKIND_MAP / ZDCCRT_CONFIG left untouched)', /.
 
   LOOP AT lt_tables INTO DATA(lv_tabname).
     PERFORM empty_one_table USING lv_tabname CHANGING lv_count.
@@ -72,14 +70,12 @@ FORM confirm_and_empty_tables.
 
   SKIP.
   WRITE: / 'Total rows deleted:', lv_total.
-  WRITE: / 'Reminder: ZDCCRT_EKIND_MAP and ZDCCRT_CONFIG are now empty -'.
-  WRITE: / 'run ZLLD_SEED_CONFIG_TABLES again before the next extraction/retrieval run.'.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
 *&      Form  EMPTY_ONE_TABLE
 *&---------------------------------------------------------------------*
-*       Dynamic DELETE FROM (iv_tabname) - all 14 tables share the same
+*       Dynamic DELETE FROM (iv_tabname) - all 12 tables share the same
 *       "delete everything, report how many rows" shape, so one generic
 *       form is used instead of 14 near-identical static DELETEs.
 *&---------------------------------------------------------------------*

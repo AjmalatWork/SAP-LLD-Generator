@@ -175,6 +175,11 @@ DATA: gv_debug_ddic_json TYPE string,
       gv_debug_dep_json  TYPE string,
       gv_debug_dep_obj   TYPE e071-obj_name.
 
+" TEMPORARY - step-by-step trace of the JSON walk for the first object's
+" dependencies and for the package DDIC DOMAIN section, since the raw
+" JSON dump alone did not show WHERE the walk drops to zero rows.
+DATA gt_dbg_trace TYPE string_table.
+
 " Package-membership name index (built once per run by
 " BUILD_PACKAGE_NAME_INDEX, used by TRANSPORT_TOUCHES_PACKAGE) -
 " separate from GT_CURRENT_INVENTORY because these need per-type binary
@@ -2045,21 +2050,46 @@ FORM parse_and_stage_dependencies USING iv_run_id   TYPE sysuuid_x16
         lv_deps_raw      TYPE string,
         lt_dep_entries   TYPE string_table,
         lv_seq           TYPE i,
-        ls_stg_dep       TYPE zdccrt_stg_dep.
+        ls_stg_dep       TYPE zdccrt_stg_dep,
+        lv_trace         TYPE string,
+        lv_trace_on      TYPE abap_bool.
+
+  lv_trace_on = COND #( WHEN iv_obj_name = gv_debug_dep_obj THEN abap_true ELSE abap_false ).
 
   CHECK iv_dep_json IS NOT INITIAL.
 
   PERFORM strip_outer_json_array USING iv_dep_json CHANGING lv_outer_body.
+  IF lv_trace_on = abap_true.
+    lv_trace = |PARSE_DEP: outer_body len={ strlen( lv_outer_body ) }|.
+    PERFORM dbg_trace USING lv_trace.
+  ENDIF.
+
   PERFORM split_json_top_level_elements USING lv_outer_body CHANGING lt_outer_entries.
+  IF lv_trace_on = abap_true.
+    lv_trace = |PARSE_DEP: outer_entries={ lines( lt_outer_entries ) }|.
+    PERFORM dbg_trace USING lv_trace.
+  ENDIF.
 
   READ TABLE lt_outer_entries INTO DATA(lv_outer_entry) INDEX 1.
+  IF lv_trace_on = abap_true.
+    lv_trace = |PARSE_DEP: read outer_entry subrc={ sy-subrc } len={ strlen( lv_outer_entry ) }|.
+    PERFORM dbg_trace USING lv_trace.
+  ENDIF.
   CHECK sy-subrc = 0.
 
   PERFORM extract_json_raw_field USING lv_outer_entry 'DEPENDENCIES' CHANGING lv_deps_raw.
+  IF lv_trace_on = abap_true.
+    lv_trace = |PARSE_DEP: deps_raw len={ strlen( lv_deps_raw ) }|.
+    PERFORM dbg_trace USING lv_trace.
+  ENDIF.
   CHECK lv_deps_raw IS NOT INITIAL.
 
   PERFORM strip_outer_json_array USING lv_deps_raw CHANGING lv_deps_raw.
   PERFORM split_json_top_level_elements USING lv_deps_raw CHANGING lt_dep_entries.
+  IF lv_trace_on = abap_true.
+    lv_trace = |PARSE_DEP: dep_entries={ lines( lt_dep_entries ) }|.
+    PERFORM dbg_trace USING lv_trace.
+  ENDIF.
 
   lv_seq = 0.
   LOOP AT lt_dep_entries INTO DATA(lv_dep_entry).
@@ -2075,6 +2105,11 @@ FORM parse_and_stage_dependencies USING iv_run_id   TYPE sysuuid_x16
     PERFORM extract_json_raw_field    USING lv_dep_entry 'SIGNATURE' CHANGING ls_stg_dep-signature_json.
 
     INSERT zdccrt_stg_dep FROM ls_stg_dep.
+
+    IF lv_trace_on = abap_true AND lv_seq <= 3.
+      lv_trace = |PARSE_DEP: seq={ lv_seq } type={ ls_stg_dep-dependency_type } name={ ls_stg_dep-dependency_name } insert_subrc={ sy-subrc }|.
+      PERFORM dbg_trace USING lv_trace.
+    ENDIF.
   ENDLOOP.
 ENDFORM.
 
@@ -2087,15 +2122,20 @@ ENDFORM.
 FORM stage_package_ddic USING iv_run_id    TYPE sysuuid_x16
                                iv_ddic_json TYPE string.
   DATA: lv_packages_body TYPE string,
-        lt_pkg_entries   TYPE string_table.
+        lt_pkg_entries   TYPE string_table,
+        lv_trace         TYPE string.
 
   CHECK iv_ddic_json IS NOT INITIAL.
 
   PERFORM extract_json_raw_field USING iv_ddic_json 'PACKAGES' CHANGING lv_packages_body.
+  lv_trace = |STAGE_DDIC: packages_body len={ strlen( lv_packages_body ) }|.
+  PERFORM dbg_trace USING lv_trace.
   CHECK lv_packages_body IS NOT INITIAL.
 
   PERFORM strip_outer_json_array USING lv_packages_body CHANGING lv_packages_body.
   PERFORM split_json_top_level_elements USING lv_packages_body CHANGING lt_pkg_entries.
+  lv_trace = |STAGE_DDIC: pkg_entries={ lines( lt_pkg_entries ) }|.
+  PERFORM dbg_trace USING lv_trace.
 
   LOOP AT lt_pkg_entries INTO DATA(lv_pkg_entry).
     PERFORM stage_ddic_section USING iv_run_id lv_pkg_entry 'DOMAIN'       'DOMA'.
@@ -2115,19 +2155,40 @@ FORM stage_ddic_section USING iv_run_id    TYPE sysuuid_x16
                                iv_ddic_type TYPE char4.
   DATA: lv_section_body TYPE string,
         lt_entries      TYPE string_table,
-        ls_stg_ddic     TYPE zdccrt_stg_ddic.
+        ls_stg_ddic     TYPE zdccrt_stg_ddic,
+        lv_trace        TYPE string,
+        lv_trace_on     TYPE abap_bool.
+
+  lv_trace_on = COND #( WHEN iv_section = 'DOMAIN' THEN abap_true ELSE abap_false ).
 
   PERFORM extract_json_raw_field USING iv_pkg_entry iv_section CHANGING lv_section_body.
+  IF lv_trace_on = abap_true.
+    lv_trace = |STAGE_DDIC_SECTION[{ iv_section }]: section_body len={ strlen( lv_section_body ) }|.
+    PERFORM dbg_trace USING lv_trace.
+  ENDIF.
   CHECK lv_section_body IS NOT INITIAL.
 
   PERFORM strip_outer_json_array USING lv_section_body CHANGING lv_section_body.
   PERFORM split_json_top_level_elements USING lv_section_body CHANGING lt_entries.
+  IF lv_trace_on = abap_true.
+    lv_trace = |STAGE_DDIC_SECTION[{ iv_section }]: entries={ lines( lt_entries ) }|.
+    PERFORM dbg_trace USING lv_trace.
+  ENDIF.
 
+  DATA lv_entry_idx TYPE i.
   LOOP AT lt_entries INTO DATA(lv_entry).
+    lv_entry_idx = lv_entry_idx + 1.
+
     CLEAR ls_stg_ddic.
     ls_stg_ddic-run_id    = iv_run_id.
     ls_stg_ddic-ddic_type = iv_ddic_type.
     PERFORM extract_json_string_field USING lv_entry 'NAME' CHANGING ls_stg_ddic-ddic_name.
+
+    IF lv_trace_on = abap_true AND lv_entry_idx <= 3.
+      lv_trace = |STAGE_DDIC_SECTION[{ iv_section }]: entry{ lv_entry_idx } name={ ls_stg_ddic-ddic_name }|.
+      PERFORM dbg_trace USING lv_trace.
+    ENDIF.
+
     CHECK ls_stg_ddic-ddic_name IS NOT INITIAL.
     ls_stg_ddic-detail_json = lv_entry.
 
@@ -2137,6 +2198,11 @@ FORM stage_ddic_section USING iv_run_id    TYPE sysuuid_x16
     " key - not expected from this report's own single-package
     " BUILD_PACKAGE_DDIC_JSON call, but harmless either way.
     MODIFY zdccrt_stg_ddic FROM ls_stg_ddic.
+
+    IF lv_trace_on = abap_true AND lv_entry_idx <= 3.
+      lv_trace = |STAGE_DDIC_SECTION[{ iv_section }]: entry{ lv_entry_idx } modify_subrc={ sy-subrc }|.
+      PERFORM dbg_trace USING lv_trace.
+    ENDIF.
   ENDLOOP.
 ENDFORM.
 
@@ -2186,6 +2252,20 @@ FORM display_db_mode_result.
   " report - see EXTRACT_JSON_STRING_FIELD's own comment).
   lv_dep_label = 'Dependency JSON for ' && gv_debug_dep_obj.
   PERFORM dump_long_string USING lv_dep_label gv_debug_dep_json.
+
+  WRITE: / '--- DIAGNOSTIC: JSON-walk trace (remove once parser is confirmed) ---'.
+  LOOP AT gt_dbg_trace INTO DATA(lv_trace_line).
+    WRITE: / lv_trace_line.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  DBG_TRACE
+*&---------------------------------------------------------------------*
+*       TEMPORARY diagnostic helper - see GT_DBG_TRACE declaration.
+*&---------------------------------------------------------------------*
+FORM dbg_trace USING iv_line TYPE string.
+  APPEND iv_line TO gt_dbg_trace.
 ENDFORM.
 
 *&---------------------------------------------------------------------*

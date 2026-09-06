@@ -1904,19 +1904,25 @@ ENDFORM.
 *       VERIFY if a NAME value is ever found to legitimately need fuller
 *       JSON unescaping (e.g. \uXXXX).
 *
-*       CV_VALUE is CHANGING VALUE(...) (pass by value-result)
-*       deliberately: one caller (STAGE_DDIC_SECTION) passes
-*       ZDCCRT_STG_DDIC-DDIC_NAME, which is CHAR30, not STRING (STRING
-*       is rejected as a table key component on this system - see
+*       CV_VALUE is CHANGING ... TYPE CSEQUENCE (a generic ABAP type
+*       covering STRING and any fixed CHAR length) deliberately, not a
+*       fixed TYPE STRING: this FORM's three callers pass different
+*       concrete types for it - ZDCCRT_STG_DEP-DEPENDENCY_TYPE/
+*       DEPENDENCY_NAME are genuinely STRING, but STAGE_DDIC_SECTION's
+*       ZDCCRT_STG_DDIC-DDIC_NAME is CHAR30 (STRING is rejected as a
+*       table key component on this system - see
 *       DDIC_TABLES_TO_CREATE_LLD.txt). A classic FORM's default
 *       by-reference CHANGING binding requires the actual parameter's
-*       type to be IDENTICAL to the formal's, so a CHAR30 actual can't
-*       bind to a STRING-typed formal; VALUE(...) makes ABAP copy-
-*       convert on the way in and out instead.
+*       type to be IDENTICAL to the formal's, so no single fixed type
+*       (STRING or CHAR30) can match every caller - a VALUE(...) pass-
+*       by-value-result copy would work for any ONE fixed type too, but
+*       CSEQUENCE is the more correct fit here: it lets ABAP bind BY
+*       REFERENCE directly to whichever concrete text type the caller
+*       actually passes, with no copying at all.
 *&---------------------------------------------------------------------*
 FORM extract_json_string_field USING iv_json_obj TYPE string
                                       iv_field    TYPE string
-                                CHANGING VALUE(cv_value) TYPE string.
+                                CHANGING cv_value TYPE csequence.
   DATA: lv_regex TYPE string,
         lv_raw   TYPE string.
 

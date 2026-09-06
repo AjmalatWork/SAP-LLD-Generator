@@ -1201,18 +1201,18 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  JSON_ESCAPE_STRING
 *&---------------------------------------------------------------------*
-*       IV_RAW is VALUE(...) (pass-by-value) deliberately: callers pass
-*       a mix of genuinely STRING actuals and CHAR-length actuals
+*       IV_RAW is TYPE CSEQUENCE (a generic ABAP type covering STRING
+*       and any fixed CHAR length), not a fixed TYPE STRING: callers
+*       pass a mix of genuinely STRING actuals and CHAR-length actuals
 *       (DEPENDENCY_TYPE is CHAR10, TARGET_OBJECT is CHAR60 in
 *       ZDCCRT_OBJ_CALLS; OBJECT_TYPE is CHAR4). A classic FORM's default
 *       by-reference USING binding requires the actual parameter's type
-*       to be IDENTICAL to the formal's - STRING and a fixed CHAR length
-*       are different internal representations, so passing one by
-*       reference into a STRING-typed formal fails at activation.
-*       Pass-by-value makes ABAP copy-convert instead, same as this
-*       project already relies on for CHAR<->STRING everywhere else.
+*       to be IDENTICAL to the formal's, so no single fixed type can
+*       match every caller here; CSEQUENCE lets ABAP bind BY REFERENCE
+*       directly to whichever concrete text type the caller actually
+*       passes, with no value-copy needed.
 *&---------------------------------------------------------------------*
-FORM json_escape_string USING VALUE(iv_raw) TYPE string CHANGING cv_escaped TYPE string.
+FORM json_escape_string USING iv_raw TYPE csequence CHANGING cv_escaped TYPE string.
   cv_escaped = iv_raw.
   REPLACE ALL OCCURRENCES OF '\' IN cv_escaped WITH '\\'.
   REPLACE ALL OCCURRENCES OF '"' IN cv_escaped WITH '\"'.

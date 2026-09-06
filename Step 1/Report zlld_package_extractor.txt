@@ -222,25 +222,40 @@ ENDCLASS.
 *&---------------------------------------------------------------------*
 *& Selection Screen
 *&---------------------------------------------------------------------*
-* text-001: maintain via SE38 Text Elements, e.g. "Package & Output"
+* text-001: maintain via SE38 Text Elements, e.g. "Output Mode"
+* Database is now the default (P_MDB = 'X') - File mode is opt-in.
+* Nothing in MAIN branches on output mode until after CALL SCREEN 9000
+* returns (see MAIN below) - the file path still executes exactly as
+* before, with no new logic in between, when File mode is chosen.
 SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.
-PARAMETERS: p_pack TYPE devclass OBLIGATORY,
-            p_file TYPE string  OBLIGATORY DEFAULT 'C:\temp\'.
+PARAMETERS: p_mdb   RADIOBUTTON GROUP outm DEFAULT 'X',
+            p_mfile RADIOBUTTON GROUP outm.
 SELECTION-SCREEN END OF BLOCK b1.
 
-* text-002: maintain via SE38 Text Elements, e.g. "Output Mode"
-* File remains the default (P_MFILE = 'X') - DB mode is opt-in, per the
-* step1_db_mode_brief.md "File mode must remain byte-for-byte identical
-* to current behavior" requirement. Nothing in MAIN branches on output
-* mode until after CALL SCREEN 9000 returns (see MAIN below) - the file
-* path executes exactly as before, with no new logic in between.
+* text-002: maintain via SE38 Text Elements, e.g. "Package & Output"
 SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE text-002.
-PARAMETERS: p_mfile RADIOBUTTON GROUP outm DEFAULT 'X',
-            p_mdb   RADIOBUTTON GROUP outm.
+PARAMETERS: p_pack TYPE devclass OBLIGATORY,
+            p_file TYPE string  OBLIGATORY DEFAULT 'C:\temp\'.
 SELECTION-SCREEN END OF BLOCK b2.
 
 AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
   PERFORM f4_output_folder CHANGING p_file.
+
+*&---------------------------------------------------------------------*
+*&      P_FILE (the output folder) is only meaningful in File mode -
+*&      hidden entirely (not just disabled) when Database mode is
+*&      selected. Its DEFAULT value is untouched either way, so the
+*&      field's own OBLIGATORY check never blocks a DB-mode run even
+*&      while hidden.
+*&---------------------------------------------------------------------*
+AT SELECTION-SCREEN OUTPUT.
+  LOOP AT SCREEN.
+    IF screen-name = 'P_FILE'.
+      screen-active = COND #( WHEN p_mfile = abap_true THEN 1 ELSE 0 ).
+      screen-input  = screen-active.
+      MODIFY SCREEN.
+    ENDIF.
+  ENDLOOP.
 
 *&---------------------------------------------------------------------*
 *& Main

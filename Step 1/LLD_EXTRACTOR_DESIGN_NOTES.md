@@ -16,8 +16,11 @@ first draft to review and test in the real system, not a finished, verified deli
    (function codes `EXEC`/`BACK`/`EXIT`/`CANC`/`SELALL`/`DESELALL`) in SE51/SE41 —
    reuse `ZCR_AURA_CODE_EXTRACTOR`'s own screen 9000 as a template, it's the same
    pattern minus the version-compare column.
-3. Maintain text element `text-001` (selection screen block title) via SE38 Text
-   Elements — e.g. "Package & Output".
+3. Maintain text elements `text-001`/`text-002` (selection screen block titles) via
+   SE38 Text Elements — "Output Mode" / "Package & Output" respectively (the Output
+   Mode block was moved above the Package/Output block on the selection screen, DB
+   mode set as the default, and `P_FILE` hidden unless File mode is selected — see
+   the report's own selection-screen comments).
 4. Work through every item in "Assumptions to verify" below in SE37/SE11 before
    activating. None of these are guesses I'm confident enough in to skip checking —
    they're documented in the code too (search for `VERIFY:`), this list just
@@ -209,8 +212,9 @@ themselves and the code that touches them use the real names.
    directly into `ZLLD_PACKAGE_EXTRACTOR` as a plain `INCLUDE` (no function module
    at all) — see "Native processing" below and create
    `Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt` instead.
-3. Maintain text element `text-002` (the new selection-screen block title) via SE38
-   Text Elements — e.g. "Output Mode".
+3. ~~Maintain text element `text-002` (the new selection-screen block title)~~ —
+   folded into the base report's own text-element instructions above (`text-001` =
+   "Output Mode", `text-002` = "Package & Output").
 4. Work through "New assumptions to verify" below before trusting DB-mode output.
 
 ### New assumptions to verify against the real system

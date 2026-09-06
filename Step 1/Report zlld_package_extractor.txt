@@ -2164,6 +2164,8 @@ ENDFORM.
 *       processed into a usable graph yet.
 *&---------------------------------------------------------------------*
 FORM display_db_mode_result.
+  DATA lv_dep_label TYPE string.
+
   WRITE: / 'DB-mode extraction complete.'.
   WRITE: / 'Run ID:', gv_run_id.
   WRITE: / 'Objects staged:', gv_extracted_count.
@@ -2177,7 +2179,13 @@ FORM display_db_mode_result.
   SKIP.
   WRITE: / '--- DIAGNOSTIC: raw JSON (remove once parser is confirmed) ---'.
   PERFORM dump_long_string USING 'DDIC JSON' gv_debug_ddic_json.
-  PERFORM dump_long_string USING |Dependency JSON for { gv_debug_dep_obj }| gv_debug_dep_json.
+
+  " Built into a variable first, not passed as an inline |...| template -
+  " this system rejects a string template directly as a PERFORM USING
+  " actual parameter (same class of restriction as elsewhere in this
+  " report - see EXTRACT_JSON_STRING_FIELD's own comment).
+  lv_dep_label = 'Dependency JSON for ' && gv_debug_dep_obj.
+  PERFORM dump_long_string USING lv_dep_label gv_debug_dep_json.
 ENDFORM.
 
 *&---------------------------------------------------------------------*

@@ -92,14 +92,15 @@ TYPES: BEGIN OF ts_chunk_token_row,
        tt_chunk_token_row TYPE STANDARD TABLE OF ts_chunk_token_row WITH EMPTY KEY.
 
 TYPES: BEGIN OF ts_obj_score,
-         object_name TYPE string,
-         type        TYPE char4,
-         package     TYPE devclass,
-         semantic    TYPE f,
-         structural  TYPE f,
-         base_score  TYPE f,
-         final_score TYPE f,
-         tier_label  TYPE string,
+         object_name    TYPE string,
+         type           TYPE char4,
+         package        TYPE devclass,
+         semantic       TYPE f,
+         structural     TYPE f,
+         base_score     TYPE f,
+         final_score    TYPE f,
+         tier_label     TYPE string,
+         best_chunk_id  TYPE sysuuid_x16,   " TEMPORARY diagnostic aid - see DUMP_TOP_CANDIDATE_EVIDENCE
        END OF ts_obj_score,
        tt_obj_score TYPE SORTED TABLE OF ts_obj_score WITH UNIQUE KEY object_name,
        " SORT is not allowed on a SORTED TABLE (its order is fixed by
@@ -119,6 +120,7 @@ TYPES: BEGIN OF ts_obj_score,
 TYPES: BEGIN OF ts_score,
          object_name TYPE string,
          score       TYPE f,
+         chunk_id    TYPE sysuuid_x16,   " TEMPORARY diagnostic aid - see DUMP_TOP_CANDIDATE_EVIDENCE
        END OF ts_score,
        tt_score TYPE SORTED TABLE OF ts_score WITH UNIQUE KEY object_name.
 
@@ -302,6 +304,13 @@ FORM main.
   PERFORM detect_new_object.
 
   PERFORM export_candidates.
+
+  " TEMPORARY - see DUMP_TOP_CANDIDATE_EVIDENCE. Investigating identical
+  " SEMANTIC_SCORE ties across unrelated top candidates on a real run -
+  " prints each exported candidate's actual winning chunk and which
+  " requirement tokens matched it, to confirm/refute the "single shared
+  " generic token" hypothesis before trusting/tuning the ranking.
+  PERFORM dump_top_candidate_evidence.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
@@ -787,9 +796,10 @@ FORM compute_semantic_scores.
         IF sy-subrc = 0.
           IF lv_cosine > <fs_best>-score.
             <fs_best>-score = lv_cosine.
+            <fs_best>-chunk_id = ls_row-chunk_id.
           ENDIF.
         ELSE.
-          INSERT VALUE #( object_name = lv_cur_object score = lv_cosine ) INTO TABLE lt_best.
+          INSERT VALUE #( object_name = lv_cur_object score = lv_cosine chunk_id = ls_row-chunk_id ) INTO TABLE lt_best.
         ENDIF.
       ENDIF.
     ENDAT.
@@ -806,6 +816,7 @@ FORM compute_semantic_scores.
     READ TABLE gt_obj_score ASSIGNING FIELD-SYMBOL(<fs_os>) WITH KEY object_name = ls_best-object_name.
     IF sy-subrc = 0.
       <fs_os>-semantic = ls_best-score.
+      <fs_os>-best_chunk_id = ls_best-chunk_id.
     ENDIF.
   ENDLOOP.
 ENDFORM.
@@ -1529,6 +1540,65 @@ FORM export_candidates.
   WRITE: / 'Disagreements:', lines( gt_disagreements ).
   LOOP AT gt_disagreements INTO DATA(ls_dis).
     WRITE: / '  -', ls_dis-kind, ':', ls_dis-message.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  DUMP_TOP_CANDIDATE_EVIDENCE
+*&---------------------------------------------------------------------*
+*       TEMPORARY diagnostic - for each exported top-N candidate, shows
+*       which single chunk actually won its SEMANTIC_SCORE and which
+*       requirement tokens matched inside that chunk, so an identical-
+*       score tie across unrelated objects can be root-caused (a chunk
+*       whose ENTIRE surviving-token vector is just one shared generic
+*       word makes the cosine formula collapse to a value that no
+*       longer depends on which object owns it). Remove once the
+*       ranking behavior is understood/tuned.
+*&---------------------------------------------------------------------*
+FORM dump_top_candidate_evidence.
+  DATA: lt_top_names TYPE string_t,
+        lv_chunk_text TYPE string,
+        lv_snippet    TYPE string,
+        lv_match_line TYPE string.
+
+  CLEAR lt_top_names.
+  LOOP AT gt_adjusted_sorted INTO DATA(lv_name) TO p_topn.
+    APPEND lv_name TO lt_top_names.
+  ENDLOOP.
+
+  WRITE: / '--- DIAGNOSTIC: top-candidate scoring evidence (remove once ranking is confirmed) ---'.
+
+  LOOP AT lt_top_names INTO lv_name.
+    READ TABLE gt_obj_score INTO DATA(ls_cand) WITH KEY object_name = lv_name.
+    CHECK sy-subrc = 0.
+
+    WRITE: / lv_name, ': semantic=', ls_cand-semantic, 'best_chunk_id=', ls_cand-best_chunk_id.
+
+    IF ls_cand-best_chunk_id IS INITIAL.
+      WRITE: / '  (no surviving chunk - semantic score is 0)'.
+      CONTINUE.
+    ENDIF.
+
+    CLEAR lv_chunk_text.
+    SELECT SINGLE chunk_text FROM zdccrt_chunks INTO @lv_chunk_text
+      WHERE chunk_id = @ls_cand-best_chunk_id.
+
+    lv_snippet = COND #( WHEN strlen( lv_chunk_text ) > 300
+                          THEN substring( val = lv_chunk_text off = 0 len = 300 ) && ' ...(truncated)'
+                          ELSE lv_chunk_text ).
+    WRITE: / '  winning chunk text:', lv_snippet.
+
+    DATA lv_match_count TYPE i.
+    lv_match_count = 0.
+    LOOP AT gt_scope_tokens INTO DATA(ls_tok) WHERE chunk_id = ls_cand-best_chunk_id.
+      READ TABLE gt_req_weighted INTO DATA(ls_req_tok) WITH KEY token = ls_tok-token BINARY SEARCH.
+      IF sy-subrc = 0.
+        lv_match_count = lv_match_count + 1.
+        lv_match_line = |    matched token '{ ls_tok-token }' (tf={ ls_tok-tf }, req_weight={ ls_req_tok-weight })|.
+        WRITE: / lv_match_line.
+      ENDIF.
+    ENDLOOP.
+    WRITE: / '  total requirement tokens matched in this chunk:', lv_match_count.
   ENDLOOP.
 ENDFORM.
 

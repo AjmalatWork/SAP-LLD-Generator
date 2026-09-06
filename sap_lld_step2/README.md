@@ -1,13 +1,20 @@
 # Step 2 — Structural graph + embedding store
 
-Parses an ABAP/ECC extraction file into a persistent structural dependency
-graph (Postgres) and a persistent vector store of embedded code chunks
-(pgvector), so both can be queried by later phases. See the original brief
-for full context; this covers step 2 only — no retrieval/tiering logic, no
-LLM, no UI.
+Parses the real LLD extraction file format step 1 (`ZLLD_PACKAGE_EXTRACTOR`)
+produces into a persistent structural dependency graph (Postgres) and a
+persistent vector store of embedded code chunks (pgvector), so both can be
+queried by later phases. See the original brief for full context; this
+covers step 2 only — no retrieval/tiering logic, no LLM, no UI.
 
 Runs fully offline (after first-time package/model download) on a local
 machine. No external services.
+
+**Format note:** this parses the *real* format (file-level `RUN_TYPE`/
+`PACKAGE`/`REMOVED_OBJECTS` header, a shared `--- DDIC ---` section, and each
+object's `DEPENDENCIES` as a flat list of typed entries with real SIGNATURE
+enrichment) — not the earlier simplified `{"calls": [...], "tables_used":
+[...]}` mock schema step 2 was originally built and tested against before a
+real extraction file existed. See `reports/` for the update history.
 
 ## 1. Start the database
 
@@ -50,18 +57,32 @@ The first run will download the embedding model (`sentence-transformers/
 all-MiniLM-L6-v2` by default, a few hundred MB) — this needs internet once;
 after that it's cached locally and everything runs offline.
 
-## 3. Generate a mock extraction file
+## 3. Get an extraction file
 
-No real SAP extraction file is available yet. Generate a synthetic one that
-matches the exact input format the parser expects:
+**A real one:** run `ZLLD_PACKAGE_EXTRACTOR` (step 1) against a package. Its
+output is directly usable here — no conversion needed. Real files come out
+of `GUI_DOWNLOAD` in the SAP GUI's local codepage (confirmed cp1252 on the
+one real file tested so far, not UTF-8) — the pipeline detects this
+automatically (tries UTF-8 first, falls back to cp1252). **Real extraction
+files contain genuine business/proprietary content — never commit one to
+this repo** (see `.gitignore`'s `data/LLD_EXTRACT_*` pattern); keep it local.
+
+**A synthetic one**, for fast repeatable testing without a real SAP system:
 
 ```bash
-python -m lld_step2.mock_generator --count 18 --seed 42 --out data/mock_extraction.txt
+python -m lld_step2.mock_generator --count 18 --seed 42 --package ZMOCK_PKG --out data/mock_extraction.txt
 ```
 
-This produces 18 synthetic objects (classes/programs/function modules) with a
-realistic mix of calls, table usage, a few 3+ hop call chains, and at least
-one dependency-free object.
+Emits the same real format (header, shared DDIC section, real per-object
+DEPENDENCIES shape with `METH`/`OM`/`INTF`/`TABL`/etc. entries and plausible
+SIGNATURE enrichment) — 18 synthetic objects with a realistic mix of object
+references, DDIC references, a few 3+ hop chains, and at least one
+dependency-free object. `lld_step2.mock_generator.generate_incremental()`
+(Python API, not yet wired into the CLI) builds a small `INCREMENTAL`-run
+file from an existing `generate()` call's specs — one object mutated, one
+listed in `REMOVED_OBJECTS`, everything else absent — for testing the
+incremental loader path without a second real sync; see
+`tests/test_real_format_loader.py` for how it's used.
 
 ## 4. Run the pipeline
 
@@ -69,13 +90,27 @@ one dependency-free object.
 python -m lld_step2.pipeline data/mock_extraction.txt
 ```
 
-This reads the file, parses it, loads the graph tables (`objects`,
-`object_calls`, `object_uses_table`), then chunks each object's source and
-embeds/stores the chunks (`code_chunks`). Progress is logged per object;
-malformed input exits with a clear message rather than a stack trace.
+Reads the file's `RUN_TYPE` and branches accordingly:
 
-Re-running the pipeline on the same file is safe — it replaces each object's
-own rows rather than duplicating them (see "Re-run behavior" below).
+- **`FULL`** — wipes and reloads everything scoped to the file's `PACKAGE`
+  (`objects`, `object_calls`, `object_uses_table`, `code_chunks`,
+  `ddic_objects`), then loads from scratch. Same semantics as re-running the
+  whole pipeline used to be, just now explicitly package-scoped rather than
+  assumed to be the whole database.
+- **`INCREMENTAL`** — first deletes every object named in `REMOVED_OBJECTS`
+  (and cleans up any other object's edges pointing at it), then upserts only
+  the objects actually present in this file's `=== OBJECT ===` blocks
+  (delete-then-insert that one object's own rows, same idempotent pattern as
+  before). Everything else already in the database — anything not mentioned
+  in this file and not in `REMOVED_OBJECTS` — is left completely untouched.
+  `ddic_objects` entries are only ever added/updated, never deleted by an
+  incremental run (only `REMOVED_OBJECTS` drives deletion, and it doesn't
+  touch this table) — an incremental file's shared DDIC section may
+  legitimately cover only a subset of the package, and that must not be read
+  as "everything else was removed."
+
+Malformed input (including a missing/invalid `RUN_TYPE`) exits with a clear
+message rather than a stack trace or a silent default.
 
 ## 5. Inspect the graph
 
@@ -94,20 +129,25 @@ object within N hops.
 pytest
 ```
 
-Parser and chunking tests are pure unit tests (no DB needed). The
-pipeline/acceptance tests in `tests/test_pipeline.py` need Postgres running
-(step 1) — they generate a fresh mock file, run the full pipeline against a
-truncated test database, and check:
+Parser and chunking tests (`test_parser.py`, `test_chunking.py`) are pure
+unit tests (no DB needed). The rest need Postgres running and are skipped
+automatically if it isn't reachable:
 
-- object/call/table-usage row counts match the generator's known output
-- specific caller/callee/table edges are correct
-- re-running the pipeline doesn't duplicate rows
-- a recursive multi-hop traversal matches a known dependency chain
-- a vector similarity query returns chunks ordered by distance with raw text
-  intact
-
-If Postgres isn't reachable, these tests are skipped automatically (unit
-tests still run).
+- **`test_pipeline.py`** — generates a fresh mock file, runs the full
+  pipeline, and checks object/dependency counts match the generator's known
+  output, specific caller/callee/table edges are correct, re-running doesn't
+  duplicate rows, multi-hop traversal matches a known chain, and vector
+  similarity search returns chunks ordered by distance with raw text intact.
+- **`test_real_format_loader.py`** — the FULL/INCREMENTAL loader semantics
+  specifically (the part with genuine new risk, since step 2 had previously
+  only ever been tested with a single full load): `OM`/`INTF`-type
+  dependencies load with the correct `edge_kind`, a `TABL` reference
+  resolves its field list against `ddic_objects` by name, a `FULL` run of
+  one package never touches another package's rows, and a simulated
+  incremental run deletes a `REMOVED_OBJECTS` entry, updates one object, and
+  leaves every other object's rows byte-identical to before (checked via a
+  direct snapshot comparison, not just "still present").
+- **`test_retrieval.py`** — step 3's tests (see below).
 
 ## Embedding quality investigation tools
 
@@ -206,10 +246,32 @@ update that column definition and re-create the table/volume
 
 ## Design notes
 
-- **Re-run behavior**: `objects` rows are upserted by primary key (name).
-  `object_calls`, `object_uses_table`, and `code_chunks` rows are deleted and
-  re-inserted per object on every load, scoped to that object only. This
-  keeps the loader idempotent without needing to diff individual rows.
+- **Re-run behavior**: see "Run the pipeline" above for FULL vs INCREMENTAL
+  semantics. Within either, `objects` rows are upserted by primary key
+  (name); `object_calls`, `object_uses_table`, and `code_chunks` rows are
+  deleted and re-inserted per object on every load, scoped to that object
+  only — this keeps the loader idempotent without needing to diff individual
+  rows.
+- **Every dependency type becomes an `object_calls` edge** — not just calls
+  in the everyday sense. The real extraction format's `DEPENDENCIES` list
+  mixes genuine calls (`METH`/`OM`/`FUNC`) with includes/interfaces/DDIC/
+  message/transaction references (`INCL`/`INTF`/`TABL`/`DOMA`/`MESS`/`TRAN`/
+  etc.) all in one flat list, and this project loads all of them, tagged
+  with the raw `dependency_type` plus a normalized `edge_kind` (see
+  `graph_loader.EDGE_KIND_MAP`). Consumers that care specifically about
+  call-graph proximity (`embedding_bench.py`'s "related" labeling,
+  `retrieval.py`'s structural scoring) filter to `graph_loader.
+  CALL_LIKE_EDGE_KINDS` rather than treating every row as a call.
+- **`DOMA`/`DTEL`/`TABL`/`TTYP`-typed dependencies additionally get an
+  `object_uses_table` edge** (by name only — full field-level detail lives
+  in `ddic_objects`, joined by `(package, ddic_type, name)`). `STRU`-typed
+  ones do not get this second edge, per the brief, even though `STRU` rows
+  do exist in `ddic_objects` — only `object_calls` sees them.
+- **`ddic_objects` is a shared, package-scoped side table**, not linked to
+  `objects` by foreign key — a referenced DDIC object (e.g. a standard SAP
+  table) may have no row there at all if it was never itself part of the
+  package's own DDIC section. `get_tables_used()` degrades to an empty field
+  list in that case rather than failing.
 - **Chunking strategy** lives entirely in
   [`lld_step2/chunking.py`](lld_step2/chunking.py), isolated from the
   loader/embedding code, so the splitting heuristic can be improved (e.g. a
@@ -222,8 +284,6 @@ update that column definition and re-create the table/volume
 
 ## Out of scope
 
-LLM/Gemini gem integration (step 4), any UI, real SAP data (mock generator +
-`ZORDER_MGMT_extract.txt` stand in until a real extraction exists), and
-incremental/transport-log-based sync. Step 2 (graph + embedding store) and
-step 3 (retrieval + tiering) are both built. See the respective briefs for
-full detail.
+LLM/Gemini gem integration (step 4) and any UI. Step 1 (ABAP extraction),
+step 2 (graph + embedding store), and step 3 (retrieval + tiering) are all
+built. See the respective briefs for full detail.

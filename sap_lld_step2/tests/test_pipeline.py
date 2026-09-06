@@ -1,6 +1,6 @@
-"""End-to-end acceptance test: generate mock data, run the full pipeline
-against a real Postgres+pgvector instance, and confirm graph + vector
-retrieval both work as expected.
+"""End-to-end acceptance test: generate mock data (real extraction format),
+run the full pipeline against a real Postgres+pgvector instance, and confirm
+graph + vector retrieval both work as expected.
 
 Requires Postgres to be reachable (see README: `docker compose up -d`).
 Automatically skipped if it isn't.
@@ -12,7 +12,7 @@ from lld_step2.graph_loader import (
     get_reachable_within_hops,
     get_tables_used,
 )
-from lld_step2.mock_generator import generate, render_extraction_file
+from lld_step2.mock_generator import generate
 from lld_step2.pipeline import run_pipeline
 
 
@@ -23,28 +23,28 @@ def _write_mock_file(tmp_path, count=18, seed=7):
     return path, specs
 
 
-def test_pipeline_loads_expected_object_call_and_table_counts(tmp_path, db_conn):
+def test_pipeline_loads_expected_object_and_dependency_counts(tmp_path, db_conn):
     path, specs = _write_mock_file(tmp_path)
 
     summary = run_pipeline(str(path), conn=db_conn)
 
+    assert summary["run_type"] == "FULL"
     assert summary["object_count"] == len(specs)
     assert set(summary["object_names"]) == {s.name for s in specs}
 
-    expected_calls = sum(len(s.calls) for s in specs)
-    expected_tables = sum(len(s.tables_used) for s in specs)
-    assert summary["call_count"] == expected_calls
-    assert summary["table_usage_count"] == expected_tables
+    expected_dependencies = sum(len(s.dependencies) for s in specs)
+    expected_ddic_refs = sum(len(s.ddic_refs) for s in specs)
+    assert summary["dependency_count"] == expected_dependencies
 
     with db_conn.cursor() as cur:
         cur.execute("SELECT COUNT(*) FROM objects")
         assert cur.fetchone()[0] == len(specs)
 
         cur.execute("SELECT COUNT(*) FROM object_calls")
-        assert cur.fetchone()[0] == expected_calls
+        assert cur.fetchone()[0] == expected_dependencies
 
         cur.execute("SELECT COUNT(*) FROM object_uses_table")
-        assert cur.fetchone()[0] == expected_tables
+        assert cur.fetchone()[0] == expected_ddic_refs
 
         cur.execute("SELECT COUNT(*) FROM code_chunks")
         assert cur.fetchone()[0] == summary["chunk_count"]
@@ -57,11 +57,11 @@ def test_pipeline_spot_checks_specific_object_edges(tmp_path, db_conn):
 
     spec_by_name = {s.name: s for s in specs}
 
-    # Pick an object that has at least one outgoing call to a local object.
+    # Pick an object that has at least one outgoing reference to a local object.
     source_spec = next(
-        s for s in specs if any(c in spec_by_name for c in s.calls)
+        s for s in specs if any(c in spec_by_name for c in s.object_ref_targets)
     )
-    local_targets = sorted(c for c in source_spec.calls if c in spec_by_name)
+    local_targets = sorted(c for c in source_spec.object_ref_targets if c in spec_by_name)
 
     callees = get_direct_callees(db_conn, source_spec.name)
     assert set(local_targets) <= set(callees)
@@ -71,8 +71,8 @@ def test_pipeline_spot_checks_specific_object_edges(tmp_path, db_conn):
         assert source_spec.name in callers
 
     tables = get_tables_used(db_conn, source_spec.name)
-    expected_table_names = {t for t, _fields in source_spec.tables_used}
-    assert {t["table"] for t in tables} == expected_table_names
+    expected_table_names = {name for ddic_type, name in source_spec.ddic_refs if ddic_type == "TABL"}
+    assert expected_table_names <= {t["table"] for t in tables}
 
 
 def test_rerunning_pipeline_does_not_duplicate_rows(tmp_path, db_conn):
@@ -108,9 +108,9 @@ def test_multi_hop_traversal_matches_known_chain(tmp_path, db_conn):
     hop1 = None
     hop2 = None
     for s in specs:
-        for c1 in s.calls:
+        for c1 in s.object_ref_targets:
             if c1 in spec_by_name:
-                for c2 in spec_by_name[c1].calls:
+                for c2 in spec_by_name[c1].object_ref_targets:
                     if c2 in spec_by_name and c2 != s.name:
                         start, hop1, hop2 = s.name, c1, c2
                         break

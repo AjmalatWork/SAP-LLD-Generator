@@ -3,4 +3,12 @@ __pycache__/
 *.pyc
 .env
 data/mock_extraction.txt
+data/mock_extraction_incremental.txt
 *.egg-info/
+
+# Real extraction files from an actual SAP system contain genuine
+# business/proprietary content (real package, table, and domain names,
+# real business logic) - never commit these, regardless of filename.
+# Use them locally for testing only.
+data/LLD_EXTRACT_*.TXT
+data/*_real_extract*.txt

@@ -1,6 +1,15 @@
-"""Parser for the extraction file format.
+"""Parser for the real LLD extraction file format produced by step 1
+(ZLLD_PACKAGE_EXTRACTOR).
 
-Format (one or more blocks concatenated):
+Format:
+
+    RUN_TYPE: <FULL|INCREMENTAL>
+    PACKAGE: <PACKAGE_NAME>
+    EXTRACTED_AT: <timestamp>
+    REMOVED_OBJECTS: <comma-separated "TYPE:NAME" list, or NONE>
+
+    --- DDIC ---
+    <single JSON blob: Z_GET_DDIC_INFO's real output, package-scoped>
 
     === OBJECT: <NAME> ===
     TYPE: <CLASS|PROGRAM|FUNCTION_MODULE>
@@ -10,21 +19,56 @@ Format (one or more blocks concatenated):
     <raw source, arbitrary number of lines>
 
     --- DEPENDENCIES ---
-    <single JSON object: {"calls": [...], "tables_used": [{"table": ..., "fields": [...]}]}>
+    <single JSON blob: ZCR_GET_DEPENDENCY_OBJ_NEW's real output - a list
+     containing exactly one entry with this object's own "DEPENDENCIES"
+     array of typed entries>
     === END OBJECT ===
 
+    (repeated for every object)
+
+This supersedes the earlier simplified {"calls": [...], "tables_used": [...]}
+mock format entirely - this parser does not attempt to also understand that
+shape. See lld_step2/mock_generator.py for the fixture generator, updated to
+emit this real shape.
+
 This module does not know or care about ABAP syntax. It only understands the
-delimiters above. Minor formatting variation (extra blank lines, trailing
-whitespace) is tolerated; missing/malformed delimiters raise ParseError rather
-than being silently skipped, since a malformed object here likely means the
-upstream extractor changed format.
+delimiters and JSON shapes above. Minor formatting variation (extra blank
+lines, trailing whitespace) is tolerated; missing/malformed delimiters raise
+ParseError rather than being silently skipped, since a malformed file here
+likely means the upstream extractor changed format.
 """
 from __future__ import annotations
 
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Iterator
+from typing import Any
+
+# Real dependency-entry TYPE values observed to carry a SIGNATURE blob in
+# real extraction output. Everything else's signature is None (the source
+# JSON omits the SIGNATURE key entirely for those, rather than sending an
+# empty object) - this is a closed, small list because signature ENRICHMENT
+# is a deliberate choice in ZCR_GET_OBJECT_SIGNATURE, unlike the dependency
+# TYPE vocabulary itself (see DependencyEntry), which is open-ended.
+_SIGNATURE_BEARING_TYPES = {"METH", "OM", "FUNC", "INCL", "PROG"}
+
+# object_uses_table gets an edge only for these four ddic-reference types
+# (per the brief) - STRU and everything else are plain object_calls edges.
+DDIC_REFERENCE_TYPES = {"DOMA", "DTEL", "TABL", "TTYP"}
+
+_VALID_RUN_TYPES = {"FULL", "INCREMENTAL"}
+_VALID_OBJECT_TYPES = {"CLASS", "PROGRAM", "FUNCTION_MODULE"}
+
+_OBJECT_HEADER_RE = re.compile(r"^=== OBJECT:\s*(?P<name>\S+)\s*===\s*$")
+_END_OBJECT_RE = re.compile(r"^=== END OBJECT ===\s*$")
+_TYPE_RE = re.compile(r"^TYPE:\s*(?P<type>\S+)\s*$")
+_PACKAGE_RE = re.compile(r"^PACKAGE:\s*(?P<package>\S+)\s*$")
+_RUN_TYPE_RE = re.compile(r"^RUN_TYPE:\s*(?P<run_type>\S+)\s*$")
+_EXTRACTED_AT_RE = re.compile(r"^EXTRACTED_AT:\s*(?P<extracted_at>.*\S)\s*$")
+_REMOVED_OBJECTS_RE = re.compile(r"^REMOVED_OBJECTS:\s*(?P<removed_objects>.*\S)\s*$")
+_SOURCE_MARKER = "--- SOURCE ---"
+_DEPENDENCIES_MARKER = "--- DEPENDENCIES ---"
+_DDIC_MARKER = "--- DDIC ---"
 
 
 class ParseError(ValueError):
@@ -32,9 +76,10 @@ class ParseError(ValueError):
 
 
 @dataclass
-class TableUsage:
-    table: str
-    fields: list[str] = field(default_factory=list)
+class DependencyEntry:
+    type: str
+    name: str
+    signature: dict[str, Any] | None = None
 
 
 @dataclass
@@ -43,53 +88,100 @@ class ParsedObject:
     type: str
     package: str
     source: str
-    calls: list[str]
-    tables_used: list[TableUsage]
+    dependencies: list[DependencyEntry]
 
 
-_OBJECT_HEADER_RE = re.compile(r"^=== OBJECT:\s*(?P<name>\S+)\s*===\s*$")
-_END_OBJECT_RE = re.compile(r"^=== END OBJECT ===\s*$")
-_TYPE_RE = re.compile(r"^TYPE:\s*(?P<type>\S+)\s*$")
-_PACKAGE_RE = re.compile(r"^PACKAGE:\s*(?P<package>\S+)\s*$")
-_SOURCE_MARKER = "--- SOURCE ---"
-_DEPENDENCIES_MARKER = "--- DEPENDENCIES ---"
-
-_VALID_TYPES = {"CLASS", "PROGRAM", "FUNCTION_MODULE"}
+@dataclass
+class DdicObject:
+    ddic_type: str  # DOMA / DTEL / TABL / STRU / TTYP
+    name: str
+    detail: dict[str, Any]
 
 
-def parse_extraction_file(text: str) -> Iterator[ParsedObject]:
-    """Yield one ParsedObject per `=== OBJECT ===` block found in `text`.
+@dataclass
+class ExtractionFile:
+    run_type: str  # FULL | INCREMENTAL
+    package: str
+    extracted_at: str
+    removed_objects: list[tuple[str, str]]  # (obj_type, obj_name)
+    ddic_objects: list[DdicObject]
+    objects: list[ParsedObject]
 
-    Raises ParseError on the first structurally malformed block.
+
+# Maps a shared-DDIC-section array key to the ddic_type bucket it represents.
+_DDIC_SECTION_KEYS = {
+    "DOMAIN": "DOMA",
+    "DATA_ELEMENT": "DTEL",
+    "TABLE": "TABL",
+    "STRUCTURE": "STRU",
+    "TABLE_TYPE": "TTYP",
+}
+
+
+def parse_extraction_file(text: str) -> ExtractionFile:
+    """Parses a full extraction file: header, shared DDIC section, and every
+    `=== OBJECT ===` block. Raises ParseError on the first structurally
+    malformed part.
     """
     lines = text.splitlines()
     i = 0
     n = len(lines)
-    found_any = False
 
+    run_type, i = _consume_field(lines, i, _RUN_TYPE_RE, "run_type", "<file header>")
+    if run_type not in _VALID_RUN_TYPES:
+        raise ParseError(
+            f"RUN_TYPE must be one of {sorted(_VALID_RUN_TYPES)}, got {run_type!r}. "
+            "This value controls loader behavior and cannot be guessed - fix the "
+            "extraction file rather than defaulting silently."
+        )
+
+    package, i = _consume_field(lines, i, _PACKAGE_RE, "package", "<file header>")
+    extracted_at, i = _consume_field(
+        lines, i, _EXTRACTED_AT_RE, "extracted_at", "<file header>"
+    )
+    removed_raw, i = _consume_field(
+        lines, i, _REMOVED_OBJECTS_RE, "removed_objects", "<file header>"
+    )
+    removed_objects = _parse_removed_objects(removed_raw)
+
+    i = _skip_blank(lines, i)
+    i = _expect_marker(lines, i, _DDIC_MARKER, "<file header>")
+
+    ddic_json_lines: list[str] = []
+    while i < n and not _OBJECT_HEADER_RE.match(lines[i].strip()):
+        ddic_json_lines.append(lines[i])
+        i += 1
+    ddic_blob = "\n".join(ddic_json_lines).strip()
+    if not ddic_blob:
+        raise ParseError("File header: '--- DDIC ---' section is empty")
+    try:
+        ddic_raw = json.loads(ddic_blob)
+    except json.JSONDecodeError as exc:
+        raise ParseError(f"File header: DDIC JSON is not valid JSON: {exc}") from exc
+    ddic_objects = _parse_ddic_section(ddic_raw)
+
+    objects: list[ParsedObject] = []
     while i < n:
-        line = lines[i]
-        if not line.strip():
+        if not lines[i].strip():
             i += 1
             continue
 
-        header_match = _OBJECT_HEADER_RE.match(line.strip())
+        header_match = _OBJECT_HEADER_RE.match(lines[i].strip())
         if not header_match:
             raise ParseError(
-                f"Expected '=== OBJECT: <NAME> ===' at line {i + 1}, got: {line!r}"
+                f"Expected '=== OBJECT: <NAME> ===' at line {i + 1}, got: {lines[i]!r}"
             )
-        found_any = True
         name = header_match.group("name")
         i += 1
 
         obj_type, i = _consume_field(lines, i, _TYPE_RE, "type", name)
-        if obj_type not in _VALID_TYPES:
+        if obj_type not in _VALID_OBJECT_TYPES:
             raise ParseError(
-                f"Object {name!r}: TYPE must be one of {sorted(_VALID_TYPES)}, "
+                f"Object {name!r}: TYPE must be one of {sorted(_VALID_OBJECT_TYPES)}, "
                 f"got {obj_type!r}"
             )
 
-        package, i = _consume_field(lines, i, _PACKAGE_RE, "package", name)
+        obj_package, i = _consume_field(lines, i, _PACKAGE_RE, "package", name)
 
         i = _skip_blank(lines, i)
         i = _expect_marker(lines, i, _SOURCE_MARKER, name)
@@ -106,9 +198,7 @@ def parse_extraction_file(text: str) -> Iterator[ParsedObject]:
             source_lines.append(lines[i])
             i += 1
         if i >= n:
-            raise ParseError(
-                f"Object {name!r}: missing '{_DEPENDENCIES_MARKER}' section"
-            )
+            raise ParseError(f"Object {name!r}: missing '{_DEPENDENCIES_MARKER}' section")
         source_text = "\n".join(source_lines).strip("\n")
         i += 1  # consume the DEPENDENCIES marker line
 
@@ -120,31 +210,39 @@ def parse_extraction_file(text: str) -> Iterator[ParsedObject]:
             raise ParseError(f"Object {name!r}: missing '=== END OBJECT ===' line")
         json_blob = "\n".join(json_lines).strip()
         if not json_blob:
-            raise ParseError(
-                f"Object {name!r}: '{_DEPENDENCIES_MARKER}' section is empty"
-            )
+            raise ParseError(f"Object {name!r}: '{_DEPENDENCIES_MARKER}' section is empty")
         try:
-            deps = json.loads(json_blob)
+            deps_raw = json.loads(json_blob)
         except json.JSONDecodeError as exc:
             raise ParseError(
                 f"Object {name!r}: DEPENDENCIES is not valid JSON: {exc}"
             ) from exc
 
-        calls, tables_used = _validate_dependencies(deps, name)
+        dependencies = _parse_object_dependencies(deps_raw, name)
 
         i += 1  # consume END OBJECT line
 
-        yield ParsedObject(
-            name=name,
-            type=obj_type,
-            package=package,
-            source=source_text,
-            calls=calls,
-            tables_used=tables_used,
+        objects.append(
+            ParsedObject(
+                name=name,
+                type=obj_type,
+                package=obj_package,
+                source=source_text,
+                dependencies=dependencies,
+            )
         )
 
-    if not found_any:
+    if not objects:
         raise ParseError("No '=== OBJECT: ... ===' blocks found in input")
+
+    return ExtractionFile(
+        run_type=run_type,
+        package=package,
+        extracted_at=extracted_at,
+        removed_objects=removed_objects,
+        ddic_objects=ddic_objects,
+        objects=objects,
+    )
 
 
 def _consume_field(lines, i, pattern, field_name, obj_name):
@@ -156,8 +254,7 @@ def _consume_field(lines, i, pattern, field_name, obj_name):
     m = pattern.match(lines[i].strip())
     if not m:
         raise ParseError(
-            f"Object {obj_name!r}: expected {field_name.upper()} field, "
-            f"got: {lines[i]!r}"
+            f"Object {obj_name!r}: expected {field_name.upper()} field, got: {lines[i]!r}"
         )
     return m.group(field_name), i + 1
 
@@ -176,32 +273,77 @@ def _expect_marker(lines, i, marker, obj_name):
     return i + 1
 
 
-def _validate_dependencies(deps, obj_name):
-    if not isinstance(deps, dict):
-        raise ParseError(f"Object {obj_name!r}: DEPENDENCIES JSON must be an object")
+def _parse_removed_objects(raw: str) -> list[tuple[str, str]]:
+    raw = raw.strip()
+    if raw.upper() == "NONE":
+        return []
 
-    calls = deps.get("calls", [])
-    if not isinstance(calls, list) or not all(isinstance(c, str) for c in calls):
-        raise ParseError(f"Object {obj_name!r}: 'calls' must be a list of strings")
-
-    tables_used_raw = deps.get("tables_used", [])
-    if not isinstance(tables_used_raw, list):
-        raise ParseError(f"Object {obj_name!r}: 'tables_used' must be a list")
-
-    tables_used: list[TableUsage] = []
-    for entry in tables_used_raw:
-        if not isinstance(entry, dict) or "table" not in entry:
+    removed = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if ":" not in entry:
             raise ParseError(
-                f"Object {obj_name!r}: each 'tables_used' entry needs a 'table' key"
+                f"REMOVED_OBJECTS entry {entry!r} is not in 'TYPE:NAME' form"
             )
-        fields_raw = entry.get("fields", [])
-        if not isinstance(fields_raw, list) or not all(
-            isinstance(f, str) for f in fields_raw
-        ):
-            raise ParseError(
-                f"Object {obj_name!r}: 'fields' for table {entry.get('table')!r} "
-                "must be a list of strings"
-            )
-        tables_used.append(TableUsage(table=entry["table"], fields=fields_raw))
+        obj_type, obj_name = entry.split(":", 1)
+        removed.append((obj_type.strip(), obj_name.strip()))
+    return removed
 
-    return calls, tables_used
+
+def _parse_ddic_section(raw: Any) -> list[DdicObject]:
+    if not isinstance(raw, dict) or "PACKAGES" not in raw:
+        raise ParseError("File header: DDIC JSON must be an object with a 'PACKAGES' key")
+
+    ddic_objects: list[DdicObject] = []
+    for pkg_entry in raw["PACKAGES"]:
+        if not isinstance(pkg_entry, dict):
+            raise ParseError("File header: each DDIC 'PACKAGES' entry must be an object")
+        for section_key, ddic_type in _DDIC_SECTION_KEYS.items():
+            for item in pkg_entry.get(section_key, []):
+                if not isinstance(item, dict) or "NAME" not in item:
+                    raise ParseError(
+                        f"File header: DDIC section {section_key!r} has an entry "
+                        "with no 'NAME' key"
+                    )
+                ddic_objects.append(
+                    DdicObject(ddic_type=ddic_type, name=item["NAME"], detail=item)
+                )
+    return ddic_objects
+
+
+def _parse_object_dependencies(raw: Any, obj_name: str) -> list[DependencyEntry]:
+    if not isinstance(raw, list):
+        raise ParseError(f"Object {obj_name!r}: DEPENDENCIES JSON must be a list")
+    if len(raw) != 1:
+        raise ParseError(
+            f"Object {obj_name!r}: expected exactly one entry in the DEPENDENCIES "
+            f"list (ZCR_GET_DEPENDENCY_OBJ_NEW is called per-object), got {len(raw)}"
+        )
+
+    entry = raw[0]
+    if not isinstance(entry, dict) or "DEPENDENCIES" not in entry:
+        raise ParseError(
+            f"Object {obj_name!r}: DEPENDENCIES entry must be an object with its "
+            "own 'DEPENDENCIES' list"
+        )
+
+    dependencies = []
+    for dep in entry["DEPENDENCIES"]:
+        if not isinstance(dep, dict) or "TYPE" not in dep or "NAME" not in dep:
+            raise ParseError(
+                f"Object {obj_name!r}: each dependency entry needs 'TYPE' and 'NAME'"
+            )
+        dep_type = dep["TYPE"]
+        signature = dep.get("SIGNATURE")
+        if signature is None and dep_type in _SIGNATURE_BEARING_TYPES:
+            # A signature-bearing type with no SIGNATURE key at all just means
+            # every one of its fields was blank (e.g. a METH with no
+            # parameters/exceptions and default visibility) - compress=abap_true
+            # drops the whole structure in that case. Not an error.
+            signature = {}
+        dependencies.append(
+            DependencyEntry(type=dep_type, name=dep["NAME"], signature=signature)
+        )
+    return dependencies

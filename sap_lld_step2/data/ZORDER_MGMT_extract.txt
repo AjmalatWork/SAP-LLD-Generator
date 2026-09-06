@@ -1,3 +1,11 @@
+RUN_TYPE: FULL
+PACKAGE: ZORDER_MGMT
+EXTRACTED_AT: 2026-09-06 07:14:53
+REMOVED_OBJECTS: NONE
+
+--- DDIC ---
+{"PACKAGES": [{"PACKAGE": "ZORDER_MGMT", "DOMAIN": [], "DATA_ELEMENT": [], "TABLE": [{"NAME": "ZCREDIT_LIMIT", "DESCRIPTION": "ZCREDIT_LIMIT (converted fixture)", "TYPE": "TRANSP", "SM30": false, "LOCK_OBJECT": "", "FIELD": 3, "INDEX": 0, "FIELDS": [{"NAME": "CREDIT_LIMIT", "KEY": "", "DATA_ELEMENT": "CREDIT_LIMIT"}, {"NAME": "CURRENCY", "KEY": "", "DATA_ELEMENT": "CURRENCY"}, {"NAME": "KUNNR", "KEY": "", "DATA_ELEMENT": "KUNNR"}], "INDEXES": []}, {"NAME": "ZCUST_MASTER", "DESCRIPTION": "ZCUST_MASTER (converted fixture)", "TYPE": "TRANSP", "SM30": false, "LOCK_OBJECT": "", "FIELD": 6, "INDEX": 0, "FIELDS": [{"NAME": "BLOCKED", "KEY": "", "DATA_ELEMENT": "BLOCKED"}, {"NAME": "KUNNR", "KEY": "", "DATA_ELEMENT": "KUNNR"}, {"NAME": "LAND1", "KEY": "", "DATA_ELEMENT": "LAND1"}, {"NAME": "NAME1", "KEY": "", "DATA_ELEMENT": "NAME1"}, {"NAME": "SMTP_ADDR", "KEY": "", "DATA_ELEMENT": "SMTP_ADDR"}, {"NAME": "TIER", "KEY": "", "DATA_ELEMENT": "TIER"}], "INDEXES": []}, {"NAME": "ZDISCOUNT_RULE", "DESCRIPTION": "ZDISCOUNT_RULE (converted fixture)", "TYPE": "TRANSP", "SM30": false, "LOCK_OBJECT": "", "FIELD": 4, "INDEX": 0, "FIELDS": [{"NAME": "MIN_VALUE", "KEY": "", "DATA_ELEMENT": "MIN_VALUE"}, {"NAME": "PERCENT", "KEY": "", "DATA_ELEMENT": "PERCENT"}, {"NAME": "TIER", "KEY": "", "DATA_ELEMENT": "TIER"}, {"NAME": "VALID_TO", "KEY": "", "DATA_ELEMENT": "VALID_TO"}], "INDEXES": []}, {"NAME": "ZNOTIF_QUEUE", "DESCRIPTION": "ZNOTIF_QUEUE (converted fixture)", "TYPE": "TRANSP", "SM30": false, "LOCK_OBJECT": "", "FIELD": 6, "INDEX": 0, "FIELDS": [{"NAME": "CRDAT", "KEY": "", "DATA_ELEMENT": "CRDAT"}, {"NAME": "MSGTEXT", "KEY": "", "DATA_ELEMENT": "MSGTEXT"}, {"NAME": "MSGTYPE", "KEY": "", "DATA_ELEMENT": "MSGTYPE"}, {"NAME": "RECIP", "KEY": "", "DATA_ELEMENT": "RECIP"}, {"NAME": "SENT", "KEY": "", "DATA_ELEMENT": "SENT"}, {"NAME": "VBELN", "KEY": "", "DATA_ELEMENT": "VBELN"}], "INDEXES": []}, {"NAME": "ZORDER_HEADER", "DESCRIPTION": "ZORDER_HEADER (converted fixture)", "TYPE": "TRANSP", "SM30": false, "LOCK_OBJECT": "", "FIELD": 6, "INDEX": 0, "FIELDS": [{"NAME": "AEDAT", "KEY": "", "DATA_ELEMENT": "AEDAT"}, {"NAME": "ERDAT", "KEY": "", "DATA_ELEMENT": "ERDAT"}, {"NAME": "KUNNR", "KEY": "", "DATA_ELEMENT": "KUNNR"}, {"NAME": "NETWR", "KEY": "", "DATA_ELEMENT": "NETWR"}, {"NAME": "STATUS", "KEY": "", "DATA_ELEMENT": "STATUS"}, {"NAME": "VBELN", "KEY": "", "DATA_ELEMENT": "VBELN"}], "INDEXES": []}, {"NAME": "ZORDER_ITEM", "DESCRIPTION": "ZORDER_ITEM (converted fixture)", "TYPE": "TRANSP", "SM30": false, "LOCK_OBJECT": "", "FIELD": 5, "INDEX": 0, "FIELDS": [{"NAME": "KWMENG", "KEY": "", "DATA_ELEMENT": "KWMENG"}, {"NAME": "MATNR", "KEY": "", "DATA_ELEMENT": "MATNR"}, {"NAME": "POSNR", "KEY": "", "DATA_ELEMENT": "POSNR"}, {"NAME": "VBELN", "KEY": "", "DATA_ELEMENT": "VBELN"}, {"NAME": "WERKS", "KEY": "", "DATA_ELEMENT": "WERKS"}], "INDEXES": []}, {"NAME": "ZORDER_LOG", "DESCRIPTION": "ZORDER_LOG (converted fixture)", "TYPE": "TRANSP", "SM30": false, "LOCK_OBJECT": "", "FIELD": 7, "INDEX": 0, "FIELDS": [{"NAME": "LOGDAT", "KEY": "", "DATA_ELEMENT": "LOGDAT"}, {"NAME": "LOGTEXT", "KEY": "", "DATA_ELEMENT": "LOGTEXT"}, {"NAME": "LOGTIM", "KEY": "", "DATA_ELEMENT": "LOGTIM"}, {"NAME": "OBJKEY", "KEY": "", "DATA_ELEMENT": "OBJKEY"}, {"NAME": "OBJNAME", "KEY": "", "DATA_ELEMENT": "OBJNAME"}, {"NAME": "SEVERITY", "KEY": "", "DATA_ELEMENT": "SEVERITY"}, {"NAME": "UNAME", "KEY": "", "DATA_ELEMENT": "UNAME"}], "INDEXES": []}, {"NAME": "ZORDER_STATUS", "DESCRIPTION": "ZORDER_STATUS (converted fixture)", "TYPE": "TRANSP", "SM30": false, "LOCK_OBJECT": "", "FIELD": 4, "INDEX": 0, "FIELDS": [{"NAME": "CHDAT", "KEY": "", "DATA_ELEMENT": "CHDAT"}, {"NAME": "CHUSR", "KEY": "", "DATA_ELEMENT": "CHUSR"}, {"NAME": "STATUS", "KEY": "", "DATA_ELEMENT": "STATUS"}, {"NAME": "VBELN", "KEY": "", "DATA_ELEMENT": "VBELN"}], "INDEXES": []}, {"NAME": "ZPRICE_COND", "DESCRIPTION": "ZPRICE_COND (converted fixture)", "TYPE": "TRANSP", "SM30": false, "LOCK_OBJECT": "", "FIELD": 5, "INDEX": 0, "FIELDS": [{"NAME": "DATAB", "KEY": "", "DATA_ELEMENT": "DATAB"}, {"NAME": "DATBI", "KEY": "", "DATA_ELEMENT": "DATBI"}, {"NAME": "KBETR", "KEY": "", "DATA_ELEMENT": "KBETR"}, {"NAME": "KUNNR", "KEY": "", "DATA_ELEMENT": "KUNNR"}, {"NAME": "MATNR", "KEY": "", "DATA_ELEMENT": "MATNR"}], "INDEXES": []}, {"NAME": "ZSHIP_ZONE", "DESCRIPTION": "ZSHIP_ZONE (converted fixture)", "TYPE": "TRANSP", "SM30": false, "LOCK_OBJECT": "", "FIELD": 4, "INDEX": 0, "FIELDS": [{"NAME": "BASE_COST", "KEY": "", "DATA_ELEMENT": "BASE_COST"}, {"NAME": "LAND1", "KEY": "", "DATA_ELEMENT": "LAND1"}, {"NAME": "PER_ITEM", "KEY": "", "DATA_ELEMENT": "PER_ITEM"}, {"NAME": "ZONE", "KEY": "", "DATA_ELEMENT": "ZONE"}], "INDEXES": []}, {"NAME": "ZSTOCK_LEVEL", "DESCRIPTION": "ZSTOCK_LEVEL (converted fixture)", "TYPE": "TRANSP", "SM30": false, "LOCK_OBJECT": "", "FIELD": 4, "INDEX": 0, "FIELDS": [{"NAME": "MATNR", "KEY": "", "DATA_ELEMENT": "MATNR"}, {"NAME": "QUANTITY", "KEY": "", "DATA_ELEMENT": "QUANTITY"}, {"NAME": "RESERVED", "KEY": "", "DATA_ELEMENT": "RESERVED"}, {"NAME": "WERKS", "KEY": "", "DATA_ELEMENT": "WERKS"}], "INDEXES": []}, {"NAME": "ZTAX_RATE", "DESCRIPTION": "ZTAX_RATE (converted fixture)", "TYPE": "TRANSP", "SM30": false, "LOCK_OBJECT": "", "FIELD": 3, "INDEX": 0, "FIELDS": [{"NAME": "LAND1", "KEY": "", "DATA_ELEMENT": "LAND1"}, {"NAME": "RATE", "KEY": "", "DATA_ELEMENT": "RATE"}, {"NAME": "VALID_TO", "KEY": "", "DATA_ELEMENT": "VALID_TO"}], "INDEXES": []}], "STRUCTURE": [], "TABLE_TYPE": []}]}
+
 === OBJECT: ZRP_ORDER_BATCH_RUN ===
 TYPE: PROGRAM
 PACKAGE: ZORDER_MGMT
@@ -98,12 +106,7 @@ FORM write_summary.
 ENDFORM.
 
 --- DEPENDENCIES ---
-{
-  "calls": ["ZCL_ORDER_PROCESSOR", "ZCL_ORDER_LOGGER", "ZFM_ORDER_NUMBER_RANGE"],
-  "tables_used": [
-    {"table": "ZORDER_HEADER", "fields": ["VBELN", "ERDAT", "STATUS", "KUNNR", "NETWR"]}
-  ]
-}
+[{"TYPE": "PROG", "NAME": "ZRP_ORDER_BATCH_RUN", "DEPENDENCIES": [{"TYPE": "CLAS", "NAME": "ZCL_ORDER_PROCESSOR"}, {"TYPE": "CLAS", "NAME": "ZCL_ORDER_LOGGER"}, {"TYPE": "CLAS", "NAME": "ZFM_ORDER_NUMBER_RANGE"}, {"TYPE": "TABL", "NAME": "ZORDER_HEADER"}]}]
 === END OBJECT ===
 
 === OBJECT: ZCL_ORDER_PROCESSOR ===
@@ -216,13 +219,7 @@ CLASS zcl_order_processor IMPLEMENTATION.
 ENDCLASS.
 
 --- DEPENDENCIES ---
-{
-  "calls": ["ZCL_ORDER_VALIDATOR", "ZCL_PRICING_ENGINE", "ZCL_STOCK_MANAGER", "ZCL_ORDER_PERSISTENCE", "ZCL_NOTIFICATION_SENDER", "ZCL_ORDER_LOGGER"],
-  "tables_used": [
-    {"table": "ZORDER_HEADER", "fields": ["VBELN", "KUNNR", "NETWR", "STATUS"]},
-    {"table": "ZORDER_ITEM", "fields": ["VBELN", "POSNR", "MATNR", "KWMENG"]}
-  ]
-}
+[{"TYPE": "CLAS", "NAME": "ZCL_ORDER_PROCESSOR", "DEPENDENCIES": [{"TYPE": "CLAS", "NAME": "ZCL_ORDER_VALIDATOR"}, {"TYPE": "CLAS", "NAME": "ZCL_PRICING_ENGINE"}, {"TYPE": "CLAS", "NAME": "ZCL_STOCK_MANAGER"}, {"TYPE": "CLAS", "NAME": "ZCL_ORDER_PERSISTENCE"}, {"TYPE": "CLAS", "NAME": "ZCL_NOTIFICATION_SENDER"}, {"TYPE": "CLAS", "NAME": "ZCL_ORDER_LOGGER"}, {"TYPE": "TABL", "NAME": "ZORDER_HEADER"}, {"TYPE": "TABL", "NAME": "ZORDER_ITEM"}]}]
 === END OBJECT ===
 
 === OBJECT: ZCL_ORDER_VALIDATOR ===
@@ -329,13 +326,7 @@ CLASS zcl_order_validator IMPLEMENTATION.
 ENDCLASS.
 
 --- DEPENDENCIES ---
-{
-  "calls": ["ZFM_CUSTOMER_CREDIT_CHECK", "ZCL_ORDER_LOGGER"],
-  "tables_used": [
-    {"table": "ZCUST_MASTER", "fields": ["KUNNR", "BLOCKED", "NAME1", "LAND1"]},
-    {"table": "ZORDER_HEADER", "fields": ["VBELN", "KUNNR", "NETWR"]}
-  ]
-}
+[{"TYPE": "CLAS", "NAME": "ZCL_ORDER_VALIDATOR", "DEPENDENCIES": [{"TYPE": "CLAS", "NAME": "ZFM_CUSTOMER_CREDIT_CHECK"}, {"TYPE": "CLAS", "NAME": "ZCL_ORDER_LOGGER"}, {"TYPE": "TABL", "NAME": "ZCUST_MASTER"}, {"TYPE": "TABL", "NAME": "ZORDER_HEADER"}]}]
 === END OBJECT ===
 
 === OBJECT: ZCL_PRICING_ENGINE ===
@@ -419,13 +410,7 @@ CLASS zcl_pricing_engine IMPLEMENTATION.
 ENDCLASS.
 
 --- DEPENDENCIES ---
-{
-  "calls": ["ZCL_DISCOUNT_CALCULATOR", "ZCL_TAX_CALCULATOR", "ZCL_SHIPPING_CALCULATOR"],
-  "tables_used": [
-    {"table": "ZPRICE_COND", "fields": ["MATNR", "KUNNR", "KBETR", "DATAB", "DATBI"]},
-    {"table": "ZORDER_ITEM", "fields": ["MATNR", "KWMENG", "POSNR"]}
-  ]
-}
+[{"TYPE": "CLAS", "NAME": "ZCL_PRICING_ENGINE", "DEPENDENCIES": [{"TYPE": "CLAS", "NAME": "ZCL_DISCOUNT_CALCULATOR"}, {"TYPE": "CLAS", "NAME": "ZCL_TAX_CALCULATOR"}, {"TYPE": "CLAS", "NAME": "ZCL_SHIPPING_CALCULATOR"}, {"TYPE": "TABL", "NAME": "ZPRICE_COND"}, {"TYPE": "TABL", "NAME": "ZORDER_ITEM"}]}]
 === END OBJECT ===
 
 === OBJECT: ZCL_DISCOUNT_CALCULATOR ===
@@ -493,13 +478,7 @@ CLASS zcl_discount_calculator IMPLEMENTATION.
 ENDCLASS.
 
 --- DEPENDENCIES ---
-{
-  "calls": ["ZCL_ORDER_LOGGER"],
-  "tables_used": [
-    {"table": "ZCUST_MASTER", "fields": ["KUNNR", "TIER"]},
-    {"table": "ZDISCOUNT_RULE", "fields": ["TIER", "MIN_VALUE", "PERCENT", "VALID_TO"]}
-  ]
-}
+[{"TYPE": "CLAS", "NAME": "ZCL_DISCOUNT_CALCULATOR", "DEPENDENCIES": [{"TYPE": "CLAS", "NAME": "ZCL_ORDER_LOGGER"}, {"TYPE": "TABL", "NAME": "ZCUST_MASTER"}, {"TYPE": "TABL", "NAME": "ZDISCOUNT_RULE"}]}]
 === END OBJECT ===
 
 === OBJECT: ZCL_TAX_CALCULATOR ===
@@ -549,12 +528,7 @@ CLASS zcl_tax_calculator IMPLEMENTATION.
 ENDCLASS.
 
 --- DEPENDENCIES ---
-{
-  "calls": [],
-  "tables_used": [
-    {"table": "ZTAX_RATE", "fields": ["LAND1", "RATE", "VALID_TO"]}
-  ]
-}
+[{"TYPE": "CLAS", "NAME": "ZCL_TAX_CALCULATOR", "DEPENDENCIES": [{"TYPE": "TABL", "NAME": "ZTAX_RATE"}]}]
 === END OBJECT ===
 
 === OBJECT: ZCL_SHIPPING_CALCULATOR ===
@@ -619,13 +593,7 @@ CLASS zcl_shipping_calculator IMPLEMENTATION.
 ENDCLASS.
 
 --- DEPENDENCIES ---
-{
-  "calls": ["ZCL_ORDER_LOGGER"],
-  "tables_used": [
-    {"table": "ZCUST_MASTER", "fields": ["KUNNR", "LAND1"]},
-    {"table": "ZSHIP_ZONE", "fields": ["ZONE", "LAND1", "BASE_COST", "PER_ITEM"]}
-  ]
-}
+[{"TYPE": "CLAS", "NAME": "ZCL_SHIPPING_CALCULATOR", "DEPENDENCIES": [{"TYPE": "CLAS", "NAME": "ZCL_ORDER_LOGGER"}, {"TYPE": "TABL", "NAME": "ZCUST_MASTER"}, {"TYPE": "TABL", "NAME": "ZSHIP_ZONE"}]}]
 === END OBJECT ===
 
 === OBJECT: ZCL_STOCK_MANAGER ===
@@ -705,13 +673,7 @@ CLASS zcl_stock_manager IMPLEMENTATION.
 ENDCLASS.
 
 --- DEPENDENCIES ---
-{
-  "calls": ["ZFM_STOCK_CHECK", "ZCL_ORDER_LOGGER"],
-  "tables_used": [
-    {"table": "ZSTOCK_LEVEL", "fields": ["MATNR", "WERKS", "QUANTITY", "RESERVED"]},
-    {"table": "ZORDER_ITEM", "fields": ["VBELN", "POSNR", "MATNR", "WERKS", "KWMENG"]}
-  ]
-}
+[{"TYPE": "CLAS", "NAME": "ZCL_STOCK_MANAGER", "DEPENDENCIES": [{"TYPE": "CLAS", "NAME": "ZFM_STOCK_CHECK"}, {"TYPE": "CLAS", "NAME": "ZCL_ORDER_LOGGER"}, {"TYPE": "TABL", "NAME": "ZSTOCK_LEVEL"}, {"TYPE": "TABL", "NAME": "ZORDER_ITEM"}]}]
 === END OBJECT ===
 
 === OBJECT: ZFM_STOCK_CHECK ===
@@ -754,12 +716,7 @@ FUNCTION zfm_stock_check.
 ENDFUNCTION.
 
 --- DEPENDENCIES ---
-{
-  "calls": [],
-  "tables_used": [
-    {"table": "ZSTOCK_LEVEL", "fields": ["MATNR", "WERKS", "QUANTITY", "RESERVED"]}
-  ]
-}
+[{"TYPE": "FUNC", "NAME": "ZFM_STOCK_CHECK", "DEPENDENCIES": [{"TYPE": "TABL", "NAME": "ZSTOCK_LEVEL"}]}]
 === END OBJECT ===
 
 === OBJECT: ZFM_CUSTOMER_CREDIT_CHECK ===
@@ -810,13 +767,7 @@ FUNCTION zfm_customer_credit_check.
 ENDFUNCTION.
 
 --- DEPENDENCIES ---
-{
-  "calls": ["ZCL_AUDIT_TRAIL"],
-  "tables_used": [
-    {"table": "ZCREDIT_LIMIT", "fields": ["KUNNR", "CREDIT_LIMIT", "CURRENCY"]},
-    {"table": "ZORDER_HEADER", "fields": ["KUNNR", "NETWR", "STATUS"]}
-  ]
-}
+[{"TYPE": "FUNC", "NAME": "ZFM_CUSTOMER_CREDIT_CHECK", "DEPENDENCIES": [{"TYPE": "CLAS", "NAME": "ZCL_AUDIT_TRAIL"}, {"TYPE": "TABL", "NAME": "ZCREDIT_LIMIT"}, {"TYPE": "TABL", "NAME": "ZORDER_HEADER"}]}]
 === END OBJECT ===
 
 === OBJECT: ZCL_ORDER_PERSISTENCE ===
@@ -910,13 +861,7 @@ CLASS zcl_order_persistence IMPLEMENTATION.
 ENDCLASS.
 
 --- DEPENDENCIES ---
-{
-  "calls": ["ZFM_ORDER_NUMBER_RANGE", "ZCL_ORDER_LOGGER"],
-  "tables_used": [
-    {"table": "ZORDER_HEADER", "fields": ["VBELN", "NETWR", "STATUS", "ERDAT", "AEDAT"]},
-    {"table": "ZORDER_STATUS", "fields": ["VBELN", "STATUS", "CHDAT", "CHUSR"]}
-  ]
-}
+[{"TYPE": "CLAS", "NAME": "ZCL_ORDER_PERSISTENCE", "DEPENDENCIES": [{"TYPE": "CLAS", "NAME": "ZFM_ORDER_NUMBER_RANGE"}, {"TYPE": "CLAS", "NAME": "ZCL_ORDER_LOGGER"}, {"TYPE": "TABL", "NAME": "ZORDER_HEADER"}, {"TYPE": "TABL", "NAME": "ZORDER_STATUS"}]}]
 === END OBJECT ===
 
 === OBJECT: ZFM_ORDER_NUMBER_RANGE ===
@@ -967,10 +912,7 @@ FUNCTION zfm_order_number_range.
 ENDFUNCTION.
 
 --- DEPENDENCIES ---
-{
-  "calls": ["NUMBER_GET_NEXT"],
-  "tables_used": []
-}
+[{"TYPE": "FUNC", "NAME": "ZFM_ORDER_NUMBER_RANGE", "DEPENDENCIES": [{"TYPE": "CLAS", "NAME": "NUMBER_GET_NEXT"}]}]
 === END OBJECT ===
 
 === OBJECT: ZCL_NOTIFICATION_SENDER ===
@@ -1052,13 +994,7 @@ CLASS zcl_notification_sender IMPLEMENTATION.
 ENDCLASS.
 
 --- DEPENDENCIES ---
-{
-  "calls": ["ZCL_ORDER_LOGGER"],
-  "tables_used": [
-    {"table": "ZCUST_MASTER", "fields": ["KUNNR", "SMTP_ADDR"]},
-    {"table": "ZNOTIF_QUEUE", "fields": ["VBELN", "RECIP", "MSGTYPE", "MSGTEXT", "CRDAT", "SENT"]}
-  ]
-}
+[{"TYPE": "CLAS", "NAME": "ZCL_NOTIFICATION_SENDER", "DEPENDENCIES": [{"TYPE": "CLAS", "NAME": "ZCL_ORDER_LOGGER"}, {"TYPE": "TABL", "NAME": "ZCUST_MASTER"}, {"TYPE": "TABL", "NAME": "ZNOTIF_QUEUE"}]}]
 === END OBJECT ===
 
 === OBJECT: ZCL_ORDER_LOGGER ===
@@ -1134,12 +1070,7 @@ CLASS zcl_order_logger IMPLEMENTATION.
 ENDCLASS.
 
 --- DEPENDENCIES ---
-{
-  "calls": [],
-  "tables_used": [
-    {"table": "ZORDER_LOG", "fields": ["LOGDAT", "LOGTIM", "OBJNAME", "OBJKEY", "SEVERITY", "LOGTEXT", "UNAME"]}
-  ]
-}
+[{"TYPE": "CLAS", "NAME": "ZCL_ORDER_LOGGER", "DEPENDENCIES": [{"TYPE": "TABL", "NAME": "ZORDER_LOG"}]}]
 === END OBJECT ===
 
 === OBJECT: ZRP_ORDER_SUMMARY_REPORT ===
@@ -1219,11 +1150,5 @@ FORM display_alv.
 ENDFORM.
 
 --- DEPENDENCIES ---
-{
-  "calls": ["ZCL_ORDER_PERSISTENCE", "ZCL_ORDER_LOGGER"],
-  "tables_used": [
-    {"table": "ZORDER_HEADER", "fields": ["KUNNR", "NETWR", "ERDAT", "STATUS"]},
-    {"table": "ZCUST_MASTER", "fields": ["KUNNR", "NAME1"]}
-  ]
-}
+[{"TYPE": "PROG", "NAME": "ZRP_ORDER_SUMMARY_REPORT", "DEPENDENCIES": [{"TYPE": "CLAS", "NAME": "ZCL_ORDER_PERSISTENCE"}, {"TYPE": "CLAS", "NAME": "ZCL_ORDER_LOGGER"}, {"TYPE": "TABL", "NAME": "ZORDER_HEADER"}, {"TYPE": "TABL", "NAME": "ZCUST_MASTER"}]}]
 === END OBJECT ===

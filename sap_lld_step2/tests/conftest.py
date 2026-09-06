@@ -19,7 +19,9 @@ def db_conn(db_config):
 
     # Start each test from a clean slate so counts are deterministic.
     with conn.cursor() as cur:
-        cur.execute("TRUNCATE object_calls, object_uses_table, code_chunks, objects CASCADE")
+        cur.execute(
+            "TRUNCATE object_calls, object_uses_table, code_chunks, ddic_objects, objects CASCADE"
+        )
     conn.commit()
 
     yield conn

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Literal
 
 import numpy as np
@@ -31,7 +32,12 @@ from sentence_transformers import SentenceTransformer
 
 from .config import load_config
 from .db import connect
-from .graph_loader import get_direct_callees, get_direct_callers, get_tables_used
+from .graph_loader import (
+    CALL_LIKE_EDGE_KINDS,
+    get_direct_callees,
+    get_direct_callers,
+    get_tables_used,
+)
 
 # --- Semantic vs. structural blend ------------------------------------------
 # The embedding-quality investigation (lld_step2/embedding_bench.py) found the
@@ -190,7 +196,12 @@ def _fetch_all_objects(conn: psycopg.Connection) -> list[dict]:
 def _fetch_bidirectional_adjacency(conn: psycopg.Connection) -> dict[str, set[str]]:
     """Undirected adjacency over `object_calls`, restricted to edges between
     two known objects (external/unresolved call targets have no row in
-    `objects` and are excluded here, since they can't be traversed to).
+    `objects` and are excluded here, since they can't be traversed to), and
+    to CALL_LIKE_EDGE_KINDS specifically - the real extraction format loads
+    every dependency type (including DDIC/message/transaction references)
+    into object_calls, and the step 3 brief's "1 hop (calls or is called
+    by)" means genuine calls, not any shared reference. Preserves existing
+    structural-scoring behavior unchanged rather than silently widening it.
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -199,7 +210,9 @@ def _fetch_bidirectional_adjacency(conn: psycopg.Connection) -> dict[str, set[st
             FROM object_calls oc
             JOIN objects o1 ON o1.name = oc.source_object
             JOIN objects o2 ON o2.name = oc.target_object
-            """
+            WHERE oc.edge_kind = ANY(%(edge_kinds)s)
+            """,
+            {"edge_kinds": list(CALL_LIKE_EDGE_KINDS)},
         )
         rows = cur.fetchall()
     adjacency: dict[str, set[str]] = {}
@@ -210,8 +223,16 @@ def _fetch_bidirectional_adjacency(conn: psycopg.Connection) -> dict[str, set[st
 
 
 def _fetch_object_tables(conn: psycopg.Connection) -> dict[str, set[str]]:
+    """Object -> set of DDIC *table* names it uses. Scoped to ddic_type =
+    'TABL' specifically (not DOMA/DTEL/TTYP, which object_uses_table can
+    also hold now) to preserve the step 3 brief's literal "shares a DDIC
+    table" bonus criterion unchanged - broadening it to any DDIC reference
+    would be a scoring-behavior change, out of scope for this update.
+    """
     with conn.cursor() as cur:
-        cur.execute("SELECT object_name, table_name FROM object_uses_table")
+        cur.execute(
+            "SELECT object_name, ddic_object_name FROM object_uses_table WHERE ddic_type = 'TABL'"
+        )
         rows = cur.fetchall()
     tables: dict[str, set[str]] = {}
     for object_name, table_name in rows:
@@ -662,15 +683,63 @@ def _build_metadata_block(result: RetrievalResult) -> str:
     return "\n".join(lines)
 
 
+# Inverse of step 1's LLD-level -> dependency-vocabulary mapping
+# (ZLLD_PACKAGE_EXTRACTOR's EXTRACT_LLD_OBJECT: PROG->PROGRAM, CLAS->CLASS,
+# FUNC->FUNCTION_MODULE) - needed because the real DEPENDENCIES JSON's outer
+# entry uses the short dependency-type code for the object itself, not the
+# LLD-level type name.
+_LLD_TYPE_TO_DEPENDENCY_CODE = {"CLASS": "CLAS", "PROGRAM": "PROG", "FUNCTION_MODULE": "FUNC"}
+
+
+def _build_real_dependencies_json(conn: psycopg.Connection, candidate: Candidate) -> str:
+    """Reconstructs a real-shape DEPENDENCIES blob (matching what step 1's
+    extraction actually produces) from this object's stored object_calls
+    rows, so the exported file is parseable by the same parser that reads a
+    real extraction file - not a separate, simplified shape.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT target_object, dependency_type, signature_json "
+            "FROM object_calls WHERE source_object = %s ORDER BY target_object",
+            (candidate.object_name,),
+        )
+        rows = cur.fetchall()
+
+    dependencies = []
+    for target_object, dependency_type, signature_json in rows:
+        entry = {"TYPE": dependency_type, "NAME": target_object}
+        if signature_json:
+            entry["SIGNATURE"] = signature_json
+        dependencies.append(entry)
+
+    outer = [
+        {
+            "TYPE": _LLD_TYPE_TO_DEPENDENCY_CODE.get(candidate.type, candidate.type),
+            "NAME": candidate.object_name,
+            "DEPENDENCIES": dependencies,
+        }
+    ]
+    return json.dumps(outer)
+
+
 def export_candidates_to_file(
     result: RetrievalResult, path: str, conn: psycopg.Connection | None = None
 ) -> None:
-    """Serializes the retrieval result to a text file in the same block
-    format as the SAP extraction file (parseable by lld_step2.parser), with a
-    clearly-delimited metadata header (disagreements + likely_new_object) in
-    front of the object blocks. Only the objects in `result.candidates` are
-    included — this is a small, pre-filtered file for a later LLM step, not
-    a re-export of the whole package.
+    """Serializes the retrieval result to a text file in the same real
+    format lld_step2.parser expects (file header + shared DDIC section +
+    real per-object DEPENDENCIES shape), with a clearly-delimited metadata
+    header (disagreements + likely_new_object) in front of everything else.
+    Only the objects in `result.candidates` are included — this is a small,
+    pre-filtered file for a later LLM step, not a re-export of the whole
+    package.
+
+    The shared --- DDIC --- section here is intentionally minimal
+    (`{"PACKAGES": []}`) - full DDIC field-level detail for any TABL/DTEL/
+    etc. references is already resolvable from the database by name if
+    step 4 needs it later; duplicating it into every export is unnecessary.
+    RUN_TYPE is set to INCREMENTAL since this is inherently a subset of a
+    package, never meant to be re-loaded into step 2's own database (this
+    file is for step 4's consumption, not a real sync).
 
     Note: `code_chunks` only stores per-chunk text, not the object's whole
     original source, so the SOURCE section here is reconstructed by joining
@@ -684,7 +753,20 @@ def export_candidates_to_file(
         conn = connect(config)
 
     try:
-        blocks = [_build_metadata_block(result)]
+        package = result.candidates[0].package if result.candidates else "UNKNOWN"
+
+        header_lines = [
+            "RUN_TYPE: INCREMENTAL",
+            f"PACKAGE: {package}",
+            f"EXTRACTED_AT: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}",
+            "REMOVED_OBJECTS: NONE",
+            "",
+            "--- DDIC ---",
+            json.dumps({"PACKAGES": []}),
+        ]
+
+        blocks = [_build_metadata_block(result), "\n".join(header_lines)]
+
         for candidate in result.candidates:
             with conn.cursor() as cur:
                 cur.execute(
@@ -694,10 +776,7 @@ def export_candidates_to_file(
                 chunk_texts = [r[0] for r in cur.fetchall()]
             source = "\n\n".join(chunk_texts)
 
-            deps = {
-                "calls": candidate.callees,
-                "tables_used": candidate.tables_used,
-            }
+            dep_json = _build_real_dependencies_json(conn, candidate)
 
             block = (
                 f"=== OBJECT: {candidate.object_name} ===\n"
@@ -708,7 +787,7 @@ def export_candidates_to_file(
                 f"{source}\n"
                 f"\n"
                 f"--- DEPENDENCIES ---\n"
-                f"{json.dumps(deps, indent=2)}\n"
+                f"{dep_json}\n"
                 f"=== END OBJECT ==="
             )
             blocks.append(block)
@@ -721,15 +800,14 @@ def export_candidates_to_file(
 
 
 def extract_object_blocks(text: str) -> str:
-    """Returns the substring of an exported file starting at the first
-    `=== OBJECT:` block, i.e. everything after the metadata header. Feed this
-    (not the raw file) to `lld_step2.parser.parse_extraction_file` — the
-    parser itself is unmodified and only understands OBJECT blocks, so the
-    header must be stripped first, exactly like a caller would need to strip
-    any other document wrapper around an embedded extraction-file payload.
+    """Returns the substring of an exported file starting after the
+    `=== RETRIEVAL METADATA ===` wrapper - i.e. the real RUN_TYPE/PACKAGE/
+    .../--- DDIC ---/OBJECT-blocks content, which is what
+    `lld_step2.parser.parse_extraction_file` actually expects (it requires
+    the file header, not just bare OBJECT blocks). If no metadata wrapper
+    is found, returns the text unchanged (already a bare extraction file).
     """
-    marker = "=== OBJECT:"
-    idx = text.find(marker)
+    idx = text.find(_METADATA_END)
     if idx == -1:
-        return ""
-    return text[idx:]
+        return text
+    return text[idx + len(_METADATA_END):].lstrip("\n")

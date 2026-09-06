@@ -28,6 +28,7 @@ import psycopg
 
 from .config import load_config
 from .db import connect
+from .graph_loader import CALL_LIKE_EDGE_KINDS
 
 ORIGINAL_SOURCE = "original"
 
@@ -95,20 +96,30 @@ class BenchmarkReport:
 
 
 def _fetch_object_calls(conn: psycopg.Connection) -> set[frozenset]:
+    # Since the real extraction format loads EVERY dependency type into
+    # object_calls (not just genuine calls - see graph_loader.EDGE_KIND_MAP),
+    # this restricts "direct call edge" to CALL_LIKE_EDGE_KINDS, preserving
+    # the original call-graph-proximity intent rather than silently
+    # broadening "related" to include e.g. two objects that merely
+    # reference the same message class or transaction code.
     with conn.cursor() as cur:
         cur.execute(
             """
             SELECT DISTINCT source_object, target_object
             FROM object_calls
             WHERE target_object IN (SELECT name FROM objects)
-            """
+              AND edge_kind = ANY(%s)
+            """,
+            (list(CALL_LIKE_EDGE_KINDS),),
         )
         return {frozenset((a, b)) for a, b in cur.fetchall() if a != b}
 
 
 def _fetch_shared_table_pairs(conn: psycopg.Connection) -> set[frozenset]:
     with conn.cursor() as cur:
-        cur.execute("SELECT table_name, object_name FROM object_uses_table")
+        cur.execute(
+            "SELECT ddic_object_name, object_name FROM object_uses_table WHERE ddic_type = 'TABL'"
+        )
         rows = cur.fetchall()
     by_table: dict[str, list[str]] = {}
     for table_name, object_name in rows:

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from lld_step2.graph_loader import CALL_LIKE_EDGE_KINDS
 from lld_step2.parser import parse_extraction_file
 from lld_step2.pipeline import run_pipeline
 from lld_step2.retrieval import (
@@ -42,7 +43,9 @@ def zorder_conn(db_config):
         return
 
     with conn.cursor() as cur:
-        cur.execute("TRUNCATE object_calls, object_uses_table, code_chunks, objects CASCADE")
+        cur.execute(
+            "TRUNCATE object_calls, object_uses_table, code_chunks, ddic_objects, objects CASCADE"
+        )
     conn.commit()
 
     run_pipeline(str(ZORDER_FILE), conn=conn)
@@ -52,18 +55,26 @@ def zorder_conn(db_config):
 
 
 def _bidirectional_neighbors(conn, object_name: str) -> set[str]:
+    # Matches retrieval.py's own _fetch_bidirectional_adjacency: restricted
+    # to CALL_LIKE_EDGE_KINDS, since object_calls now also holds DDIC/
+    # message/transaction-type references (the real extraction format
+    # loads every dependency type there) that are not "neighbors" for
+    # certain-filter/structural-scoring purposes.
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT target_object FROM object_calls WHERE source_object = %s "
-            "UNION SELECT source_object FROM object_calls WHERE target_object = %s",
-            (object_name, object_name),
+            "SELECT target_object FROM object_calls WHERE source_object = %s AND edge_kind = ANY(%s) "
+            "UNION SELECT source_object FROM object_calls WHERE target_object = %s AND edge_kind = ANY(%s)",
+            (object_name, list(CALL_LIKE_EDGE_KINDS), object_name, list(CALL_LIKE_EDGE_KINDS)),
         )
         return {r[0] for r in cur.fetchall()}
 
 
 def _objects_using_table(conn, table_name: str) -> set[str]:
     with conn.cursor() as cur:
-        cur.execute("SELECT object_name FROM object_uses_table WHERE table_name = %s", (table_name,))
+        cur.execute(
+            "SELECT object_name FROM object_uses_table WHERE ddic_object_name = %s AND ddic_type = 'TABL'",
+            (table_name,),
+        )
         return {r[0] for r in cur.fetchall()}
 
 
@@ -260,10 +271,11 @@ def test_export_parses_with_step2_parser_and_contains_flag_header(zorder_conn, t
     assert "LIKELY_NEW_OBJECT:" in full_text
 
     objects_text = extract_object_blocks(full_text)
-    assert objects_text, "expected an === OBJECT: === block after the header"
+    assert objects_text, "expected a real extraction-file header + === OBJECT: === blocks"
 
-    parsed = list(parse_extraction_file(objects_text))
-    parsed_names = {p.name for p in parsed}
+    extraction = parse_extraction_file(objects_text)
+    assert extraction.run_type == "INCREMENTAL"
+    parsed_names = {p.name for p in extraction.objects}
     assert parsed_names == {c.object_name for c in result.candidates}
 
 

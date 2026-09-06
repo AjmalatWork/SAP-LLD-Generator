@@ -1610,6 +1610,36 @@ FORM dump_top_candidate_evidence.
       ENDIF.
     ENDLOOP.
     WRITE: / '  total requirement tokens matched in this chunk:', lv_match_count.
+
+    " TEMPORARY - recompute dot/norm_sq FROM SCRATCH here, independently
+    " of COMPUTE_SEMANTIC_SCORES's own accumulation, and list EVERY
+    " token in this chunk (not just requirement-matching ones), to
+    " confirm whether GT_SCOPE_TOKENS genuinely holds identical (token,
+    " tf) data under two different CHUNK_IDs (a fetch/population bug)
+    " or whether the stored BEST_DOT/BEST_NORM themselves are stale
+    " (a bug in COMPUTE_SEMANTIC_SCORES's own accumulation/reset).
+    DATA: lv_recheck_dot TYPE f,
+          lv_recheck_normsq TYPE f,
+          lv_recheck_idf TYPE f,
+          lv_recheck_weight TYPE f,
+          lv_tok_count TYPE i.
+    lv_recheck_dot = 0.
+    lv_recheck_normsq = 0.
+    lv_tok_count = 0.
+    LOOP AT gt_scope_tokens INTO DATA(ls_tok2) WHERE chunk_id = ls_cand-best_chunk_id.
+      lv_tok_count = lv_tok_count + 1.
+      READ TABLE gt_idf INTO DATA(ls_idf2) WITH KEY token = ls_tok2-token BINARY SEARCH.
+      lv_recheck_idf = COND #( WHEN sy-subrc = 0 THEN ls_idf2-idf ELSE 0 ).
+      lv_recheck_weight = ls_tok2-tf * lv_recheck_idf.
+      lv_recheck_normsq = lv_recheck_normsq + lv_recheck_weight * lv_recheck_weight.
+      READ TABLE gt_req_weighted INTO DATA(ls_req2) WITH KEY token = ls_tok2-token BINARY SEARCH.
+      IF sy-subrc = 0.
+        lv_recheck_dot = lv_recheck_dot + lv_recheck_weight * ls_req2-weight.
+      ENDIF.
+      WRITE: / |    [all] token='{ ls_tok2-token }' tf={ ls_tok2-tf } idf={ lv_recheck_idf }|.
+    ENDLOOP.
+    WRITE: / '  total tokens in this chunk (all, not just matched):', lv_tok_count.
+    WRITE: / '  RECOMPUTED dot=', lv_recheck_dot, 'RECOMPUTED chunk_norm=', sqrt( lv_recheck_normsq ).
   ENDLOOP.
 ENDFORM.
 

@@ -2198,10 +2198,11 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 FORM dump_long_string USING iv_label TYPE string
                              iv_value TYPE string.
-  DATA: lv_len    TYPE i,
-        lv_pos    TYPE i,
-        lv_remain TYPE i,
-        lv_chunk  TYPE string.
+  DATA: lv_len       TYPE i,
+        lv_pos       TYPE i,
+        lv_remain    TYPE i,
+        lv_chunk     TYPE string,
+        lv_truncated TYPE i.
 
   lv_len = strlen( iv_value ).
   WRITE: / iv_label, '(length', lv_len, 'chars):'.
@@ -2223,7 +2224,8 @@ FORM dump_long_string USING iv_label TYPE string
   ENDWHILE.
 
   IF lv_len > 2000.
-    WRITE: / '  ... (truncated, ', lv_len - 2000, 'more chars)'.
+    lv_truncated = lv_len - 2000.
+    WRITE: / '  ... (truncated, ', lv_truncated, 'more chars)'.
   ENDIF.
 ENDFORM.
 

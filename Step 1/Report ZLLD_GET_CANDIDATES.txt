@@ -219,9 +219,9 @@ TABLES: zdccrt_objects.
 
 * text-001: maintain via SE38 Text Elements, e.g. "Requirement Input"
 SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.
+PARAMETERS: p_reqf TYPE string OBLIGATORY LOWER CASE.   " path to a local .txt file containing the requirement
 SELECT-OPTIONS: s_pack FOR zdccrt_objects-zpackage OBLIGATORY NO INTERVALS.
-PARAMETERS: p_reqf TYPE string OBLIGATORY LOWER CASE,   " path to a local .txt file containing the requirement
-            p_note TYPE string LOWER CASE VISIBLE LENGTH 200,
+PARAMETERS: p_note TYPE string LOWER CASE VISIBLE LENGTH 200,
             p_conf TYPE char7  AS LISTBOX VISIBLE LENGTH 20,   " blank / UNSURE / LIKELY / CERTAIN
             p_topn TYPE i DEFAULT 5,
             p_file TYPE string OBLIGATORY DEFAULT 'C:\temp\'.
@@ -315,6 +315,13 @@ FORM main.
   " requirement tokens matched it, to confirm/refute the "single shared
   " generic token" hypothesis before trusting/tuning the ranking.
   PERFORM dump_top_candidate_evidence.
+
+  " TEMPORARY, FOR REPEATED TESTING ONLY - dumps everything just written
+  " to the list (including the diagnostics above) to a text file in the
+  " same output folder as P_FILE, so a test run's full list output can
+  " be inspected/diffed without re-screenshotting the SAP GUI each time.
+  " Remove once the scoring investigation is done.
+  PERFORM dump_spool_to_file.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
@@ -1641,6 +1648,65 @@ FORM dump_top_candidate_evidence.
     WRITE: / '  total tokens in this chunk (all, not just matched):', lv_tok_count.
     WRITE: / '  RECOMPUTED dot=', lv_recheck_dot, 'RECOMPUTED chunk_norm=', sqrt( lv_recheck_normsq ).
   ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  DUMP_SPOOL_TO_FILE
+*&---------------------------------------------------------------------*
+*       TEMPORARY, FOR REPEATED TESTING ONLY - grabs everything this
+*       program has written to the list so far (SAVE_LIST snapshots the
+*       current list buffer; LIST_TO_ASCI converts it to plain text)
+*       and writes it to LLD_CANDIDATES_SPOOL_LOG.TXT in the same
+*       folder as P_FILE, so a run's full output (including the
+*       DIAGNOSTIC sections above) can be reviewed/diffed as a file
+*       instead of re-screenshotting the SAP GUI list each time. Remove
+*       this form and its call in MAIN once the scoring investigation
+*       is finished - not a permanent feature.
+*&---------------------------------------------------------------------*
+FORM dump_spool_to_file.
+  TYPES: BEGIN OF ts_spool_line, line TYPE string, END OF ts_spool_line.
+  DATA: lt_listobject TYPE TABLE OF abaplist,
+        lt_listasci   TYPE TABLE OF string,
+        lt_out        TYPE STANDARD TABLE OF ts_spool_line WITH EMPTY KEY,
+        lv_folder     TYPE string,
+        lv_spool_path TYPE string.
+
+  CALL FUNCTION 'SAVE_LIST'
+    TABLES
+      listobject = lt_listobject
+    EXCEPTIONS
+      OTHERS     = 1.
+  CHECK sy-subrc = 0.
+
+  CALL FUNCTION 'LIST_TO_ASCI'
+    TABLES
+      listasci   = lt_listasci
+      listobject = lt_listobject
+    EXCEPTIONS
+      empty_list = 1
+      OTHERS     = 2.
+  CHECK sy-subrc = 0.
+
+  LOOP AT lt_listasci INTO DATA(lv_line).
+    APPEND VALUE #( line = lv_line ) TO lt_out.
+  ENDLOOP.
+
+  lv_folder = p_file.
+  IF substring( val = lv_folder off = strlen( lv_folder ) - 1 ) <> '\'.
+    lv_folder = lv_folder && '\'.
+  ENDIF.
+  lv_spool_path = lv_folder && 'LLD_CANDIDATES_SPOOL_LOG.TXT'.
+
+  CALL FUNCTION 'GUI_DOWNLOAD'
+    EXPORTING
+      filename         = lv_spool_path
+      filetype         = 'ASC'
+      codepage         = '4110'
+    TABLES
+      data_tab         = lt_out
+    EXCEPTIONS
+      file_write_error = 1
+      OTHERS           = 2.
 ENDFORM.
 
 *&---------------------------------------------------------------------*

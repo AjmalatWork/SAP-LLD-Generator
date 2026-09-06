@@ -244,7 +244,7 @@ SELECTION-SCREEN END OF BLOCK b1.
 * text-002: maintain via SE38 Text Elements, e.g. "Package & Output"
 SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE text-002.
 PARAMETERS: p_pack TYPE devclass OBLIGATORY,
-            p_file TYPE string  OBLIGATORY DEFAULT 'C:\temp\' MODIF ID fil.
+            p_file TYPE string  DEFAULT 'C:\temp\' MODIF ID fil.
 SELECTION-SCREEN END OF BLOCK b2.
 
 AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
@@ -253,9 +253,17 @@ AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
 *&---------------------------------------------------------------------*
 *&      P_FILE (the output folder) is only meaningful in File mode -
 *&      hidden entirely (not just disabled) when Database mode is
-*&      selected. Its DEFAULT value is untouched either way, so the
-*&      field's own OBLIGATORY check never blocks a DB-mode run even
-*&      while hidden.
+*&      selected.
+*&
+*&      NOT marked OBLIGATORY, deliberately - CONFIRMED against the
+*&      real system that this matters, not just a theoretical concern:
+*&      OBLIGATORY's mandatory-field check runs during PAI validation,
+*&      which happens BEFORE this PBO logic gets a chance to hide the
+*&      field again - with OBLIGATORY still set, that validation step
+*&      interfered with the hide/show round-trip (triggered by
+*&      P_MDB's USER-COMMAND) badly enough that the field could get
+*&      stuck. DEFAULT 'C:\temp\' still keeps it populated in normal
+*&      use without needing the hard mandatory check.
 *&
 *&      Toggles on SCREEN-GROUP1 ('FIL', via the PARAMETERS ... MODIF ID
 *&      FIL above), not SCREEN-NAME = 'P_FILE' - a PARAMETERS field's

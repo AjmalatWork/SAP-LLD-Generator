@@ -244,10 +244,10 @@ FORM main.
   PERFORM compute_requirement_vector.
   PERFORM compute_semantic_scores.
 
-  PERFORM compute_seed_and_structural_scores.
+  PERFORM compute_seed_struct_scores.
   PERFORM compute_base_scores.
 
-  PERFORM resolve_scoping_note_and_neighbors.
+  PERFORM resolve_note_and_neighbors.
   PERFORM build_unadjusted_ranking.
   PERFORM apply_tier_adjustment.
   PERFORM build_adjusted_ranking.
@@ -811,7 +811,7 @@ FORM bfs_hop_distances USING it_seeds TYPE string_t iv_max_depth TYPE i
 ENDFORM.
 
 *&---------------------------------------------------------------------*
-*&      Form  COMPUTE_SEED_AND_STRUCTURAL_SCORES
+*&      Form  COMPUTE_SEED_STRUCT_SCORES
 *&---------------------------------------------------------------------*
 *       Top-3 by semantic score, gated by GV_SEED_MIN_SEMANTIC (the same
 *       "additional gate on top of the top-3 selection" fix already made
@@ -822,7 +822,7 @@ ENDFORM.
 *       likely_new_object mathematically unreachable). Structural score
 *       is max(hop-decay, table-sharing bonus), never summed.
 *&---------------------------------------------------------------------*
-FORM compute_seed_and_structural_scores.
+FORM compute_seed_struct_scores.
   DATA: lt_sorted_by_semantic TYPE STANDARD TABLE OF ts_obj_score,
         lt_top3               TYPE string_t,
         lt_seeds              TYPE string_t,
@@ -902,7 +902,7 @@ ENDFORM.
 *&=======================================================================*
 
 *&---------------------------------------------------------------------*
-*&      Form  RESOLVE_SCOPING_NOTE_AND_NEIGHBORS
+*&      Form  RESOLVE_NOTE_AND_NEIGHBORS
 *&---------------------------------------------------------------------*
 *       Exact match first, then case-insensitive, then substring (either
 *       direction) - direct port of resolve_scoping_note. An unresolved
@@ -910,7 +910,7 @@ ENDFORM.
 *       useful signal, not failure) - GV_EFFECTIVE_CONFIDENCE stays
 *       blank in that case (nothing to anchor a tier adjustment to).
 *&---------------------------------------------------------------------*
-FORM resolve_scoping_note_and_neighbors.
+FORM resolve_note_and_neighbors.
   DATA: lt_exact TYPE string_t,
         lt_ci    TYPE string_t,
         lt_sub   TYPE string_t,

@@ -192,10 +192,10 @@ Run these against a real test package once activated:
 tables described in this section by their original `ZLLD_*` names have since been
 **created** under renamed, as-built names (`ZDCCRT_STG_RUN`/`_OBJ`/`_DEP`/`_DDIC`) —
 see `DDIC_TABLES_TO_CREATE_LLD.txt`'s "DB output mode" section for the exact
-old-name → new-name/field map, and note its flagged **outstanding issue**:
-`ZDCCRT_STG_DEP`'s key is missing `DEPENDENCY_SEQ`, which must be added before DB
-mode can run against any object with more than one dependency. The ABAP source
-(`ZLLD_PACKAGE_EXTRACTOR.txt`) has been updated to the as-built names; the
+old-name → new-name/field map. `ZDCCRT_STG_DEP`'s key was initially missing
+`DEPENDENCY_SEQ` (would have failed every dependency after the first per object on
+a duplicate key) — **fixed**, `DEPENDENCY_SEQ` is now part of the key. The ABAP
+source (`ZLLD_PACKAGE_EXTRACTOR.txt`) has been updated to the as-built names; the
 walkthrough below keeps its original `ZLLD_*` names for readability but the tables
 themselves and the code that touches them use the real names.
 
@@ -344,9 +344,9 @@ right where the function-module call used to be.
 `ZDCCRT_CHUNK_TOK`, `ZDCCRT_EKIND_MAP`, `ZDCCRT_CONFIG`) — see
 `DDIC_TABLES_TO_CREATE_LLD.txt`'s "Native processing" section for the exact
 old-name → new-name/field map. `Include ZLLD_EXTRACT_TO_DB_F01.txt` and
-`ZLLD_RETRIEVE_CANDIDATES.txt` have both been updated to the as-built names. One item
-still needs a manual SE11 check: confirm `ZDCCRT_STG_DDIC` actually has a
-`DETAIL_JSON` field (see the DB-mode section's table 6).
+`ZLLD_RETRIEVE_CANDIDATES.txt` have both been updated to the as-built names.
+`ZDCCRT_STG_DDIC`'s `DETAIL_JSON` field (`TYPE Z_STRING`) — **confirmed added**,
+non-key.
 
 ### What to do before activating
 

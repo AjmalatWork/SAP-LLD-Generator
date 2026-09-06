@@ -32,12 +32,11 @@
 *    - Table ZDCCRT_OBJECTS, ZDCCRT_OBJ_CALLS, ZDCCRT_OBJ_DDREF,
 *      ZDCCRT_DDIC_OBJ, ZDCCRT_CHUNKS, ZDCCRT_CHUNK_TOK, ZDCCRT_EKIND_MAP,
 *      ZDCCRT_CONFIG
-*  IMPORTANT - one real problem found in the as-built ZDCCRT_STG_DEP:
-*  DEPENDENCY_SEQ must be part of its key (MANDT, RUN_ID, OBJ_NAME,
-*  DEPENDENCY_SEQ) - without it, only the first dependency staged per
-*  object would insert; every subsequent one for that same object fails
-*  on a duplicate-key error. Fix this in SE11 before running DB mode
-*  against any real object with more than one dependency.
+*  A real problem was found and fixed in the as-built ZDCCRT_STG_DEP:
+*  DEPENDENCY_SEQ was initially missing from its key, which would have
+*  meant only the first dependency staged per object could insert -
+*  DEPENDENCY_SEQ is now confirmed part of the key (MANDT, RUN_ID,
+*  OBJ_NAME, DEPENDENCY_SEQ).
 *
 *  VERIFY: the logic below has not been created/tested in the system -
 *  written without SAP access, like everything else in this project

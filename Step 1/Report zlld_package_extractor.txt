@@ -36,12 +36,12 @@ REPORT zlld_package_extractor.
 *      a function module (no SE37/function group setup needed) - see
 *      "INCLUDE zlld_extract_to_db_f01." below and
 *      Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt.
-*    - OUTSTANDING: ZDCCRT_STG_DEP's key is missing DEPENDENCY_SEQ - add
-*      it (MANDT, RUN_ID, OBJ_NAME, DEPENDENCY_SEQ) before running DB
-*      mode against any object with more than one dependency, or every
-*      dependency after the first for that object fails to insert.
-*      Separately, confirm ZDCCRT_STG_DDIC actually has a DETAIL_JSON
-*      field (TYPE STRING, non-key) - see STAGE_DDIC_SECTION's own note.
+*    - ZDCCRT_STG_DEP's key originally lacked DEPENDENCY_SEQ (would have
+*      failed every dependency after the first per object on a duplicate
+*      key) - CONFIRMED FIXED, DEPENDENCY_SEQ is now part of the key
+*      (MANDT, RUN_ID, OBJ_NAME, DEPENDENCY_SEQ).
+*    - ZDCCRT_STG_DDIC's DETAIL_JSON field (TYPE Z_STRING, non-key) -
+*      CONFIRMED added.
 *  File mode (the default) needs none of the above and is unchanged.
 *
 *  SEVERAL FM CALLS BELOW ARE FLAGGED "VERIFY" - their exact parameter
@@ -2069,10 +2069,6 @@ FORM stage_ddic_section USING iv_run_id    TYPE sysuuid_x16
     " blob) colliding on ZDCCRT_STG_DDIC's (RUN_ID, DDIC_TYPE, DDIC_NAME)
     " key - not expected from this report's own single-package
     " BUILD_PACKAGE_DDIC_JSON call, but harmless either way.
-    " VERIFY: confirm ZDCCRT_STG_DDIC actually has a DETAIL_JSON field -
-    " it wasn't visible in the SE11 field list this table was built
-    " from; add it (TYPE STRING, non-key) if missing, or this MODIFY
-    " fails.
     MODIFY zdccrt_stg_ddic FROM ls_stg_ddic.
   ENDLOOP.
 ENDFORM.

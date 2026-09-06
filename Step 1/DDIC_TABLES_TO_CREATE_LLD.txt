@@ -60,12 +60,11 @@ per-table shortenings (STG_OBJECT -> STG_OBJ, STG_DEPENDENCY -> STG_DEP) and
 OBJECT_NAME -> OBJ_NAME throughout. ZLLD_PACKAGE_EXTRACTOR.txt has been
 updated to match - see the field tables below for what was actually built.
 
-OUTSTANDING ISSUE, NOT YET FIXED IN SE11: ZDCCRT_STG_DEP's key is missing
-DEPENDENCY_SEQ. As built, the key is only (MANDT, RUN_ID, OBJ_NAME) - since
-an object can have (and almost always does have) more than one dependency
-row, every dependency after the first for a given object will fail to
-INSERT with a duplicate-key error. Add DEPENDENCY_SEQ to the key in SE11
-before running DB mode against any real object.
+~~OUTSTANDING ISSUE~~ - FIXED: ZDCCRT_STG_DEP's key was originally missing
+DEPENDENCY_SEQ (only MANDT, RUN_ID, OBJ_NAME), which would have failed every
+dependency after the first per object with a duplicate-key error.
+DEPENDENCY_SEQ has now been added to the key (MANDT, RUN_ID, OBJ_NAME,
+DEPENDENCY_SEQ) - see table 5 below.
 
 3) Table ZDCCRT_STG_RUN  ("one row per DB-mode extraction run")
    Short text: LLD Extractor - DB-Mode Run Header
@@ -99,10 +98,10 @@ before running DB mode against any real object.
    SOURCE              Z_STRING (STRING)  STRING  -        full source, newline-joined, exactly as GET_SOURCE_FOR_LLD_OBJECT already returns it
 
    Notes:
-   - Same (RUN_ID, OBJ_NAME) key as ZDCCRT_STG_DEP (once that table's key
-     is fixed per the OUTSTANDING ISSUE above) - a run never extracts the
-     same object name twice (BUILD_UNIQUE_LLD_OBJECTS already dedupes
-     upstream), so OBJ_NAME within a run is a safe key component.
+   - Same (RUN_ID, OBJ_NAME, DEPENDENCY_SEQ) key shape as ZDCCRT_STG_DEP -
+     a run never extracts the same object name twice (BUILD_UNIQUE_LLD_OBJECTS
+     already dedupes upstream), so OBJ_NAME within a run is a safe key
+     component.
 
 5) Table ZDCCRT_STG_DEP  ("one row per dependency entry")
    Short text: LLD Extractor - DB-Mode Staged Dependencies
@@ -112,7 +111,7 @@ before running DB mode against any real object.
    MANDT            X     MANDT          CLNT        3        client
    RUN_ID           X     SYSUUID_X16    RAW         16
    OBJ_NAME         X     SEOCLSNAME     CHAR        30       renamed from OBJECT_NAME; the object this dependency belongs to
-   DEPENDENCY_SEQ   X     INT4           INT4        10       MISSING FROM THE KEY AS BUILT - see OUTSTANDING ISSUE above; must be added
+   DEPENDENCY_SEQ   X     INT4           INT4        10       CONFIRMED added to the key - originally missing (would have caused every dependency after the first per object to fail on a duplicate key), now fixed
    DEPENDENCY_TYPE        Z_STRING (STRING)  STRING  -        raw type exactly as ZCR_GET_DEPENDENCY_OBJ_NEW emits it - METH/OM/CLAS/TABL/etc, open vocabulary, no CHECK constraint
    DEPENDENCY_NAME        Z_STRING (STRING)  STRING  -
    SIGNATURE_JSON         Z_STRING (STRING)  STRING  -        kept as an opaque blob - not touched by step 2/3-equivalent scoring, only read by a later processing step
@@ -126,7 +125,7 @@ before running DB mode against any real object.
    RUN_ID        X     SYSUUID_X16    RAW         16
    DDIC_TYPE     X     CHAR4          CHAR        4        DOMA / DTEL / TABL / STRU / TTYP
    DDIC_NAME     X     CHAR30         CHAR        30       built with CHAR 30 directly (STRING rejected in keys, as flagged) - real DDIC object names are max 30 chars anyway, so this loses nothing
-   DETAIL_JSON             Z_STRING (STRING)  STRING  -    VERIFY: not visible in the field list this table was built from - confirm it exists (TYPE STRING/Z_STRING, non-key); if missing, STAGE_DDIC_SECTION's MODIFY will fail
+   DETAIL_JSON             Z_STRING (STRING)  STRING  -    CONFIRMED added, non-key
 
    Notes:
    - STAGE_PACKAGE_DDIC (in the report) uses MODIFY, not INSERT, so a

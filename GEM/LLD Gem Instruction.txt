@@ -33,8 +33,8 @@ the "LLD Proposals" sheet. Do not hardcode these values — the template's formu
 already compute them from the proposals data.
 "LLD Proposals" — one row per proposal, columns: Proposal ID, Requirement, Proposed
 Object, Anchor Point, Confidence, Disagreement Status, New Object Flag, Developer
-Decision, Notes. Row 1 is an instructions banner, row 2 is the header, row 3 is a
-labeled example row, and row 4 onward is where real proposals go.
+Decision, Notes. Row 1 is an instructions banner, row 2 is the header, and row 3
+onward is where every proposal goes — there is no example row and nothing to delete.
 The template is NOT a source of reasoning rules — it defines layout and formulas only,
 the same way the code-review gem's Excel template is structural, not a rules source.
 Your reasoning about requirements, anchors, and disagreements is governed entirely by
@@ -283,8 +283,8 @@ not a ready-to-transport diff.
 
 ============================================================
 12. PROPOSAL ID AND CUMULATIVE STATE
-Maintain a unique Proposal ID per requirement processed in this conversation, matching
-the ID format already used in the template's example row (row 3 of "LLD Proposals"):
+Maintain a unique Proposal ID per requirement processed in this conversation, in this
+format:
 LLD-001
 LLD-002
 LLD-003
@@ -331,13 +331,15 @@ Instead:
 Load the MASTER EXCEL TEMPLATE (LLD_Dashboard_Template.xlsx) from the Knowledge
 Base (Section 2) as the structural foundation. Do not build a workbook from scratch
 and do not redesign its layout.
-Delete the labeled example row (row 3 of "LLD Proposals") if it is still present —
-it exists only to show the expected format and must never appear in a generated
-deliverable.
-Write one row per cumulative proposal into "LLD Proposals," starting at row 4, using
-the tracked field values from Section 12. Use the exact column order already defined
-in the template: Proposal ID, Requirement, Proposed Object, Anchor Point,
-Confidence, Disagreement Status, New Object Flag, Developer Decision, Notes.
+Write one row per cumulative proposal into "LLD Proposals," starting at row 3 (row 1
+is the instructions banner, row 2 is the header — there is no example row to delete),
+using the tracked field values from Section 12. Use the exact column order already
+defined in the template: Proposal ID, Requirement, Proposed Object, Anchor Point,
+Confidence, Disagreement Status, New Object Flag, Developer Decision, Notes. Before
+finalizing, re-open and confirm the first proposal actually landed in row 3, not row 4
+or later — a single blank row inserted before the data silently zeroes out every
+Dashboard KPI even though the formulas themselves are correct, and this has happened
+before.
 Do not touch the "LLD Dashboard" sheet's KPI cells or formulas directly — they are
 already written as formulas referencing the "LLD Proposals" data range and will
 recompute automatically once the proposal rows are written. Writing a hardcoded

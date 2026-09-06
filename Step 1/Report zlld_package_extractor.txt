@@ -235,7 +235,7 @@ SELECTION-SCREEN END OF BLOCK b1.
 * text-002: maintain via SE38 Text Elements, e.g. "Package & Output"
 SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE text-002.
 PARAMETERS: p_pack TYPE devclass OBLIGATORY,
-            p_file TYPE string  OBLIGATORY DEFAULT 'C:\temp\'.
+            p_file TYPE string  OBLIGATORY DEFAULT 'C:\temp\' MODIF ID fil.
 SELECTION-SCREEN END OF BLOCK b2.
 
 AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
@@ -247,10 +247,20 @@ AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
 *&      selected. Its DEFAULT value is untouched either way, so the
 *&      field's own OBLIGATORY check never blocks a DB-mode run even
 *&      while hidden.
+*&
+*&      Toggles on SCREEN-GROUP1 ('FIL', via the PARAMETERS ... MODIF ID
+*&      FIL above), not SCREEN-NAME = 'P_FILE' - a PARAMETERS field's
+*&      input box and its text label are separate screen elements with
+*&      their own SCREEN-NAME entries in the LOOP AT SCREEN table;
+*&      toggling only the input box by name leaves the label visible
+*&      (and, on some releases, the F4 icon too), which is the "hide/
+*&      show isn't working correctly" symptom. MODIF ID tags every
+*&      element on that line with the same SCREEN-GROUP1, so one check
+*&      hides the whole row together.
 *&---------------------------------------------------------------------*
 AT SELECTION-SCREEN OUTPUT.
   LOOP AT SCREEN.
-    IF screen-name = 'P_FILE'.
+    IF screen-group1 = 'FIL'.
       screen-active = COND #( WHEN p_mfile = abap_true THEN 1 ELSE 0 ).
       screen-input  = screen-active.
       MODIFY SCREEN.

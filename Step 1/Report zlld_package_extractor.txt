@@ -1891,21 +1891,35 @@ ENDFORM.
 *       {\"A\":2} " (untrimmed; SPLIT_JSON_TOP_LEVEL_ELEMENTS below
 *       skips non-bracket characters on its own, so leading/trailing
 *       whitespace here is harmless).
+*
+*       Every real caller passes the SAME variable for both IV_JSON and
+*       CV_INNER (e.g. "USING lv_deps_raw CHANGING lv_deps_raw") to
+*       strip a value in place - since USING binds by reference, IV_JSON
+*       and CV_INNER are then literally the same memory. Confirmed live
+*       (via GT_DBG_TRACE) that clearing CV_INNER up front wiped
+*       IV_JSON before it was ever read, so every one of those in-place
+*       calls silently returned empty - the actual root cause of
+*       ZDCCRT_STG_DEP/_DDIC staging zero rows. Fixed by building the
+*       result into a local variable and only assigning it to CV_INNER
+*       as the very last statement, once every read of IV_JSON is done.
 *&---------------------------------------------------------------------*
 FORM strip_outer_json_array USING iv_json TYPE string
                              CHANGING cv_inner TYPE string.
-  DATA: lv_open  TYPE i,
-        lv_close TYPE i.
+  DATA: lv_open   TYPE i,
+        lv_close  TYPE i,
+        lv_result TYPE string.
 
-  CLEAR cv_inner.
+  CLEAR lv_result.
 
   FIND FIRST OCCURRENCE OF '[' IN iv_json MATCH OFFSET lv_open.
-  CHECK sy-subrc = 0.
+  IF sy-subrc = 0.
+    PERFORM find_matching_bracket USING iv_json lv_open CHANGING lv_close.
+    IF lv_close > lv_open.
+      lv_result = substring( val = iv_json off = lv_open + 1 len = lv_close - lv_open - 1 ).
+    ENDIF.
+  ENDIF.
 
-  PERFORM find_matching_bracket USING iv_json lv_open CHANGING lv_close.
-  CHECK lv_close > lv_open.
-
-  cv_inner = substring( val = iv_json off = lv_open + 1 len = lv_close - lv_open - 1 ).
+  cv_inner = lv_result.
 ENDFORM.
 
 *&---------------------------------------------------------------------*

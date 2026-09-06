@@ -101,6 +101,8 @@ TYPES: BEGIN OF ts_obj_score,
          final_score    TYPE f,
          tier_label     TYPE string,
          best_chunk_id  TYPE sysuuid_x16,   " TEMPORARY diagnostic aid - see DUMP_TOP_CANDIDATE_EVIDENCE
+         best_dot       TYPE f,             " TEMPORARY
+         best_norm      TYPE f,             " TEMPORARY
        END OF ts_obj_score,
        tt_obj_score TYPE SORTED TABLE OF ts_obj_score WITH UNIQUE KEY object_name,
        " SORT is not allowed on a SORTED TABLE (its order is fixed by
@@ -121,6 +123,8 @@ TYPES: BEGIN OF ts_score,
          object_name TYPE string,
          score       TYPE f,
          chunk_id    TYPE sysuuid_x16,   " TEMPORARY diagnostic aid - see DUMP_TOP_CANDIDATE_EVIDENCE
+         dbg_dot     TYPE f,             " TEMPORARY - raw dot product at the winning chunk
+         dbg_norm    TYPE f,             " TEMPORARY - raw chunk norm at the winning chunk
        END OF ts_score,
        tt_score TYPE SORTED TABLE OF ts_score WITH UNIQUE KEY object_name.
 
@@ -797,9 +801,12 @@ FORM compute_semantic_scores.
           IF lv_cosine > <fs_best>-score.
             <fs_best>-score = lv_cosine.
             <fs_best>-chunk_id = ls_row-chunk_id.
+            <fs_best>-dbg_dot = lv_dot.
+            <fs_best>-dbg_norm = lv_chunk_norm.
           ENDIF.
         ELSE.
-          INSERT VALUE #( object_name = lv_cur_object score = lv_cosine chunk_id = ls_row-chunk_id ) INTO TABLE lt_best.
+          INSERT VALUE #( object_name = lv_cur_object score = lv_cosine chunk_id = ls_row-chunk_id
+                           dbg_dot = lv_dot dbg_norm = lv_chunk_norm ) INTO TABLE lt_best.
         ENDIF.
       ENDIF.
     ENDAT.
@@ -817,6 +824,8 @@ FORM compute_semantic_scores.
     IF sy-subrc = 0.
       <fs_os>-semantic = ls_best-score.
       <fs_os>-best_chunk_id = ls_best-chunk_id.
+      <fs_os>-best_dot = ls_best-dbg_dot.
+      <fs_os>-best_norm = ls_best-dbg_norm.
     ENDIF.
   ENDLOOP.
 ENDFORM.
@@ -1567,12 +1576,14 @@ FORM dump_top_candidate_evidence.
   ENDLOOP.
 
   WRITE: / '--- DIAGNOSTIC: top-candidate scoring evidence (remove once ranking is confirmed) ---'.
+  WRITE: / 'gv_req_norm =', gv_req_norm.
 
   LOOP AT lt_top_names INTO lv_name.
     READ TABLE gt_obj_score INTO DATA(ls_cand) WITH KEY object_name = lv_name.
     CHECK sy-subrc = 0.
 
     WRITE: / lv_name, ': semantic=', ls_cand-semantic, 'best_chunk_id=', ls_cand-best_chunk_id.
+    WRITE: / '  dot=', ls_cand-best_dot, 'chunk_norm=', ls_cand-best_norm.
 
     IF ls_cand-best_chunk_id IS INITIAL.
       WRITE: / '  (no surviving chunk - semantic score is 0)'.

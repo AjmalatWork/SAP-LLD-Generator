@@ -1,0 +1,452 @@
+=== R1: Purge alias formula calculation simulator data older than a configurable number of days, in configurable batch sizes ===
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|##########| 103/103 [00:00<00:00, 7622.91it/s]
+Requirement: Purge alias formula calculation simulator data older than a configurable number of days, in configurable batch sizes
+Top 3 by semantic score: ['ZPCBAR_PURGE_SIMU_DATA', 'ZCL_CBA_ALIAS_DEFINITION', 'ZCL_CBA_ASYNC_TRANSLATION']
+Trusted seed objects (also clear semantic floor 0.67): ['ZPCBAR_PURGE_SIMU_DATA', 'ZCL_CBA_ALIAS_DEFINITION', 'ZCL_CBA_ASYNC_TRANSLATION']
+
+=== Candidates (top 5) ===
+  1. ZPCBAR_PURGE_SIMU_DATA  (PROGRAM, ZZBA91)
+     final=0.934  base=0.934  semantic=0.779  structural=1.000  tier: none
+     callers:  ZPCBAR_PURGE_SIMU_DATA
+     callees:  ABAP, ABAP_COMPDESCR, ABAP_TRUE, CL_ABAP_STRUCTDESCR, CL_ABAP_TYPEDESCR, COMPONENTS, DATS, DELETE_DB_WITH_UID, DESCRIBE_BY_DATA, K_RANGE, K_TABLE_NAME, SYST, ZBA91_UID, ZCL_CBA_APP_SERVER_UTILITY, ZCL_CBA_TRANSLATE_ENGINE, ZDCBAT_UC2_UID, ZPCBAR_PURGE_SIMU_DATA
+     tables:   DATS, ZBA91_UID, ZDCBAT_UC2_UID
+     chunk[0] sim=0.779: *&--------------------------------------------------------------------
+     chunk[1] sim=0.751: FORM MAIN_PROCESS.
+  2. ZCL_CBA_ALIAS_DEFINITION  (CLASS, ZZBA91)
+     final=0.915  base=0.915  semantic=0.717  structural=1.000  tier: none
+     callees:  ALIAS_FORMULA_CALCULATION, ALIAS_STACK_CLEANING, CLEAN_STACK_GROUP, CONSTRUCTOR, FACTORIZE_ALIAS_FORMULA, FLATTEN_AND_ASSIGN_COUNTERS, GET_ALIAS_STACK, GET_INSTANCE, GET_WORSE_QI, GROUP_INTO_STACKS
+     chunk[7] sim=0.717: METHOD ALIAS_FORMULA_CALCULATION.
+     chunk[5] sim=0.716: METHOD ALIAS_STACK_CLEANING.
+     chunk[19] sim=0.704: METHOD FACTORIZE_ALIAS_FORMULA.
+  3. ZCL_CBA_ASYNC_TRANSLATION  (CLASS, ZZBA91)
+     final=0.911  base=0.911  semantic=0.705  structural=1.000  tier: none
+     callers:  ZPCBAR_ASYNC_ALIAS_FORM_CALC
+     callees:  CALCULATE_PROBLEMATIC_ALIAS, CALCULATE_PROBLEMATIC_INV, COLLECT_PROBLEMATIC_ALIAS, COLLECT_PROBLEMATIC_INVARIANTS, CONSTRUCTOR, CONVERT_INPUT_XML_TO_TABLE, FILL_XML_OUTPUT, GENERATE_OUTPUT_XML, GET_INPUT_FILE_NAME, GET_INSTANCE, GET_OUTPUT_FILE_NAME, GET_TRANSLATION_OUTPUT, INSERT_DB, PROCESS
+     chunk[20] sim=0.705: *---------------------------------------------------------------------
+     chunk[25] sim=0.682: METHOD CALCULATE_PROBLEMATIC_ALIAS.
+     chunk[23] sim=0.662: METHOD COLLECT_PROBLEMATIC_INVARIANTS.
+  4. ZCL_CBA_TRANSLATE_ENGINE  (CLASS, ZZBA91)
+     final=0.629  base=0.629  semantic=0.697  structural=0.600  tier: none
+     callers:  ZPCBAR_PURGE_SIMU_DATA
+     callees:  CHECK_FORMULA, CONSTRUCTOR, CONVERT_CCM_FORM_TO_CCM_STACK, CONVERT_CCM_STACK_TO_CRIT_PKG, CONVERT_CRIT_PKG_TO_STRING, CONVERT_STACK, CONVERT_TO_DDIC_NAME, FILL_ALIAS_FORMULA, FILL_ALIAS_STACK, FILL_SHORTEST_PATH, FILL_SIMPLIFIED_GRAPH, FILL_STACK, FILL_UID, GET_CCM_FORMULA, GET_INSTANCE, GET_NUMBER_OF_CRITERIA, GET_UID, GET_USER_AC_PROGRAM, GET_USER_DOMAIN, GET_WHERE_CLAUSE, GET_WHERE_CLAUSE_FOR_KEY, INSERT_DB, PROCESS_REQUEST, REMOVE_LINE_RETURN, REMOVE_PARENTHESIS_AND, SET_CCM_FORMULA, UPDATE_DB_TABLES
+     chunk[32] sim=0.697: METHOD FILL_ALIAS_FORMULA.
+     chunk[34] sim=0.681: METHOD FILL_ALIAS_STACK.
+     chunk[13] sim=0.658: *---------------------------------------------------------------------
+  5. ZPCBAR_ASYNC_ALIAS_FORM_CALC  (PROGRAM, ZZBA91)
+     final=0.623  base=0.623  semantic=0.676  structural=0.600  tier: none
+     callers:  ZPCBAR_ASYNC_ALIAS_FORM_CALC
+     callees:  GET_INSTANCE, PROCESS, ZBA91_AIRCRAFT, ZBA91_DOMAIN, ZBA91_MANUAL, ZCL_CBA_ASYNC_TRANSLATION, ZPCBAR_ASYNC_ALIAS_FORM_CALC
+     tables:   ZBA91_AIRCRAFT, ZBA91_DOMAIN, ZBA91_MANUAL
+     chunk[0] sim=0.676: *&--------------------------------------------------------------------
+
+=== Unadjusted ranking (pure base_score, top 5) ===
+  1. ZPCBAR_PURGE_SIMU_DATA  base_score=0.934
+  2. ZCL_CBA_ALIAS_DEFINITION  base_score=0.915
+  3. ZCL_CBA_ASYNC_TRANSLATION  base_score=0.911
+  4. ZCL_CBA_TRANSLATE_ENGINE  base_score=0.629
+  5. ZPCBAR_ASYNC_ALIAS_FORM_CALC  base_score=0.623
+
+=== Disagreements (0) ===
+  (none)
+
+likely_new_object: False
+
+=== R2: Check whether a user has read access to a given aircraft and domain combination before returning AC/domain data ===
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|##########| 103/103 [00:00<00:00, 7111.56it/s]
+Requirement: Check whether a user has read access to a given aircraft and domain combination before returning AC/domain data
+Top 3 by semantic score: ['ZCL_CBA_GET_AC_DOM', 'ZCL_CBA_TRANSLATE_ENGINE', 'ZCL_CBA_AUTHORIZATION']
+Trusted seed objects (also clear semantic floor 0.67): ['ZCL_CBA_GET_AC_DOM', 'ZCL_CBA_TRANSLATE_ENGINE', 'ZCL_CBA_AUTHORIZATION']
+
+=== Candidates (top 5) ===
+  1. ZCL_CBA_GET_AC_DOM  (CLASS, ZZBA91)
+     final=0.938  base=0.938  semantic=0.794  structural=1.000  tier: none
+     callees:  GET_MANUAL, GET_MODE, GET_USER_AC_PROGRAM, GET_USER_DOMAIN, GET_VERSION
+     chunk[3] sim=0.794: METHOD GET_USER_DOMAIN.
+     chunk[1] sim=0.789: METHOD GET_USER_AC_PROGRAM.
+     chunk[2] sim=0.650: *---------------------------------------------------------------------
+  2. ZCL_CBA_TRANSLATE_ENGINE  (CLASS, ZZBA91)
+     final=0.937  base=0.937  semantic=0.789  structural=1.000  tier: none
+     callers:  ZPCBAR_PURGE_SIMU_DATA
+     callees:  CHECK_FORMULA, CONSTRUCTOR, CONVERT_CCM_FORM_TO_CCM_STACK, CONVERT_CCM_STACK_TO_CRIT_PKG, CONVERT_CRIT_PKG_TO_STRING, CONVERT_STACK, CONVERT_TO_DDIC_NAME, FILL_ALIAS_FORMULA, FILL_ALIAS_STACK, FILL_SHORTEST_PATH, FILL_SIMPLIFIED_GRAPH, FILL_STACK, FILL_UID, GET_CCM_FORMULA, GET_INSTANCE, GET_NUMBER_OF_CRITERIA, GET_UID, GET_USER_AC_PROGRAM, GET_USER_DOMAIN, GET_WHERE_CLAUSE, GET_WHERE_CLAUSE_FOR_KEY, INSERT_DB, PROCESS_REQUEST, REMOVE_LINE_RETURN, REMOVE_PARENTHESIS_AND, SET_CCM_FORMULA, UPDATE_DB_TABLES
+     chunk[10] sim=0.789: METHOD GET_USER_AC_PROGRAM.
+     chunk[12] sim=0.788: METHOD GET_USER_DOMAIN.
+     chunk[20] sim=0.648: METHOD PROCESS_REQUEST.
+  3. ZCL_CBA_AUTHORIZATION  (CLASS, ZZBA91)
+     final=0.919  base=0.919  semantic=0.731  structural=1.000  tier: none
+     callers:  ZPCBA91R_IMPORT_ALIAS_MDL
+     callees:  USER_HAS_CREATION_ACCESS, USER_HAS_DELETION_ACCESS, USER_HAS_MANAGER_ACCESS, USER_HAS_MODIFICATION_ACCESS, USER_HAS_READ_ACCESS
+     chunk[7] sim=0.731: METHOD USER_HAS_READ_ACCESS.
+     chunk[1] sim=0.723: METHOD USER_HAS_CREATION_ACCESS.
+     chunk[5] sim=0.722: METHOD USER_HAS_MODIFICATION_ACCESS.
+  4. ZPCBA91R_IMPORT_ALIAS_MDL  (PROGRAM, ZZBA91)
+     final=0.627  base=0.627  semantic=0.691  structural=0.600  tier: none
+     callers:  ZPCBA91R_IMPORT_ALIAS_MDL
+     callees:  002, 004, 005, 006, 007, 011, 012, 013, 014, 016, 017, 019, 020, 021, 022, 023, 024, 025, 026, 027, 028, 029, 030, 031, 032, 033, 034, 035, 040, 046, 047, 056, 069, /1BCDWBEN/ZEN0020, ABAP, ABAP_BOOL, ABAP_FALSE, ABAP_TRUE, AS4LOCAL, BAPIRET2, CHAR1, CL_ABAP_CHAR_UTILITIES, CL_ABAP_CODEPAGE, CL_ABAP_FORMAT, CL_GUI_FRONTEND_SERVICES, CL_IXML, CL_SALV_FUNCTIONS, CL_SALV_TABLE, CL_SXML_STRING_READER, CL_SXML_STRING_WRITER, CL_SXML_WRITER, CONVERT_FROM, CONVERT_TO, CO_OPT_INDENT, CO_OPT_LINEBREAKS, CO_XT_XML10, CREATE, CREATE_DOCUMENT, CREATE_ISTREAM_XSTRING, CREATE_PARSER, CREATE_STREAM_FACTORY, CR_LF, CX_DYNAMIC_CHECK, CX_ROOT, CX_SALV_MSG, CX_SALV_NO_NEW_DATA_ALLOWED, CX_SXML_ERROR, CX_SXML_PARSE_ERROR, DD02L, DDOBJNAME, DEQUEUE_EZZDCBAT_AC_DOM, DISPLAY, DYNPREAD, ENQUEUE_EZZDCBAT_AC_DOM, E_XML_TEXT, F4_FILENAME, FACTORY, GET_ALIAS_TABLE_NAME, GET_ANTIMOD_TABLE_NAME, GET_FUNCTIONS, GET_INSTANCE, GET_LIST_FIELD_OF_TABLE, GET_METHOD_FROM_TEMPLATE, GET_MOD_TABLE_NAME, GET_OUTPUT, GET_RULE_TABLE_NAME, GET_SYSTEM_TABLE_NAME, GET_TEXT, GUI_UPLOAD, HORIZONTAL_TAB, IBIP, IBIPPARMS, IF_IXML, IF_IXML_PARSER, IF_IXML_STREAM_FACTORY, IF_SXML, IF_SXML_READER, IF_SXML_WRITER, IF_SXML_WRITER~SET_OPTION, K_ALIASES, K_ANTIMOD, K_CMT, K_ENVIRONMENT, K_FULLNAME, K_MESSAGE, K_RULES, K_RULE_TYPE, K_TABLE_TEMPLATE, NEXT_NODE, PARSE, REFRESH, /SAPDMC/LSM_F4_SERVER_FILE, /SAPDMC/LSMW_AUX_020, SCMS_CONV, SCMS_STRING_TO_XSTRING, SET_ALL, SET_DATA, SET_OPTION, SKIP_NODE, SMUM, SMUM_XML_PARSE, SMUM_XMLTB, STRING_T, SYST, USER_HAS_CREATION_ACCESS, USER_HAS_DELETION_ACCESS, USER_HAS_READ_ACCESS, VERTICAL_TAB, ZBA91_ENVIRONMENT, ZBA91_SYSTEM_NAME, ZBA9S_MESSAGE_STRING, ZCBA91, ZCL_CBA_AUTHORIZATION, ZCL_CBA_JSON_UTIL, ZCL_CBA_TABLE_SELECTION, ZDCBA91S_ALIASES, ZDCBA91S_ALIAS_KEY, ZDCBA91S_ALIASTABLE, ZDCBA91S_ALIAS_WO_KEY, ZDCBA91S_ANTIMOD, ZDCBA91S_ANTI_MOD_KEY, ZDCBA91S_ANTI_MOD_WO_KEY, ZDCBA91S_COMMON_TABLE_KEY, ZDCBA91S_DESCRIPTION, ZDCBA91S_MOD_KEY, ZDCBA91S_RULE_KEY, ZDCBA91S_RULES, ZDCBA91S_RULE_WO_KEY, ZDCBA91S_SYSTEM, ZDCBA91S_SYSTEM_WO_KEY, ZDCBA91S_XML, ZDCBAT_AC_DOM, ZPCBA91R_IMPORT_ALIAS_MDL, ZPCBA91R_IMPORT_ALIAS_MDL_F01, ZPCBA91R_IMPORT_ALIAS_MDL_SCR, ZPCBA91R_IMPORT_ALIAS_MDL_TOP, ZTESTZTEST13==================E
+     tables:   AS4LOCAL, CHAR1, DD02L, DDOBJNAME, STRING_T, ZBA91_ENVIRONMENT, ZBA91_SYSTEM_NAME, ZDCBAT_AC_DOM
+     chunk[13] sim=0.691: FORM READ_AUTHORITY_CHECK .
+     chunk[11] sim=0.663: FORM CREATION_AUTHORITY_CHECK .
+     chunk[15] sim=0.657: FORM DELETION_AUTHORITY_CHECK .
+  5. ZPCBAR_PURGE_SIMU_DATA  (PROGRAM, ZZBA91)
+     final=0.580  base=0.580  semantic=0.532  structural=0.600  tier: none
+     callers:  ZPCBAR_PURGE_SIMU_DATA
+     callees:  ABAP, ABAP_COMPDESCR, ABAP_TRUE, CL_ABAP_STRUCTDESCR, CL_ABAP_TYPEDESCR, COMPONENTS, DATS, DELETE_DB_WITH_UID, DESCRIBE_BY_DATA, K_RANGE, K_TABLE_NAME, SYST, ZBA91_UID, ZCL_CBA_APP_SERVER_UTILITY, ZCL_CBA_TRANSLATE_ENGINE, ZDCBAT_UC2_UID, ZPCBAR_PURGE_SIMU_DATA
+     tables:   DATS, ZBA91_UID, ZDCBAT_UC2_UID
+     chunk[0] sim=0.532: *&--------------------------------------------------------------------
+     chunk[1] sim=0.495: FORM MAIN_PROCESS.
+
+=== Unadjusted ranking (pure base_score, top 5) ===
+  1. ZCL_CBA_GET_AC_DOM  base_score=0.938
+  2. ZCL_CBA_TRANSLATE_ENGINE  base_score=0.937
+  3. ZCL_CBA_AUTHORIZATION  base_score=0.919
+  4. ZPCBA91R_IMPORT_ALIAS_MDL  base_score=0.627
+  5. ZPCBAR_PURGE_SIMU_DATA  base_score=0.580
+
+=== Disagreements (0) ===
+  (none)
+
+likely_new_object: False
+
+=== R3: Retrieve a named property value out of a generic data structure by reflecting on its component list ===
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|##########| 103/103 [00:00<00:00, 7919.58it/s]
+Requirement: Retrieve a named property value out of a generic data structure by reflecting on its component list
+Top 3 by semantic score: ['ZCL_CBA_JSON_UTIL', 'ZCL_CBA_APP_SERVER_UTILITY', 'ZCL_CBA_ALIAS_DEFINITION']
+Trusted seed objects (also clear semantic floor 0.67): ['ZCL_CBA_JSON_UTIL', 'ZCL_CBA_APP_SERVER_UTILITY']
+
+=== Candidates (top 5) ===
+  1. ZCL_CBA_JSON_UTIL  (CLASS, ZZBA91)
+     final=0.927  base=0.927  semantic=0.756  structural=1.000  tier: none
+     callers:  ZPCBA91R_IMPORT_ALIAS_MDL
+     callees:  GET_PROPERTY
+     chunk[1] sim=0.756: METHOD GET_PROPERTY.
+     chunk[0] sim=0.547: CLASS-POOL .
+     chunk[2] sim=0.536: PROTECTED SECTION.
+  2. ZCL_CBA_APP_SERVER_UTILITY  (CLASS, ZZBA91)
+     final=0.905  base=0.905  semantic=0.682  structural=1.000  tier: none
+     callers:  Z_CBA_COMPUTE_ALIAS_FORM_FILE, ZPCBAR_PURGE_SIMU_DATA
+     callees:  CONVERT_XSTRING_TO_BINARY, CREATE_DYN_JOB, CREATE_VARIANT, DELETE_DB_WITH_UID, DELETE_FILE_FROM_PATH, DESERIALIZE, GET_AIRCRAFT_FOR_DOMAIN_TF, GET_ET_BATCH, GET_FILE_FROM_PATH, GET_INSTANCE, GET_JSON_PATH, GET_VALUE_FROM_PROPERTY, SERIALIZE, WRITE_FILE_TO_PATH
+     chunk[16] sim=0.682: *---------------------------------------------------------------------
+     chunk[17] sim=0.643: METHOD GET_VALUE_FROM_PROPERTY.
+     chunk[18] sim=0.621: *---------------------------------------------------------------------
+  3. ZPCBA91R_IMPORT_ALIAS_MDL  (PROGRAM, ZZBA91)
+     final=0.598  base=0.598  semantic=0.594  structural=0.600  tier: none
+     callers:  ZPCBA91R_IMPORT_ALIAS_MDL
+     callees:  002, 004, 005, 006, 007, 011, 012, 013, 014, 016, 017, 019, 020, 021, 022, 023, 024, 025, 026, 027, 028, 029, 030, 031, 032, 033, 034, 035, 040, 046, 047, 056, 069, /1BCDWBEN/ZEN0020, ABAP, ABAP_BOOL, ABAP_FALSE, ABAP_TRUE, AS4LOCAL, BAPIRET2, CHAR1, CL_ABAP_CHAR_UTILITIES, CL_ABAP_CODEPAGE, CL_ABAP_FORMAT, CL_GUI_FRONTEND_SERVICES, CL_IXML, CL_SALV_FUNCTIONS, CL_SALV_TABLE, CL_SXML_STRING_READER, CL_SXML_STRING_WRITER, CL_SXML_WRITER, CONVERT_FROM, CONVERT_TO, CO_OPT_INDENT, CO_OPT_LINEBREAKS, CO_XT_XML10, CREATE, CREATE_DOCUMENT, CREATE_ISTREAM_XSTRING, CREATE_PARSER, CREATE_STREAM_FACTORY, CR_LF, CX_DYNAMIC_CHECK, CX_ROOT, CX_SALV_MSG, CX_SALV_NO_NEW_DATA_ALLOWED, CX_SXML_ERROR, CX_SXML_PARSE_ERROR, DD02L, DDOBJNAME, DEQUEUE_EZZDCBAT_AC_DOM, DISPLAY, DYNPREAD, ENQUEUE_EZZDCBAT_AC_DOM, E_XML_TEXT, F4_FILENAME, FACTORY, GET_ALIAS_TABLE_NAME, GET_ANTIMOD_TABLE_NAME, GET_FUNCTIONS, GET_INSTANCE, GET_LIST_FIELD_OF_TABLE, GET_METHOD_FROM_TEMPLATE, GET_MOD_TABLE_NAME, GET_OUTPUT, GET_RULE_TABLE_NAME, GET_SYSTEM_TABLE_NAME, GET_TEXT, GUI_UPLOAD, HORIZONTAL_TAB, IBIP, IBIPPARMS, IF_IXML, IF_IXML_PARSER, IF_IXML_STREAM_FACTORY, IF_SXML, IF_SXML_READER, IF_SXML_WRITER, IF_SXML_WRITER~SET_OPTION, K_ALIASES, K_ANTIMOD, K_CMT, K_ENVIRONMENT, K_FULLNAME, K_MESSAGE, K_RULES, K_RULE_TYPE, K_TABLE_TEMPLATE, NEXT_NODE, PARSE, REFRESH, /SAPDMC/LSM_F4_SERVER_FILE, /SAPDMC/LSMW_AUX_020, SCMS_CONV, SCMS_STRING_TO_XSTRING, SET_ALL, SET_DATA, SET_OPTION, SKIP_NODE, SMUM, SMUM_XML_PARSE, SMUM_XMLTB, STRING_T, SYST, USER_HAS_CREATION_ACCESS, USER_HAS_DELETION_ACCESS, USER_HAS_READ_ACCESS, VERTICAL_TAB, ZBA91_ENVIRONMENT, ZBA91_SYSTEM_NAME, ZBA9S_MESSAGE_STRING, ZCBA91, ZCL_CBA_AUTHORIZATION, ZCL_CBA_JSON_UTIL, ZCL_CBA_TABLE_SELECTION, ZDCBA91S_ALIASES, ZDCBA91S_ALIAS_KEY, ZDCBA91S_ALIASTABLE, ZDCBA91S_ALIAS_WO_KEY, ZDCBA91S_ANTIMOD, ZDCBA91S_ANTI_MOD_KEY, ZDCBA91S_ANTI_MOD_WO_KEY, ZDCBA91S_COMMON_TABLE_KEY, ZDCBA91S_DESCRIPTION, ZDCBA91S_MOD_KEY, ZDCBA91S_RULE_KEY, ZDCBA91S_RULES, ZDCBA91S_RULE_WO_KEY, ZDCBA91S_SYSTEM, ZDCBA91S_SYSTEM_WO_KEY, ZDCBA91S_XML, ZDCBAT_AC_DOM, ZPCBA91R_IMPORT_ALIAS_MDL, ZPCBA91R_IMPORT_ALIAS_MDL_F01, ZPCBA91R_IMPORT_ALIAS_MDL_SCR, ZPCBA91R_IMPORT_ALIAS_MDL_TOP, ZTESTZTEST13==================E
+     tables:   AS4LOCAL, CHAR1, DD02L, DDOBJNAME, STRING_T, ZBA91_ENVIRONMENT, ZBA91_SYSTEM_NAME, ZDCBAT_AC_DOM
+     chunk[17] sim=0.594: FORM DELETE_OLD_VERSION .
+     chunk[27] sim=0.591: FORM MAP_FROM_XML .
+     chunk[47] sim=0.570: FORM CHECK_TABLE_EXITS .
+  4. Z_CBA_COMPUTE_ALIAS_FORM_FILE  (FUNCTION_MODULE, ZZBA91)
+     final=0.585  base=0.585  semantic=0.550  structural=0.600  tier: none
+     callees:  083, 084, CREATE_DYN_JOB, CREATE_VARIANT, GET_TF_FOR_AIRCRAFT_DOMAIN, /IWBEP/CX_MGW_BUSI_EXCEPTION, LZCBA_ALCOSU01, VARIANT, ZBA91_CTM_PARAM_VAL, ZCBA91, ZCL_CBA_APP_SERVER_UTILITY, ZCL_CBA_FORMULA_PROCESSING, ZCX_CBA_ALCOS_EXCEPTION, ZDCBAI_JOBVAR, ZDCBAS_JOBVAR
+     tables:   VARIANT, ZBA91_CTM_PARAM_VAL, ZDCBAI_JOBVAR
+     chunk[0] sim=0.550: FUNCTION Z_CBA_COMPUTE_ALIAS_FORM_FILE.
+  5. ZPCBAR_PURGE_SIMU_DATA  (PROGRAM, ZZBA91)
+     final=0.576  base=0.576  semantic=0.521  structural=0.600  tier: none
+     callers:  ZPCBAR_PURGE_SIMU_DATA
+     callees:  ABAP, ABAP_COMPDESCR, ABAP_TRUE, CL_ABAP_STRUCTDESCR, CL_ABAP_TYPEDESCR, COMPONENTS, DATS, DELETE_DB_WITH_UID, DESCRIBE_BY_DATA, K_RANGE, K_TABLE_NAME, SYST, ZBA91_UID, ZCL_CBA_APP_SERVER_UTILITY, ZCL_CBA_TRANSLATE_ENGINE, ZDCBAT_UC2_UID, ZPCBAR_PURGE_SIMU_DATA
+     tables:   DATS, ZBA91_UID, ZDCBAT_UC2_UID
+     chunk[0] sim=0.521: *&--------------------------------------------------------------------
+     chunk[1] sim=0.517: FORM MAIN_PROCESS.
+
+=== Unadjusted ranking (pure base_score, top 5) ===
+  1. ZCL_CBA_JSON_UTIL  base_score=0.927
+  2. ZCL_CBA_APP_SERVER_UTILITY  base_score=0.905
+  3. ZPCBA91R_IMPORT_ALIAS_MDL  base_score=0.598
+  4. Z_CBA_COMPUTE_ALIAS_FORM_FILE  base_score=0.585
+  5. ZPCBAR_PURGE_SIMU_DATA  base_score=0.576
+
+=== Disagreements (0) ===
+  (none)
+
+likely_new_object: False
+
+=== R4: Compute the best or shortest translation path/formula for a given aircraft and domain across a simplified graph of criteria ===
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|##########| 103/103 [00:00<00:00, 5555.23it/s]
+Requirement: Compute the best or shortest translation path/formula for a given aircraft and domain across a simplified graph of criteria
+Top 3 by semantic score: ['ZCL_CBA_SHORTEST_PATH', 'ZCL_CBA_TRANSLATE_ENGINE', 'ZCL_CBA_SIMPLIFIED_GRAPH']
+Trusted seed objects (also clear semantic floor 0.67): ['ZCL_CBA_SHORTEST_PATH', 'ZCL_CBA_TRANSLATE_ENGINE', 'ZCL_CBA_SIMPLIFIED_GRAPH']
+
+=== Candidates (top 5) ===
+  1. ZCL_CBA_SHORTEST_PATH  (CLASS, ZZBA91)
+     final=0.909  base=0.909  semantic=0.697  structural=1.000  tier: none
+     callees:  CONSTRUCTOR, EXPLORE_PATH, FIND_SHORTEST_PATH, GET_ALIAS_TITLE, GET_HOLES_COUNTER, GET_INSTANCE, GET_NOT_AFTER, GET_PATH_NUMBER, STORE_BEST_PATH
+     chunk[4] sim=0.697: *---------------------------------------------------------------------
+     chunk[5] sim=0.695: METHOD FIND_SHORTEST_PATH.
+     chunk[18] sim=0.692: PROTECTED SECTION.
+  2. ZCL_CBA_TRANSLATE_ENGINE  (CLASS, ZZBA91)
+     final=0.905  base=0.905  semantic=0.685  structural=1.000  tier: none
+     callers:  ZPCBAR_PURGE_SIMU_DATA
+     callees:  CHECK_FORMULA, CONSTRUCTOR, CONVERT_CCM_FORM_TO_CCM_STACK, CONVERT_CCM_STACK_TO_CRIT_PKG, CONVERT_CRIT_PKG_TO_STRING, CONVERT_STACK, CONVERT_TO_DDIC_NAME, FILL_ALIAS_FORMULA, FILL_ALIAS_STACK, FILL_SHORTEST_PATH, FILL_SIMPLIFIED_GRAPH, FILL_STACK, FILL_UID, GET_CCM_FORMULA, GET_INSTANCE, GET_NUMBER_OF_CRITERIA, GET_UID, GET_USER_AC_PROGRAM, GET_USER_DOMAIN, GET_WHERE_CLAUSE, GET_WHERE_CLAUSE_FOR_KEY, INSERT_DB, PROCESS_REQUEST, REMOVE_LINE_RETURN, REMOVE_PARENTHESIS_AND, SET_CCM_FORMULA, UPDATE_DB_TABLES
+     chunk[22] sim=0.685: METHOD FILL_SHORTEST_PATH.
+     chunk[24] sim=0.684: METHOD FILL_SIMPLIFIED_GRAPH.
+     chunk[21] sim=0.641: *---------------------------------------------------------------------
+  3. ZCL_CBA_SIMPLIFIED_GRAPH  (CLASS, ZZBA91)
+     final=0.901  base=0.901  semantic=0.671  structural=1.000  tier: none
+     callees:  CALCULATE_CHILD_AND_PARENT, CONSTRUCTOR, GET_INSTANCE, GET_NOT_BEFORE_CRIT, GET_PRIORITY, GET_SIMPLIFIED_GRAPH, HAS_VERTEX_NOT_TAGGED, REMOVE_CLEANED_CRITERIA, REMOVE_NOT_REACHABLE, REMOVE_NOT_REACH_PARENT, REMOVE_NOT_TAGGED, REMOVE_REDUNDANT, REPLACE_VERTEX, RESET_FICTIF_COUNTER, SELECT_VERTEX_NOT_TAGGED, SET_CLEANED_FORMULA, SET_FULL_GRAPH, SET_MSG_REMOV_DUPL_CRIT, TAG_AND_ADD_LENGTH
+     chunk[11] sim=0.671: METHOD TAG_AND_ADD_LENGTH.
+     chunk[25] sim=0.666: METHOD GET_PRIORITY.
+     chunk[31] sim=0.666: METHOD GET_SIMPLIFIED_GRAPH.
+  4. ZPCBAR_PURGE_SIMU_DATA  (PROGRAM, ZZBA91)
+     final=0.581  base=0.581  semantic=0.535  structural=0.600  tier: none
+     callers:  ZPCBAR_PURGE_SIMU_DATA
+     callees:  ABAP, ABAP_COMPDESCR, ABAP_TRUE, CL_ABAP_STRUCTDESCR, CL_ABAP_TYPEDESCR, COMPONENTS, DATS, DELETE_DB_WITH_UID, DESCRIBE_BY_DATA, K_RANGE, K_TABLE_NAME, SYST, ZBA91_UID, ZCL_CBA_APP_SERVER_UTILITY, ZCL_CBA_TRANSLATE_ENGINE, ZDCBAT_UC2_UID, ZPCBAR_PURGE_SIMU_DATA
+     tables:   DATS, ZBA91_UID, ZDCBAT_UC2_UID
+     chunk[0] sim=0.535: *&--------------------------------------------------------------------
+     chunk[1] sim=0.515: FORM MAIN_PROCESS.
+  5. ZCL_CBA_APP_SERVER_UTILITY  (CLASS, ZZBA91)
+     final=0.404  base=0.404  semantic=0.647  structural=0.300  tier: none
+     callers:  Z_CBA_COMPUTE_ALIAS_FORM_FILE, ZPCBAR_PURGE_SIMU_DATA
+     callees:  CONVERT_XSTRING_TO_BINARY, CREATE_DYN_JOB, CREATE_VARIANT, DELETE_DB_WITH_UID, DELETE_FILE_FROM_PATH, DESERIALIZE, GET_AIRCRAFT_FOR_DOMAIN_TF, GET_ET_BATCH, GET_FILE_FROM_PATH, GET_INSTANCE, GET_JSON_PATH, GET_VALUE_FROM_PROPERTY, SERIALIZE, WRITE_FILE_TO_PATH
+     chunk[23] sim=0.647: METHOD GET_AIRCRAFT_FOR_DOMAIN_TF.
+     chunk[22] sim=0.628: *---------------------------------------------------------------------
+     chunk[7] sim=0.591: METHOD GET_JSON_PATH.
+
+=== Unadjusted ranking (pure base_score, top 5) ===
+  1. ZCL_CBA_SHORTEST_PATH  base_score=0.909
+  2. ZCL_CBA_TRANSLATE_ENGINE  base_score=0.905
+  3. ZCL_CBA_SIMPLIFIED_GRAPH  base_score=0.901
+  4. ZPCBAR_PURGE_SIMU_DATA  base_score=0.581
+  5. ZCL_CBA_APP_SERVER_UTILITY  base_score=0.404
+
+=== Disagreements (0) ===
+  (none)
+
+likely_new_object: False
+
+=== R5: Display the translation output, problematic alias, or invariant data for a given aircraft, domain, manual and UID selection ===
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|##########| 103/103 [00:00<00:00, 5555.08it/s]
+Requirement: Display the translation output, problematic alias, or invariant data for a given aircraft, domain, manual and UID selection
+Top 3 by semantic score: ['Z_CBA_COMPUTE_ALIAS_FORM_FILE', 'ZCL_CBA_APP_SERVER_UTILITY', 'ZCL_CBA_QUALITY_LOG']
+Trusted seed objects (also clear semantic floor 0.67): ['Z_CBA_COMPUTE_ALIAS_FORM_FILE', 'ZCL_CBA_APP_SERVER_UTILITY', 'ZCL_CBA_QUALITY_LOG']
+
+=== Candidates (top 5) ===
+  1. Z_CBA_COMPUTE_ALIAS_FORM_FILE  (FUNCTION_MODULE, ZZBA91)
+     final=0.918  base=0.918  semantic=0.725  structural=1.000  tier: none
+     callees:  083, 084, CREATE_DYN_JOB, CREATE_VARIANT, GET_TF_FOR_AIRCRAFT_DOMAIN, /IWBEP/CX_MGW_BUSI_EXCEPTION, LZCBA_ALCOSU01, VARIANT, ZBA91_CTM_PARAM_VAL, ZCBA91, ZCL_CBA_APP_SERVER_UTILITY, ZCL_CBA_FORMULA_PROCESSING, ZCX_CBA_ALCOS_EXCEPTION, ZDCBAI_JOBVAR, ZDCBAS_JOBVAR
+     tables:   VARIANT, ZBA91_CTM_PARAM_VAL, ZDCBAI_JOBVAR
+     chunk[0] sim=0.725: FUNCTION Z_CBA_COMPUTE_ALIAS_FORM_FILE.
+  2. ZCL_CBA_APP_SERVER_UTILITY  (CLASS, ZZBA91)
+     final=0.914  base=0.914  semantic=0.712  structural=1.000  tier: none
+     callers:  Z_CBA_COMPUTE_ALIAS_FORM_FILE, ZPCBAR_PURGE_SIMU_DATA
+     callees:  CONVERT_XSTRING_TO_BINARY, CREATE_DYN_JOB, CREATE_VARIANT, DELETE_DB_WITH_UID, DELETE_FILE_FROM_PATH, DESERIALIZE, GET_AIRCRAFT_FOR_DOMAIN_TF, GET_ET_BATCH, GET_FILE_FROM_PATH, GET_INSTANCE, GET_JSON_PATH, GET_VALUE_FROM_PROPERTY, SERIALIZE, WRITE_FILE_TO_PATH
+     chunk[23] sim=0.712: METHOD GET_AIRCRAFT_FOR_DOMAIN_TF.
+     chunk[22] sim=0.645: *---------------------------------------------------------------------
+     chunk[28] sim=0.619: PROTECTED SECTION.
+  3. ZCL_CBA_QUALITY_LOG  (CLASS, ZZBA91)
+     final=0.912  base=0.912  semantic=0.708  structural=1.000  tier: none
+     callers:  ZPCBAR_DISPLAY_OUTPUT
+     callees:  FILL_OUTPUT_STRUC, GET_INSTANCE, GET_PROB_ALIAS, GET_PROB_INV, GET_TRANSLATION_OUTPUT, UPDATE_OUTPUT_TABLE
+     chunk[9] sim=0.708: METHOD GET_TRANSLATION_OUTPUT.
+     chunk[3] sim=0.692: METHOD GET_PROB_ALIAS.
+     chunk[5] sim=0.675: METHOD GET_PROB_INV.
+  4. ZCL_CBA_FORMULA_PROCESSING  (CLASS, ZZBA91)
+     final=0.629  base=0.629  semantic=0.696  structural=0.600  tier: none
+     callers:  Z_CBA_COMPUTE_ALIAS_FORM_FILE
+     callees:  CCM_STACK_DETERMINATION, CCM_SYSTEM_STACK_DETERMINATION, CONSTRUCTOR, CONVERT_CCM_FORM_TO_CCM_STACK, GET_AC_FAMILY, GET_CRIT_WO_SYSTEM, GET_DOMAIN, GET_FORMULA, GET_INSTANCE, GET_TF, GET_TF_FOR_AIRCRAFT_DOMAIN, SET_DOMAIN, SET_TF, SYSTEM_DETERMINATION
+     chunk[23] sim=0.696: METHOD GET_TF_FOR_AIRCRAFT_DOMAIN.
+     chunk[26] sim=0.692: METHOD GET_AC_FAMILY.
+     chunk[22] sim=0.646: *---------------------------------------------------------------------
+  5. ZCX_CBA_ALCOS_EXCEPTION  (CLASS, ZZBA91)
+     final=0.612  base=0.612  semantic=0.641  structural=0.600  tier: none
+     callers:  Z_CBA_COMPUTE_ALIAS_FORM_FILE
+     callees:  CONSTRUCTOR, IF_T100_MESSAGE
+     chunk[3] sim=0.641: METHOD IF_MESSAGE~GET_LONGTEXT.
+     chunk[2] sim=0.582: *---------------------------------------------------------------------
+     chunk[1] sim=0.579: METHOD CONSTRUCTOR.
+
+=== Unadjusted ranking (pure base_score, top 5) ===
+  1. Z_CBA_COMPUTE_ALIAS_FORM_FILE  base_score=0.918
+  2. ZCL_CBA_APP_SERVER_UTILITY  base_score=0.914
+  3. ZCL_CBA_QUALITY_LOG  base_score=0.912
+  4. ZCL_CBA_FORMULA_PROCESSING  base_score=0.629
+  5. ZCX_CBA_ALCOS_EXCEPTION  base_score=0.612
+
+=== Disagreements (0) ===
+  (none)
+
+likely_new_object: False
+
+=== R6: Send an automated email notification to a customer when their sales order ships ===
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|##########| 103/103 [00:00<00:00, 4067.39it/s]
+Requirement: Send an automated email notification to a customer when their sales order ships
+Top 3 by semantic score: ['ZCL_NOTIFICATION_SENDER', 'ZCL_CBA_IMPORT_MODEL', 'ZPCBA91R_IMPORT_ALIAS_MDL']
+Trusted seed objects (also clear semantic floor 0.67): ['ZCL_NOTIFICATION_SENDER']
+
+=== Candidates (top 5) ===
+  1. ZCL_NOTIFICATION_SENDER  (CLASS, ZORDER_MGMT)
+     final=0.904  base=0.904  semantic=0.680  structural=1.000  tier: none
+     callers:  ZCL_ORDER_PROCESSOR
+     callees:  ZCL_ORDER_LOGGER, ZCUST_MASTER, ZNOTIF_QUEUE
+     tables:   ZCUST_MASTER, ZNOTIF_QUEUE
+     chunk[1] sim=0.680: METHOD notify_order_confirmed.
+     chunk[2] sim=0.656: METHOD notify_order_failed.
+     chunk[0] sim=0.647: CLASS zcl_notification_sender DEFINITION PUBLIC CREATE PUBLIC.
+  2. ZCL_ORDER_LOGGER  (CLASS, ZORDER_MGMT)
+     final=0.581  base=0.581  semantic=0.538  structural=0.600  tier: none
+     callers:  ZCL_DISCOUNT_CALCULATOR, ZCL_NOTIFICATION_SENDER, ZCL_ORDER_PERSISTENCE, ZCL_ORDER_PROCESSOR, ZCL_ORDER_VALIDATOR, ZCL_SHIPPING_CALCULATOR, ZCL_STOCK_MANAGER, ZRP_ORDER_BATCH_RUN, ZRP_ORDER_SUMMARY_REPORT
+     callees:  ZORDER_LOG
+     tables:   ZORDER_LOG
+     chunk[0] sim=0.538: CLASS zcl_order_logger DEFINITION PUBLIC CREATE PUBLIC.
+     chunk[1] sim=0.538: METHOD write_entry.
+     chunk[3] sim=0.507: METHOD log_info.
+  3. ZCL_ORDER_PROCESSOR  (CLASS, ZORDER_MGMT)
+     final=0.578  base=0.578  semantic=0.527  structural=0.600  tier: none
+     callers:  ZRP_ORDER_BATCH_RUN
+     callees:  ZCL_NOTIFICATION_SENDER, ZCL_ORDER_LOGGER, ZCL_ORDER_PERSISTENCE, ZCL_ORDER_VALIDATOR, ZCL_PRICING_ENGINE, ZCL_STOCK_MANAGER, ZORDER_HEADER, ZORDER_ITEM
+     tables:   ZORDER_HEADER, ZORDER_ITEM
+     chunk[3] sim=0.527: METHOD process_single_order.
+     chunk[2] sim=0.527: METHOD build_item_list.
+     chunk[0] sim=0.512: CLASS zcl_order_processor DEFINITION PUBLIC CREATE PUBLIC.
+  4. ZCL_SHIPPING_CALCULATOR  (CLASS, ZORDER_MGMT)
+     final=0.450  base=0.450  semantic=0.568  structural=0.400  tier: none
+     callers:  ZCL_PRICING_ENGINE
+     callees:  ZCL_ORDER_LOGGER, ZCUST_MASTER, ZSHIP_ZONE
+     tables:   ZCUST_MASTER, ZSHIP_ZONE
+     chunk[2] sim=0.568: METHOD calculate_shipping.
+     chunk[0] sim=0.551: CLASS zcl_shipping_calculator DEFINITION PUBLIC CREATE PUBLIC.
+     chunk[1] sim=0.511: METHOD determine_zone.
+  5. ZCL_ORDER_VALIDATOR  (CLASS, ZORDER_MGMT)
+     final=0.445  base=0.445  semantic=0.550  structural=0.400  tier: none
+     callers:  ZCL_ORDER_PROCESSOR
+     callees:  ZCL_ORDER_LOGGER, ZCUST_MASTER, ZFM_CUSTOMER_CREDIT_CHECK, ZORDER_HEADER
+     tables:   ZCUST_MASTER, ZORDER_HEADER
+     chunk[1] sim=0.550: METHOD validate_header.
+     chunk[2] sim=0.534: METHOD validate_customer.
+     chunk[3] sim=0.528: METHOD check_credit_limit.
+
+=== Unadjusted ranking (pure base_score, top 5) ===
+  1. ZCL_NOTIFICATION_SENDER  base_score=0.904
+  2. ZCL_ORDER_LOGGER  base_score=0.581
+  3. ZCL_ORDER_PROCESSOR  base_score=0.578
+  4. ZCL_SHIPPING_CALCULATOR  base_score=0.450
+  5. ZCL_ORDER_VALIDATOR  base_score=0.445
+
+=== Disagreements (0) ===
+  (none)
+
+likely_new_object: False
+
+=== R7: Reconcile bank statement transactions against general ledger postings for month-end close ===
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|##########| 103/103 [00:00<00:00, 4197.52it/s]
+Requirement: Reconcile bank statement transactions against general ledger postings for month-end close
+Top 3 by semantic score: ['ZCL_ORDER_VALIDATOR', 'ZCL_ORDER_LOGGER', 'ZCL_CBA_FORMULA_PROCESSING']
+Trusted seed objects (also clear semantic floor 0.67): (none)
+
+=== Candidates (top 5) ===
+  1. ZCL_ORDER_VALIDATOR  (CLASS, ZORDER_MGMT)
+     final=0.191  base=0.191  semantic=0.636  structural=0.000  tier: none
+     callers:  ZCL_ORDER_PROCESSOR
+     callees:  ZCL_ORDER_LOGGER, ZCUST_MASTER, ZFM_CUSTOMER_CREDIT_CHECK, ZORDER_HEADER
+     tables:   ZCUST_MASTER, ZORDER_HEADER
+     chunk[1] sim=0.636: METHOD validate_header.
+     chunk[3] sim=0.602: METHOD check_credit_limit.
+     chunk[2] sim=0.589: METHOD validate_customer.
+  2. ZCL_ORDER_LOGGER  (CLASS, ZORDER_MGMT)
+     final=0.190  base=0.190  semantic=0.632  structural=0.000  tier: none
+     callers:  ZCL_DISCOUNT_CALCULATOR, ZCL_NOTIFICATION_SENDER, ZCL_ORDER_PERSISTENCE, ZCL_ORDER_PROCESSOR, ZCL_ORDER_VALIDATOR, ZCL_SHIPPING_CALCULATOR, ZCL_STOCK_MANAGER, ZRP_ORDER_BATCH_RUN, ZRP_ORDER_SUMMARY_REPORT
+     callees:  ZORDER_LOG
+     tables:   ZORDER_LOG
+     chunk[4] sim=0.632: METHOD purge_old_entries.
+     chunk[0] sim=0.593: CLASS zcl_order_logger DEFINITION PUBLIC CREATE PUBLIC.
+     chunk[3] sim=0.569: METHOD log_info.
+  3. ZCL_CBA_FORMULA_PROCESSING  (CLASS, ZZBA91)
+     final=0.189  base=0.189  semantic=0.631  structural=0.000  tier: none
+     callers:  Z_CBA_COMPUTE_ALIAS_FORM_FILE
+     callees:  CCM_STACK_DETERMINATION, CCM_SYSTEM_STACK_DETERMINATION, CONSTRUCTOR, CONVERT_CCM_FORM_TO_CCM_STACK, GET_AC_FAMILY, GET_CRIT_WO_SYSTEM, GET_DOMAIN, GET_FORMULA, GET_INSTANCE, GET_TF, GET_TF_FOR_AIRCRAFT_DOMAIN, SET_DOMAIN, SET_TF, SYSTEM_DETERMINATION
+     chunk[2] sim=0.631: *---------------------------------------------------------------------
+     chunk[6] sim=0.613: *---------------------------------------------------------------------
+     chunk[20] sim=0.600: *---------------------------------------------------------------------
+  4. ZCL_ORDER_PERSISTENCE  (CLASS, ZORDER_MGMT)
+     final=0.188  base=0.188  semantic=0.626  structural=0.000  tier: none
+     callers:  ZCL_ORDER_PROCESSOR, ZRP_ORDER_SUMMARY_REPORT
+     callees:  ZCL_ORDER_LOGGER, ZFM_ORDER_NUMBER_RANGE, ZORDER_HEADER, ZORDER_STATUS
+     tables:   ZORDER_HEADER, ZORDER_STATUS
+     chunk[1] sim=0.626: METHOD save_order_total.
+     chunk[2] sim=0.569: METHOD update_status.
+     chunk[0] sim=0.557: CLASS zcl_order_persistence DEFINITION PUBLIC CREATE PUBLIC.
+  5. ZCL_CBA_IMPORT_MODEL  (CLASS, ZZBA91)
+     final=0.188  base=0.188  semantic=0.626  structural=0.000  tier: none
+     callees:  ADD_FILE_NOT_IMPORTED_TEXT, ADD_MESSAGE, ADD_PLEASE_CHECK_TEXT, CHECK_CREATE_AUTHORIZATION, CHECK_DELETE_AUTHORIZATION, CHECK_DESCRIPTION_SECTION, CHECK_DUPLICATE, CHECK_ENV, CHECK_READ_AUTHORIZATION, CHECK_TABLE_EXIST, CONSTRUCTOR, CONVERT_ALIAS_SECTION, CONVERT_ANTIMOD_SECTION, CONVERT_JSON_TO_XML, CONVERT_RULE_SECTION, CONVERT_SYSTEM, CONVERT_XML_TO_INTERNAL, DELETE_OLD_VERSION, GET_INSTANCE, IMPORT, INSERT_NEW_VERSION, LOCK_TABLE, SET_JSON, UNLOCK_TABLE, UPDATE_RULE_TYPE
+     chunk[38] sim=0.626: *---------------------------------------------------------------------
+     chunk[12] sim=0.621: *---------------------------------------------------------------------
+     chunk[32] sim=0.618: *---------------------------------------------------------------------
+
+=== Unadjusted ranking (pure base_score, top 5) ===
+  1. ZCL_ORDER_VALIDATOR  base_score=0.191
+  2. ZCL_ORDER_LOGGER  base_score=0.190
+  3. ZCL_CBA_FORMULA_PROCESSING  base_score=0.189
+  4. ZCL_ORDER_PERSISTENCE  base_score=0.188
+  5. ZCL_CBA_IMPORT_MODEL  base_score=0.188
+
+=== Disagreements (0) ===
+  (none)
+
+likely_new_object: True
+  reason: Top candidate's base_score (0.191) is below the floor (0.35).
+
+=== R8: Generate a PDF invoice for a customer purchase in the retail point-of-sale module ===
+Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.
+Loading weights:   0%|          | 0/103 [00:00<?, ?it/s]Loading weights: 100%|##########| 103/103 [00:00<00:00, 5403.41it/s]
+Requirement: Generate a PDF invoice for a customer purchase in the retail point-of-sale module
+Top 3 by semantic score: ['ZCL_DISCOUNT_CALCULATOR', 'ZPCBA91R_IMPORT_ALIAS_MDL', 'ZCL_PRICING_ENGINE']
+Trusted seed objects (also clear semantic floor 0.67): (none)
+
+=== Candidates (top 5) ===
+  1. ZCL_DISCOUNT_CALCULATOR  (CLASS, ZORDER_MGMT)
+     final=0.185  base=0.185  semantic=0.615  structural=0.000  tier: none
+     callers:  ZCL_PRICING_ENGINE
+     callees:  ZCL_ORDER_LOGGER, ZCUST_MASTER, ZDISCOUNT_RULE
+     tables:   ZCUST_MASTER, ZDISCOUNT_RULE
+     chunk[0] sim=0.615: CLASS zcl_discount_calculator DEFINITION PUBLIC CREATE PUBLIC.
+     chunk[1] sim=0.577: METHOD get_customer_tier.
+     chunk[2] sim=0.576: METHOD calculate_discount.
+  2. ZPCBA91R_IMPORT_ALIAS_MDL  (PROGRAM, ZZBA91)
+     final=0.183  base=0.183  semantic=0.611  structural=0.000  tier: none
+     callers:  ZPCBA91R_IMPORT_ALIAS_MDL
+     callees:  002, 004, 005, 006, 007, 011, 012, 013, 014, 016, 017, 019, 020, 021, 022, 023, 024, 025, 026, 027, 028, 029, 030, 031, 032, 033, 034, 035, 040, 046, 047, 056, 069, /1BCDWBEN/ZEN0020, ABAP, ABAP_BOOL, ABAP_FALSE, ABAP_TRUE, AS4LOCAL, BAPIRET2, CHAR1, CL_ABAP_CHAR_UTILITIES, CL_ABAP_CODEPAGE, CL_ABAP_FORMAT, CL_GUI_FRONTEND_SERVICES, CL_IXML, CL_SALV_FUNCTIONS, CL_SALV_TABLE, CL_SXML_STRING_READER, CL_SXML_STRING_WRITER, CL_SXML_WRITER, CONVERT_FROM, CONVERT_TO, CO_OPT_INDENT, CO_OPT_LINEBREAKS, CO_XT_XML10, CREATE, CREATE_DOCUMENT, CREATE_ISTREAM_XSTRING, CREATE_PARSER, CREATE_STREAM_FACTORY, CR_LF, CX_DYNAMIC_CHECK, CX_ROOT, CX_SALV_MSG, CX_SALV_NO_NEW_DATA_ALLOWED, CX_SXML_ERROR, CX_SXML_PARSE_ERROR, DD02L, DDOBJNAME, DEQUEUE_EZZDCBAT_AC_DOM, DISPLAY, DYNPREAD, ENQUEUE_EZZDCBAT_AC_DOM, E_XML_TEXT, F4_FILENAME, FACTORY, GET_ALIAS_TABLE_NAME, GET_ANTIMOD_TABLE_NAME, GET_FUNCTIONS, GET_INSTANCE, GET_LIST_FIELD_OF_TABLE, GET_METHOD_FROM_TEMPLATE, GET_MOD_TABLE_NAME, GET_OUTPUT, GET_RULE_TABLE_NAME, GET_SYSTEM_TABLE_NAME, GET_TEXT, GUI_UPLOAD, HORIZONTAL_TAB, IBIP, IBIPPARMS, IF_IXML, IF_IXML_PARSER, IF_IXML_STREAM_FACTORY, IF_SXML, IF_SXML_READER, IF_SXML_WRITER, IF_SXML_WRITER~SET_OPTION, K_ALIASES, K_ANTIMOD, K_CMT, K_ENVIRONMENT, K_FULLNAME, K_MESSAGE, K_RULES, K_RULE_TYPE, K_TABLE_TEMPLATE, NEXT_NODE, PARSE, REFRESH, /SAPDMC/LSM_F4_SERVER_FILE, /SAPDMC/LSMW_AUX_020, SCMS_CONV, SCMS_STRING_TO_XSTRING, SET_ALL, SET_DATA, SET_OPTION, SKIP_NODE, SMUM, SMUM_XML_PARSE, SMUM_XMLTB, STRING_T, SYST, USER_HAS_CREATION_ACCESS, USER_HAS_DELETION_ACCESS, USER_HAS_READ_ACCESS, VERTICAL_TAB, ZBA91_ENVIRONMENT, ZBA91_SYSTEM_NAME, ZBA9S_MESSAGE_STRING, ZCBA91, ZCL_CBA_AUTHORIZATION, ZCL_CBA_JSON_UTIL, ZCL_CBA_TABLE_SELECTION, ZDCBA91S_ALIASES, ZDCBA91S_ALIAS_KEY, ZDCBA91S_ALIASTABLE, ZDCBA91S_ALIAS_WO_KEY, ZDCBA91S_ANTIMOD, ZDCBA91S_ANTI_MOD_KEY, ZDCBA91S_ANTI_MOD_WO_KEY, ZDCBA91S_COMMON_TABLE_KEY, ZDCBA91S_DESCRIPTION, ZDCBA91S_MOD_KEY, ZDCBA91S_RULE_KEY, ZDCBA91S_RULES, ZDCBA91S_RULE_WO_KEY, ZDCBA91S_SYSTEM, ZDCBA91S_SYSTEM_WO_KEY, ZDCBA91S_XML, ZDCBAT_AC_DOM, ZPCBA91R_IMPORT_ALIAS_MDL, ZPCBA91R_IMPORT_ALIAS_MDL_F01, ZPCBA91R_IMPORT_ALIAS_MDL_SCR, ZPCBA91R_IMPORT_ALIAS_MDL_TOP, ZTESTZTEST13==================E
+     tables:   AS4LOCAL, CHAR1, DD02L, DDOBJNAME, STRING_T, ZBA91_ENVIRONMENT, ZBA91_SYSTEM_NAME, ZDCBAT_AC_DOM
+     chunk[51] sim=0.611: FORM UNLOCK_TABLE .
+     chunk[2] sim=0.595: *&--------------------------------------------------------------------
+     chunk[4] sim=0.593: *&--------------------------------------------------------------------
+  3. ZCL_PRICING_ENGINE  (CLASS, ZORDER_MGMT)
+     final=0.182  base=0.182  semantic=0.608  structural=0.000  tier: none
+     callers:  ZCL_ORDER_PROCESSOR
+     callees:  ZCL_DISCOUNT_CALCULATOR, ZCL_SHIPPING_CALCULATOR, ZCL_TAX_CALCULATOR, ZORDER_ITEM, ZPRICE_COND
+     tables:   ZORDER_ITEM, ZPRICE_COND
+     chunk[0] sim=0.608: CLASS zcl_pricing_engine DEFINITION PUBLIC CREATE PUBLIC.
+     chunk[2] sim=0.586: METHOD calculate_order_total.
+     chunk[1] sim=0.551: METHOD get_base_price.
+  4. ZCL_CBA_ASYNC_TRANSLATION  (CLASS, ZZBA91)
+     final=0.182  base=0.182  semantic=0.605  structural=0.000  tier: none
+     callers:  ZPCBAR_ASYNC_ALIAS_FORM_CALC
+     callees:  CALCULATE_PROBLEMATIC_ALIAS, CALCULATE_PROBLEMATIC_INV, COLLECT_PROBLEMATIC_ALIAS, COLLECT_PROBLEMATIC_INVARIANTS, CONSTRUCTOR, CONVERT_INPUT_XML_TO_TABLE, FILL_XML_OUTPUT, GENERATE_OUTPUT_XML, GET_INPUT_FILE_NAME, GET_INSTANCE, GET_OUTPUT_FILE_NAME, GET_TRANSLATION_OUTPUT, INSERT_DB, PROCESS
+     chunk[15] sim=0.605: METHOD GENERATE_OUTPUT_XML.
+     chunk[7] sim=0.580: METHOD GET_INPUT_FILE_NAME.
+     chunk[13] sim=0.580: METHOD INSERT_DB.
+  5. ZCL_CBA_GET_AC_DOM  (CLASS, ZZBA91)
+     final=0.181  base=0.181  semantic=0.604  structural=0.000  tier: none
+     callees:  GET_MANUAL, GET_MODE, GET_USER_AC_PROGRAM, GET_USER_DOMAIN, GET_VERSION
+     chunk[1] sim=0.604: METHOD GET_USER_AC_PROGRAM.
+     chunk[7] sim=0.596: METHOD GET_MANUAL.
+     chunk[3] sim=0.593: METHOD GET_USER_DOMAIN.
+
+=== Unadjusted ranking (pure base_score, top 5) ===
+  1. ZCL_DISCOUNT_CALCULATOR  base_score=0.185
+  2. ZPCBA91R_IMPORT_ALIAS_MDL  base_score=0.183
+  3. ZCL_PRICING_ENGINE  base_score=0.182
+  4. ZCL_CBA_ASYNC_TRANSLATION  base_score=0.182
+  5. ZCL_CBA_GET_AC_DOM  base_score=0.181
+
+=== Disagreements (0) ===
+  (none)
+
+likely_new_object: True
+  reason: Top candidate's base_score (0.185) is below the floor (0.35).
+

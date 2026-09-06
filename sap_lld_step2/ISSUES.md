@@ -27,6 +27,23 @@ ad hoc weighting tweak (see the embedding investigation report and the step 3 br
 weighting change is warranted, backed by another proper benchmark — not this one
 instance.
 
+**Second occurrence found:** step 3 real-data validation against `ZZBA91`,
+2026-09-06 (see `reports/step3_real_data_validation_report.md`, check 1). For the
+requirement "Display the translation output, problematic alias, or invariant data for a
+given aircraft, domain, manual and UID selection," the genuinely correct object
+(`ZPCBAR_DISPLAY_OUTPUT` — a report whose `CASE P_DATAOB` dispatch calls exactly
+`GET_TRANSLATION_OUTPUT`/`GET_PROB_ALIAS`/an invariant getter on `ZCL_CBA_QUALITY_LOG`)
+ranks 7th of 23 (`final=0.603`, one place below the top-5 cutoff), because its own
+source is mostly `INCLUDE` statements and a thin dispatch `CASE`
+(`semantic=0.609`) and it never becomes a top-3 semantic seed itself, so it only earns
+the 1-hop structural score (0.600) instead of the seed bonus (1.000).
+`ZCL_CBA_QUALITY_LOG` itself — which does hold the exact-name methods — ranks correctly
+at 3rd. Same root cause as the `ZFM_ORDER_NUMBER_RANGE` case above: thin/boilerplate
+source text scores low on raw semantic similarity even when the object is exactly
+correct. Still not fixed, for the same reason as above — two observed instances on two
+different real/synthetic packages is not yet the "recurs on a larger real extraction"
+threshold that would justify a weighting change backed by a proper benchmark.
+
 ## 2. `NEW_OBJECT_SPREAD_THRESHOLD` is currently dead code in practice
 
 **Found:** same manual verification pass, testing ~10 requirements spanning genuine,

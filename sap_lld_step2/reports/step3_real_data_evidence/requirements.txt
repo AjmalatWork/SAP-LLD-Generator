@@ -1,0 +1,8 @@
+R1|Purge alias formula calculation simulator data older than a configurable number of days, in configurable batch sizes
+R2|Check whether a user has read access to a given aircraft and domain combination before returning AC/domain data
+R3|Retrieve a named property value out of a generic data structure by reflecting on its component list
+R4|Compute the best or shortest translation path/formula for a given aircraft and domain across a simplified graph of criteria
+R5|Display the translation output, problematic alias, or invariant data for a given aircraft, domain, manual and UID selection
+R6|Send an automated email notification to a customer when their sales order ships
+R7|Reconcile bank statement transactions against general ledger postings for month-end close
+R8|Generate a PDF invoice for a customer purchase in the retail point-of-sale module

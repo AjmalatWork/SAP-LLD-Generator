@@ -12,3 +12,8 @@ data/mock_extraction_incremental.txt
 # Use them locally for testing only.
 data/LLD_EXTRACT_*.TXT
 data/*_real_extract*.txt
+
+# Step 3 exports built from real extraction data (e.g. retrieval_cli's
+# --export output) carry the same real source/dependency content back out -
+# same sensitivity, same exclusion.
+exports/

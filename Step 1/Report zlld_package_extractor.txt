@@ -227,8 +227,17 @@ ENDCLASS.
 * Nothing in MAIN branches on output mode until after CALL SCREEN 9000
 * returns (see MAIN below) - the file path still executes exactly as
 * before, with no new logic in between, when File mode is chosen.
+*
+* USER-COMMAND on P_MDB is required for P_FILE's hide/show to react
+* live to a click - without it, radio buttons on a classic selection
+* screen do NOT trigger a server round-trip (and so don't re-run AT
+* SELECTION-SCREEN OUTPUT) until some other action forces one (Enter,
+* F4 on another field, Execute) - which looks exactly like "the field
+* never reappears," when really the PBO logic just hasn't run again
+* yet. USER-COMMAND forces that round-trip immediately on any click
+* within the group, on either button.
 SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE text-001.
-PARAMETERS: p_mdb   RADIOBUTTON GROUP outm DEFAULT 'X',
+PARAMETERS: p_mdb   RADIOBUTTON GROUP outm DEFAULT 'X' USER-COMMAND ucomm,
             p_mfile RADIOBUTTON GROUP outm.
 SELECTION-SCREEN END OF BLOCK b1.
 

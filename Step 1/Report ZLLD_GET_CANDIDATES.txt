@@ -117,6 +117,14 @@ TYPES: BEGIN OF ts_node_dist,
 
 TYPES: string_t TYPE STANDARD TABLE OF string WITH EMPTY KEY.
 
+* A FORM's USING/CHANGING parameter type must be a pre-declared, named
+* type on this system - an inline "TYPE RANGE OF devclass" directly in
+* the parameter list is rejected (same restriction class as the
+* VALUE #(...)-in-Open-SQL-FROM issue found earlier). Named here so
+* GT_PACK_NAMES_RANGE's CHANGING parameter (and every DATA declaration
+* that feeds it) can reference one common type.
+TYPES: tt_devclass_range TYPE RANGE OF devclass.
+
 *&---------------------------------------------------------------------*
 *& Constants (ported from retrieval.py - see brief's deliverable #3 for
 *& which of these move to ZLLD_CONFIG instead; the rest stay plain
@@ -389,7 +397,7 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 FORM fetch_all_objects.
   DATA: lt_raw  TYPE STANDARD TABLE OF zdccrt_objects,
-        lr_pack TYPE RANGE OF devclass.
+        lr_pack TYPE tt_devclass_range.
 
   CLEAR: gt_objects, gt_object_names.
   PERFORM gt_pack_names_range CHANGING lr_pack.
@@ -413,7 +421,7 @@ ENDFORM.
 *       existing classic-ABAP style - called via the inline functional
 *       call syntax where a value, not a CHANGING parameter, is needed.
 *&---------------------------------------------------------------------*
-FORM gt_pack_names_range CHANGING rt_range TYPE RANGE OF devclass.
+FORM gt_pack_names_range CHANGING rt_range TYPE tt_devclass_range.
   CLEAR rt_range.
   LOOP AT gt_pack_names INTO DATA(lv_pack).
     APPEND VALUE #( sign = 'I' option = 'EQ' low = lv_pack ) TO rt_range.
@@ -435,7 +443,7 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 FORM fetch_adjacency.
   DATA: lt_raw TYPE STANDARD TABLE OF ts_edge,
-        lr_pack TYPE RANGE OF devclass.
+        lr_pack TYPE tt_devclass_range.
 
   CLEAR gt_adjacency.
   PERFORM gt_pack_names_range CHANGING lr_pack.
@@ -465,7 +473,7 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 FORM fetch_object_tables.
   DATA: lt_raw TYPE STANDARD TABLE OF ts_obj_table,
-        lr_pack TYPE RANGE OF devclass.
+        lr_pack TYPE tt_devclass_range.
 
   CLEAR gt_obj_tables.
   PERFORM gt_pack_names_range CHANGING lr_pack.
@@ -575,7 +583,7 @@ FORM compute_idf_table.
   DATA: lt_chunks_raw TYPE tt_chunk_ref,
         lt_tokens_raw TYPE STANDARD TABLE OF zdccrt_chunk_tok,
         lt_chunk_ids  TYPE STANDARD TABLE OF sysuuid_x16,
-        lr_pack       TYPE RANGE OF devclass,
+        lr_pack       TYPE tt_devclass_range,
         lv_doc_freq   TYPE i.
 
   CLEAR: gt_idf, gv_total_chunks, gt_scope_chunks, gt_scope_tokens.

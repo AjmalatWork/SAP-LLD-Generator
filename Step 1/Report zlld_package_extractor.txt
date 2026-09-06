@@ -1903,10 +1903,20 @@ ENDFORM.
 *       identifiers and never contain other JSON escapes in practice.
 *       VERIFY if a NAME value is ever found to legitimately need fuller
 *       JSON unescaping (e.g. \uXXXX).
+*
+*       CV_VALUE is CHANGING VALUE(...) (pass by value-result)
+*       deliberately: one caller (STAGE_DDIC_SECTION) passes
+*       ZDCCRT_STG_DDIC-DDIC_NAME, which is CHAR30, not STRING (STRING
+*       is rejected as a table key component on this system - see
+*       DDIC_TABLES_TO_CREATE_LLD.txt). A classic FORM's default
+*       by-reference CHANGING binding requires the actual parameter's
+*       type to be IDENTICAL to the formal's, so a CHAR30 actual can't
+*       bind to a STRING-typed formal; VALUE(...) makes ABAP copy-
+*       convert on the way in and out instead.
 *&---------------------------------------------------------------------*
 FORM extract_json_string_field USING iv_json_obj TYPE string
                                       iv_field    TYPE string
-                                CHANGING cv_value TYPE string.
+                                CHANGING VALUE(cv_value) TYPE string.
   DATA: lv_regex TYPE string,
         lv_raw   TYPE string.
 

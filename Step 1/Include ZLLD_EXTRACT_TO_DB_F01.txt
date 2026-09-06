@@ -586,8 +586,24 @@ ENDFORM.
 *       and indirectly (via ZLLD_DELETE_PACKAGE_ROWS) for FULL. Chunk
 *       tokens are deleted first, keyed off this object's own chunk IDs,
 *       since ZLLD_CHUNK_TOKENS has no OBJECT_NAME of its own.
+*
+*       IV_OBJ_NAME is declared VALUE(...) (pass-by-value) deliberately -
+*       callers pass a mix of genuinely STRING actuals (parsed from
+*       REMOVED_OBJECTS) and CHAR30/SEOCLSNAME actuals (OBJ_NAME columns
+*       read straight from ZDCCRT_OBJECTS/ZDCCRT_STG_OBJ). A classic
+*       FORM's default by-reference USING binding requires the actual
+*       parameter's type to be IDENTICAL to the formal parameter's -
+*       STRING and CHAR30 have completely different internal
+*       representations (dynamic reference-counted object vs. fixed
+*       byte buffer), so a reference can't just be reinterpreted between
+*       them, and activation fails with a type mismatch. Pass-by-value
+*       makes ABAP copy-convert the actual into IV_OBJ_NAME instead,
+*       which is exactly the CHAR<->STRING conversion this project
+*       already relies on everywhere else (e.g. VALUE #(...) component
+*       assignment) - it just isn't automatic for by-reference PERFORM
+*       parameters specifically.
 *&---------------------------------------------------------------------*
-FORM zlld_delete_object_rows USING iv_obj_name TYPE string.
+FORM zlld_delete_object_rows USING VALUE(iv_obj_name) TYPE string.
   DATA lt_chunk_ids TYPE STANDARD TABLE OF sysuuid_x16.
 
   SELECT chunk_id FROM zdccrt_chunks INTO TABLE lt_chunk_ids WHERE obj_name = iv_obj_name.
@@ -632,9 +648,15 @@ ENDFORM.
 *       already used elsewhere in this codebase (CHANGING cv_skip) -
 *       plain flags instead of exception classes, consistent with the
 *       rest of this project's style.
+*
+*       IV_OBJ_NAME is VALUE(...) for the same reason as
+*       ZLLD_DELETE_OBJECT_ROWS's own IV_OBJ_NAME - see that form's
+*       comment. Its only caller (EXTRACT_TO_DB) passes a CHAR30
+*       (SEOCLSNAME) actual, which can't bind by reference to a
+*       STRING-typed formal parameter.
 *&---------------------------------------------------------------------*
 FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
-                                  iv_obj_name TYPE string
+                                  VALUE(iv_obj_name) TYPE string
                                   iv_obj_type TYPE char4
                                   iv_package TYPE devclass
                                   it_edge_map TYPE zlld_tt_edge_map

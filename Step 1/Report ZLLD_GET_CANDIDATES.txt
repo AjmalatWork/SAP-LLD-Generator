@@ -955,12 +955,16 @@ FORM resolve_note_and_neighbors.
   ENDIF.
 
   IF p_note IS NOT INITIAL AND gt_named IS INITIAL.
+    " INDEX 1 (not INTO TABLE - that combination is invalid; INDEX is
+    " the positional form, INTO TABLE the key-based form, never both)
+    " so this unresolvable-note disagreement sorts first, ahead of any
+    " per-entry disagreements appended later in the pipeline.
     INSERT VALUE #(
       kind = 'unresolvable_scoping_note'
       message = |Scoping note '{ p_note }' did not match any known object (checked exact, | &&
                 |case-insensitive, and substring match). This may mean the developer has an | &&
                 |object in mind that is outside the extracted package(s).| )
-      INTO TABLE gt_disagreements INDEX 1.
+      INTO gt_disagreements INDEX 1.
   ENDIF.
 
   gv_effective_confidence = COND #( WHEN gt_named IS NOT INITIAL THEN p_conf ELSE '' ).

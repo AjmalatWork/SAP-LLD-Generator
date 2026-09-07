@@ -70,6 +70,14 @@ ENDFORM.
 *       fragment shorter than this gets merged into a neighboring
 *       chunk instead of standing alone.
 *
+*       EXTRACT_COMMIT_BATCH_SIZE is how many objects EXTRACT_TO_DB
+*       processes between COMMIT WORKs during a run - keeps one very
+*       large package (thousands of objects) from running as a single
+*       giant transaction. Lower it if a run is hitting lock/rollback-
+*       segment pressure; raise it (or set to 0 to disable mid-run
+*       commits entirely) if a package is small enough that the default
+*       is just adding unnecessary commit overhead.
+*
 *       SEMANTIC_WEIGHT/STRUCTURAL_WEIGHT control how much each score
 *       component contributes to an object's base score. SEMANTIC_WEIGHT
 *       starts low: lexical text similarity alone is a weaker signal
@@ -93,6 +101,7 @@ FORM seed_config.
                    && 'ev,lv,iv,cv,gv,gt,lt,ls,gs,rt,ct,it,wa,fs,'
                    && 'ew,lw,iw,cw,gw,gi,li,ri,ci,ii' )
     ( config_key = 'CHUNK_MERGE_MIN_LINES' config_value = '3' )
+    ( config_key = 'EXTRACT_COMMIT_BATCH_SIZE' config_value = '200' )
     ( config_key = 'SEMANTIC_WEIGHT'   config_value = '0.30' )
     ( config_key = 'STRUCTURAL_WEIGHT' config_value = '0.70' )
     ( config_key = 'SEED_MIN_SEMANTIC_SCORE'      config_value = '0.30' )

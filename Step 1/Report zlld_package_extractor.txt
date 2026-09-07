@@ -14,6 +14,17 @@ REPORT zlld_package_extractor.
 *  downstream Python parser understands; in DB mode, the same data is
 *  staged and loaded into query-ready tables instead.
 *
+*  For a large package (thousands of objects), run this via a
+*  background job (SE38 -> Program -> Execute in Background, or job
+*  scheduling) rather than online - the extraction itself has no fixed
+*  time limit there, unlike an online dialog step. The ALV review screen
+*  is automatically skipped when running in background (every object is
+*  extracted, same as accepting the screen's own default), since a
+*  background job has no user session to display it to. DB mode also
+*  commits every EXTRACT_COMMIT_BATCH_SIZE objects (ZDCCRT_CONFIG,
+*  default 200) rather than as one transaction for the whole package -
+*  see EXTRACT_TO_DB in ZLLD_EXTRACT_TO_DB_F01.
+*
 *  Reuses ZCR_GET_DEPENDENCY_OBJ_NEW, ZCR_GET_OBJECT_SIGNATURE and
 *  Z_GET_DDIC_INFO as-is, and reuses several forms from
 *  ZCR_AURA_CODE_EXTRACTOR verbatim or near-verbatim (marked "REUSED"
@@ -304,9 +315,11 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *       The full single-package extraction: determine FULL vs INCR, run
 *       deletion detection (always, regardless of run type), build the
-*       candidate object list, show the ALV review screen, and - once
-*       confirmed - write the LLD file and update sync state. Runs once
-*       per GV_CURRENT_PACK, called from MAIN's loop over S_PACK.
+*       candidate object list, show the ALV review screen (skipped
+*       entirely when running in background - see the CALL SCREEN 9000
+*       guard below), and - once confirmed - write the LLD file and
+*       update sync state. Runs once per GV_CURRENT_PACK, called from
+*       MAIN's loop over S_PACK.
 *
 *       Output-mode branching happens ONLY after CALL SCREEN 9000
 *       returns, at the exact point file mode writes its output -
@@ -351,21 +364,32 @@ FORM process_one_package.
   PERFORM determine_lld_output_path USING gv_current_pack gv_run_type.
 
   CLEAR gv_multi_cancelled.
-  CALL SCREEN 9000.
 
-  " The ALV container/grid are freed here rather than left bound, so
-  " the next package's iteration (if any) rebuilds screen 9000's ALV
-  " fresh against ITS OWN GT_LLD_MULTI_OBJ - STATUS_9000's own PBO logic
-  " only calls CREATE_LLD_ALV when GO_CONTAINER is not yet bound, which
-  " would otherwise leave a second package's review screen showing the
-  " first package's rows.
-  IF go_alv_grid IS BOUND.
-    go_alv_grid->free( ).
+  " A background job has no user to review/click through a dynpro -
+  " CALL SCREEN is not usable there at all (SY-BATCH = 'X'), so a large
+  " package that needs a background run for EXTRACT_TO_DB's own sake
+  " (see that form's header comment) skips the review screen entirely
+  " and proceeds with every object already checked - BUILD_UNIQUE_LLD_
+  " OBJECTS defaults CHECKED = abap_true for every row, so this is
+  " exactly what an online user accepting the screen as-is would produce
+  " anyway.
+  IF sy-batch = abap_false.
+    CALL SCREEN 9000.
+
+    " The ALV container/grid are freed here rather than left bound, so
+    " the next package's iteration (if any) rebuilds screen 9000's ALV
+    " fresh against ITS OWN GT_LLD_MULTI_OBJ - STATUS_9000's own PBO
+    " logic only calls CREATE_LLD_ALV when GO_CONTAINER is not yet
+    " bound, which would otherwise leave a second package's review
+    " screen showing the first package's rows.
+    IF go_alv_grid IS BOUND.
+      go_alv_grid->free( ).
+    ENDIF.
+    IF go_container IS BOUND.
+      go_container->free( ).
+    ENDIF.
+    CLEAR: go_alv_grid, go_container.
   ENDIF.
-  IF go_container IS BOUND.
-    go_container->free( ).
-  ENDIF.
-  CLEAR: go_alv_grid, go_container.
 
   CHECK gv_multi_cancelled = abap_false.
 

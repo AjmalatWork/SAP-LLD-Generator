@@ -298,7 +298,7 @@ names/fields below.
 
     Notes:
     - Seeded via Report ZLLD_SEED_CONFIG_TABLES with STOPWORDS,
-      CHUNK_MERGE_MIN_LINES, SEMANTIC_WEIGHT, STRUCTURAL_WEIGHT, the three
-      (placeholder, uncalibrated) score thresholds, and the three tier
-      multipliers - see that report's own header comment for exactly what
-      is and is NOT seeded.
+      CHUNK_MERGE_MIN_LINES, EXTRACT_COMMIT_BATCH_SIZE, SEMANTIC_WEIGHT,
+      STRUCTURAL_WEIGHT, the three (placeholder, uncalibrated) score
+      thresholds, and the three tier multipliers - see that report's own
+      header comment for exactly what is and is NOT seeded.

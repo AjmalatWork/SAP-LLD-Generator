@@ -76,12 +76,21 @@ CONSTANTS zlld_gc_min_chunk_length TYPE i VALUE 15.
 *&      Form  EXTRACT_TO_DB
 *&---------------------------------------------------------------------*
 *       Called from ZLLD_PACKAGE_EXTRACTOR's CALL_EXTRACT_TO_DB form
-*       right after DB-mode staging completes. FULL vs INCREMENTAL,
-*       single commit/rollback unit for every final-table write this
-*       run makes - only COMMIT once everything succeeded; on any
-*       failure, roll back so nothing partially-loaded looks
-*       superficially complete, then persist FAILED/ERROR_MESSAGE in its
-*       own fresh LUW.
+*       right after DB-mode staging completes. FULL vs INCREMENTAL.
+*
+*       Commits every EXTRACT_COMMIT_BATCH_SIZE objects (ZDCCRT_CONFIG,
+*       default 200), not once at the very end - a package with
+*       thousands of objects would otherwise run as one single
+*       transaction for the whole extraction, which risks lock/
+*       rollback-segment pressure and a very expensive rollback on any
+*       late failure. The tradeoff: a mid-run failure no longer rolls
+*       back cleanly to "nothing loaded" - batches already committed
+*       stay committed. This is safe to just re-run: FULL re-deletes and
+*       rebuilds the whole package from scratch regardless of what's
+*       already there, and INCR deletes-then-reloads each touched object
+*       individually, so a retry naturally reconciles any partial state
+*       from an earlier failed attempt rather than requiring a manual
+*       cleanup step.
 *&---------------------------------------------------------------------*
 FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
                     CHANGING ev_status TYPE char12
@@ -93,6 +102,8 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
         lt_stopwords        TYPE string_table,
         lv_min_lines_str    TYPE string,
         lv_min_lines        TYPE i,
+        lv_batch_size_str   TYPE string,
+        lv_batch_size       TYPE i,
         lt_removed          TYPE zlld_tt_obj_key,
         lt_staged_objects   TYPE STANDARD TABLE OF zdccrt_stg_obj,
         lv_failed           TYPE abap_bool,
@@ -127,6 +138,12 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
 
   PERFORM zlld_get_config_value USING 'CHUNK_MERGE_MIN_LINES' '3' CHANGING lv_min_lines_str.
   lv_min_lines = lv_min_lines_str.
+
+  " 0 (or any non-positive value) disables mid-run commits entirely -
+  " every object write happens in one transaction, same as before this
+  " batching was added.
+  PERFORM zlld_get_config_value USING 'EXTRACT_COMMIT_BATCH_SIZE' '200' CHANGING lv_batch_size_str.
+  lv_batch_size = lv_batch_size_str.
 
   " FULL vs INCREMENTAL: an object neither removed nor present in this
   " run's staged data is never referenced by any DELETE/INSERT/MODIFY
@@ -167,6 +184,10 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
     ENDIF.
 
     lv_objects_done = lv_objects_done + 1.
+
+    IF lv_batch_size > 0 AND lv_objects_done MOD lv_batch_size = 0.
+      COMMIT WORK.
+    ENDIF.
   ENDLOOP.
 
   " DDIC snapshot is package-wide, not object-scoped (ZLLD_STG_DDIC is
@@ -211,6 +232,10 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
     WRITE: / '  ZDCCRT_CHUNK_TOK:', lv_tokens_written.
     WRITE: / '  ZDCCRT_DDIC_OBJ :', lv_ddic_written.
   ELSE.
+    " Only undoes the CURRENT, not-yet-committed batch - any earlier
+    " batch this run already committed stays committed (see this form's
+    " own header comment). Re-running the extraction is the recovery
+    " path, not a manual cleanup.
     ROLLBACK WORK.
 
     ls_stg_run-status        = 'FAILED'.

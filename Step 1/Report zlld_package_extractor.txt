@@ -2523,11 +2523,15 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *       Only CHECKED is editable - no version/compare column exists in
 *       this report at all. TR_LIST/MOST_RECENT_TR are only populated on
-*       an INCREMENTAL run (see BUILD_UNIQUE_LLD_OBJECTS) and left blank
-*       otherwise - always shown regardless of run type, rather than
-*       hidden for FULL, since the single combined screen can hold rows
-*       from a mix of FULL- and INCREMENTAL-run packages at once (one
-*       column-visibility decision can no longer describe every row).
+*       an INCREMENTAL run (see BUILD_UNIQUE_LLD_OBJECTS) - the combined
+*       screen can hold rows from a mix of FULL- and INCREMENTAL-run
+*       packages at once, so a single GV_RUN_TYPE check can't decide
+*       this correctly any more (it would just reflect whichever package
+*       PREPARE_ONE_PACKAGE visited last). Instead, both columns are
+*       included only if AT LEAST ONE selected package in this run is
+*       actually INCREMENTAL (GT_PACKAGE_PREP) - if every selected
+*       package is a FULL run, the columns would be blank for every row
+*       anyway, so they're left out entirely rather than shown empty.
 *&---------------------------------------------------------------------*
 FORM build_lld_fieldcat CHANGING ct_fieldcat TYPE lvc_t_fcat.
   CLEAR ct_fieldcat.
@@ -2538,10 +2542,14 @@ FORM build_lld_fieldcat CHANGING ct_fieldcat TYPE lvc_t_fcat.
                    outputlen = 15 ) TO ct_fieldcat.
   APPEND VALUE #( fieldname = 'OBJ_DISPLAY'    coltext = 'Object'
                    outputlen = 40 ) TO ct_fieldcat.
-  APPEND VALUE #( fieldname = 'TR_LIST'        coltext = 'TRs Appeared In'
-                   outputlen = 40 ) TO ct_fieldcat.
-  APPEND VALUE #( fieldname = 'MOST_RECENT_TR' coltext = 'Most Recent TR'
-                   outputlen = 20 ) TO ct_fieldcat.
+
+  READ TABLE gt_package_prep TRANSPORTING NO FIELDS WITH KEY run_type = 'INCR'.
+  IF sy-subrc = 0.
+    APPEND VALUE #( fieldname = 'TR_LIST'        coltext = 'TRs Appeared In'
+                     outputlen = 40 ) TO ct_fieldcat.
+    APPEND VALUE #( fieldname = 'MOST_RECENT_TR' coltext = 'Most Recent TR'
+                     outputlen = 20 ) TO ct_fieldcat.
+  ENDIF.
 ENDFORM.
 
 *&---------------------------------------------------------------------*

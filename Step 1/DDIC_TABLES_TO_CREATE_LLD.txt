@@ -232,6 +232,16 @@ names/fields below.
     OBJ_NAME            SEOCLSNAME     CHAR        30       renamed from OBJECT_NAME; not part of the key - CHUNK_ID alone is unique
     CHUNK_INDEX         I              INT4        10       0-based, in source order, after the minimum-length merge pass
     CHUNK_TEXT          Z_STRING (STRING)  STRING  -        the chunk's source lines, newline-joined
+    CHUNK_LENGTH         I              INT4        10       STRLEN(CHUNK_TEXT), stored so ZLLD_GET_CANDIDATES can filter "too short to score" chunks in the WHERE clause (Open SQL on this system can't call STRLEN() directly) instead of pulling every chunk's full text into ABAP first to check its length
+    CHUNK_NORM            F              FLTP        16       precomputed TF-IDF vector norm of this chunk's own token set, written once by ZLLD_LOAD_ONE_OBJECT right after this chunk's ZDCCRT_CHUNK_TOK rows exist; 0/initial until then. Lets ZLLD_GET_CANDIDATES compute cosine similarity from only the chunks that share a word with the requirement, instead of loading every chunk/token in the whole package scope on every search - see COMPUTE_SEMANTIC_SCORES
+
+    Notes:
+    - CHUNK_LENGTH/CHUNK_NORM are new fields added after the table's
+      initial creation - existing rows from before that point have
+      CHUNK_LENGTH = 0 and CHUNK_NORM = 0 until the owning package is
+      re-extracted (FULL run); a chunk with CHUNK_LENGTH = 0 is treated
+      as below the scoring threshold and never counted as a "document"
+      until then.
 
 12) Table ZDCCRT_CHUNK_TOK ("inverted index: one row per distinct
     token per chunk")
@@ -245,6 +255,11 @@ names/fields below.
     TERM_FREQUENCY         I              INT4        10       count of this token within this one chunk
 
     Notes:
+    - Doubles as the inverted index ZLLD_GET_CANDIDATES scores against:
+      COMPUTE_IDF_TABLE/COMPUTE_SEMANTIC_SCORES query this table filtered
+      to the requirement's own token set (WHERE TOKEN IN ...) rather than
+      pulling every row in the scoped package(s), so query cost tracks
+      the requirement's vocabulary size, not total corpus size.
     - No document-frequency/IDF column anywhere in this table by design
       - see the brief's "leave IDF-style weighting as a query-time
         aggregate" and ZLLD_EXTRACT_TO_DB_F01's ZLLD_TOKENIZE_CHUNK form.

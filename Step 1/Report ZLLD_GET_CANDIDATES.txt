@@ -21,6 +21,15 @@ REPORT zlld_get_candidates.
 *  which is what the score thresholds below assume; a raw summed TF-IDF
 *  score would not stay comparable across queries the same way.
 *
+*  Every query-time table access is scoped to the requirement's own
+*  vocabulary (WHERE TOKEN IN <requirement's distinct tokens>), never to
+*  the whole selected package(s) - cost tracks requirement length, not
+*  corpus size, since a package can hold thousands of objects. What that
+*  scoping can't reach (a chunk's own full-vocabulary vector norm) is
+*  precomputed once at extraction time instead - see
+*  ZLLD_COMPUTE_CHUNK_NORM in ZLLD_EXTRACT_TO_DB_F01 and
+*  ZDCCRT_CHUNKS-CHUNK_NORM/CHUNK_LENGTH.
+*
 *  ZDCCRT_CONFIG's SEED_MIN_SEMANTIC_SCORE, NEW_OBJECT_SCORE_FLOOR, and
 *  NEW_OBJECT_SPREAD_THRESHOLD are tunable via SM30 without a transport;
 *  treat them as working values to revisit as usage confirms or adjusts
@@ -67,18 +76,26 @@ TYPES: BEGIN OF ts_idf,
        END OF ts_idf,
        tt_idf TYPE SORTED TABLE OF ts_idf WITH UNIQUE KEY token.
 
-TYPES: BEGIN OF ts_chunk_ref,
+" One (requirement token, chunk, term-frequency) hit - the result of
+" scoping ZDCCRT_CHUNK_TOK to only the requirement's own vocabulary
+" (see COMPUTE_IDF_TABLE/COMPUTE_SEMANTIC_SCORES) instead of pulling
+" every token of every chunk in the package scope.
+TYPES: BEGIN OF ts_semantic_match,
+         token       TYPE string,
          chunk_id    TYPE sysuuid_x16,
+         tf          TYPE i,
          object_name TYPE string,
-       END OF ts_chunk_ref,
-       tt_chunk_ref TYPE STANDARD TABLE OF ts_chunk_ref WITH EMPTY KEY.
+       END OF ts_semantic_match,
+       tt_semantic_match TYPE STANDARD TABLE OF ts_semantic_match WITH EMPTY KEY.
 
-TYPES: BEGIN OF ts_chunk_token_row,
-         token    TYPE string,
-         chunk_id TYPE sysuuid_x16,
-         tf       TYPE i,
-       END OF ts_chunk_token_row,
-       tt_chunk_token_row TYPE STANDARD TABLE OF ts_chunk_token_row WITH EMPTY KEY.
+" Precomputed at extraction time (ZDCCRT_CHUNKS-CHUNK_NORM) - looked up
+" here only for chunks that already matched on a shared word, never
+" recomputed from scratch at query time.
+TYPES: BEGIN OF ts_chunk_norm,
+         chunk_id   TYPE sysuuid_x16,
+         chunk_norm TYPE f,
+       END OF ts_chunk_norm,
+       tt_chunk_norm TYPE SORTED TABLE OF ts_chunk_norm WITH UNIQUE KEY chunk_id.
 
 TYPES: BEGIN OF ts_obj_score,
          object_name    TYPE string,
@@ -158,8 +175,6 @@ DATA: gt_pack_names   TYPE STANDARD TABLE OF devclass WITH EMPTY KEY,
       gt_stopwords    TYPE string_t,
       gt_idf          TYPE tt_idf,
       gv_total_chunks TYPE i,
-      gt_scope_chunks TYPE tt_chunk_ref,
-      gt_scope_tokens TYPE tt_chunk_token_row,
       gt_req_weighted TYPE tt_token_weight,
       gv_req_norm     TYPE f,
       gt_obj_score    TYPE tt_obj_score,
@@ -605,75 +620,71 @@ ENDFORM.
 *&      Form  COMPUTE_IDF_TABLE
 *&---------------------------------------------------------------------*
 *       IDF(token) = LOG(total_chunk_count / distinct_chunk_count
-*       containing token), computed at query time over
-*       ZDCCRT_CHUNK_TOK/ZDCCRT_CHUNKS scoped to the given package(s) -
-*       not materialized at load time, since IDF is a corpus-wide
-*       statistic that would need re-deriving on every incremental
-*       change. ZDCCRT_CHUNK_TOK's key is already (TOKEN, CHUNK_ID), so
-*       each row IS one distinct (token, chunk) pair - counting rows per
-*       token within the scoped chunk set already gives doc_freq
-*       directly, no extra DISTINCT needed. Also builds GT_SCOPE_TOKENS
-*       (every token row for every scoped chunk) and GT_SCOPE_CHUNKS -
-*       both reused by COMPUTE_SEMANTIC_SCORES so the token data is only
-*       fetched once.
+*       containing token), computed at query time - but only ever for
+*       the requirement's OWN distinct tokens, never the whole scoped
+*       package's vocabulary. A token IDF is never looked up for
+*       anything outside the requirement's own words (see
+*       COMPUTE_REQUIREMENT_VECTOR/COMPUTE_SEMANTIC_SCORES), so scoping
+*       the query this way changes nothing about the result - it only
+*       stops pulling every chunk/token in the package into ABAP memory
+*       to compute a handful of values. Both aggregates (COUNT(*) for
+*       the total, GROUP BY token for doc_freq) run server-side, so cost
+*       tracks the requirement's vocabulary size, not corpus size.
+*       ZDCCRT_CHUNK_TOK's key is already (TOKEN, CHUNK_ID), so each row
+*       IS one distinct (token, chunk) pair - COUNT(*) per token already
+*       gives doc_freq directly, no DISTINCT needed.
 *
 *       Chunks shorter than GC_MIN_CHUNK_LENGTH characters are excluded
-*       from the scoring corpus entirely - a second line of defense
+*       from the scoring corpus entirely (CHUNK_LENGTH, not STRLEN(), so
+*       this can run in the WHERE clause) - a second line of defense
 *       alongside ZLLD_EXTRACT_TO_DB's own chunk-merge step, not a
-*       substitute for it.
+*       substitute for it. Must match ZLLD_COMPUTE_CHUNK_NORM's own
+*       filter exactly, or a chunk's precomputed CHUNK_NORM would be
+*       comparing against a differently-scoped corpus than this IDF is.
 *&---------------------------------------------------------------------*
 FORM compute_idf_table.
-  DATA: lt_chunks_raw TYPE STANDARD TABLE OF zdccrt_chunks,
-        lt_tokens_raw TYPE STANDARD TABLE OF zdccrt_chunk_tok,
-        lt_chunk_ids  TYPE STANDARD TABLE OF sysuuid_x16,
-        lr_pack       TYPE tt_devclass_range,
-        lv_doc_freq   TYPE i.
+  DATA: lt_req_tf TYPE tt_token_tf,
+        lr_token  TYPE RANGE OF string,
+        lr_pack   TYPE tt_devclass_range.
 
-  CLEAR: gt_idf, gv_total_chunks, gt_scope_chunks, gt_scope_tokens.
+  CLEAR: gt_idf, gv_total_chunks.
   PERFORM gt_pack_names_range CHANGING lr_pack.
 
-  " STRLEN() is not usable inside an Open SQL WHERE clause on this
-  " system - fetch every chunk in scope via plain Open SQL, then apply
-  " the MIN_CHUNK_LENGTH filter as a normal ABAP expression in the loop
-  " below instead. STRLEN() as a plain ABAP function, outside Open SQL,
-  " is unaffected.
-  SELECT c~*
+  " Tokenized here (and again, separately, in COMPUTE_REQUIREMENT_VECTOR)
+  " purely to know which tokens to scope this query to - the requirement
+  " text is a few sentences at most, so retokenizing it twice costs
+  " nothing next to what it saves on the corpus side.
+  PERFORM tokenize_text USING gv_requirement_text CHANGING lt_req_tf.
+  CHECK lt_req_tf IS NOT INITIAL.
+
+  LOOP AT lt_req_tf INTO DATA(ls_tf).
+    APPEND VALUE #( sign = 'I' option = 'EQ' low = ls_tf-token ) TO lr_token.
+  ENDLOOP.
+
+  SELECT COUNT(*)
     FROM zdccrt_chunks AS c
     INNER JOIN zdccrt_objects AS o ON o~obj_name = c~obj_name
-    INTO TABLE @lt_chunks_raw
-    WHERE o~zpackage IN @lr_pack.
+    WHERE o~zpackage IN @lr_pack
+      AND c~chunk_length >= @gc_min_chunk_length
+    INTO @gv_total_chunks.
 
-  LOOP AT lt_chunks_raw INTO DATA(ls_c).
-    CHECK strlen( ls_c-chunk_text ) >= gc_min_chunk_length.
-    APPEND VALUE #( chunk_id = ls_c-chunk_id object_name = ls_c-obj_name ) TO gt_scope_chunks.
-    APPEND ls_c-chunk_id TO lt_chunk_ids.
-  ENDLOOP.
-  gv_total_chunks = lines( gt_scope_chunks ).
+  CHECK gv_total_chunks > 0.
 
-  CHECK lt_chunk_ids IS NOT INITIAL.
+  SELECT tok~token AS token, COUNT( * ) AS doc_freq
+    FROM zdccrt_chunk_tok AS tok
+    INNER JOIN zdccrt_chunks  AS c ON c~chunk_id = tok~chunk_id
+    INNER JOIN zdccrt_objects AS o ON o~obj_name = c~obj_name
+    INTO TABLE @DATA(lt_raw_freq)
+    WHERE tok~token IN @lr_token
+      AND o~zpackage IN @lr_pack
+      AND c~chunk_length >= @gc_min_chunk_length
+    GROUP BY tok~token.
 
-  SELECT * FROM zdccrt_chunk_tok INTO TABLE @lt_tokens_raw
-    FOR ALL ENTRIES IN @lt_chunk_ids
-    WHERE chunk_id = @lt_chunk_ids-table_line.
-
-  LOOP AT lt_tokens_raw INTO DATA(ls_tok).
-    APPEND VALUE #( token = ls_tok-token chunk_id = ls_tok-chunk_id tf = ls_tok-term_frequency ) TO gt_scope_tokens.
-  ENDLOOP.
-
-  SORT gt_scope_tokens BY token.
-  lv_doc_freq = 0.
-  LOOP AT gt_scope_tokens INTO DATA(ls_scan).
-    AT NEW token.
-      lv_doc_freq = 0.
-    ENDAT.
-    lv_doc_freq = lv_doc_freq + 1.
-    AT END OF token.
-      INSERT VALUE #( token = ls_scan-token
-                       idf   = COND #( WHEN lv_doc_freq > 0 AND gv_total_chunks > 0
-                                        THEN log( gv_total_chunks / lv_doc_freq )
-                                        ELSE 0 ) )
-        INTO TABLE gt_idf.
-    ENDAT.
+  LOOP AT lt_raw_freq INTO DATA(ls_df).
+    CHECK ls_df-doc_freq > 0.
+    INSERT VALUE #( token = ls_df-token
+                     idf   = log( gv_total_chunks / ls_df-doc_freq ) )
+      INTO TABLE gt_idf.
   ENDLOOP.
 ENDFORM.
 
@@ -713,24 +724,29 @@ FORM compute_requirement_vector.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
-*&      Form  FINALIZE_CHUNK_GROUP
+*&      Form  FINALIZE_CHUNK_MATCH
 *&---------------------------------------------------------------------*
-*       Turns one chunk's accumulated (dot, norm_sq) into a cosine score
+*       Turns one chunk's accumulated dot product into a cosine score
 *       and, if it beats that object's current best, updates CT_BEST.
-*       Factored out of COMPUTE_SEMANTIC_SCORES so the exact same logic
-*       runs both for a group closed by the next row's chunk_id change
-*       AND for the final group in the table (which no next row closes).
+*       Unlike the old norm_sq-accumulation approach, the chunk's own
+*       norm is a lookup (IT_CHUNK_NORMS, precomputed at extraction time
+*       - see ZLLD_COMPUTE_CHUNK_NORM), never derived here - this pass
+*       only ever sees the chunk's requirement-overlapping tokens, not
+*       its complete token set, so it has no way to compute a norm on
+*       its own even if it wanted to.
 *&---------------------------------------------------------------------*
-FORM finalize_chunk_group USING iv_object   TYPE string
-                                 iv_dot      TYPE f
-                                 iv_norm_sq  TYPE f
-                           CHANGING ct_best  TYPE tt_score.
-  DATA: lv_chunk_norm TYPE f,
-        lv_cosine     TYPE f.
+FORM finalize_chunk_match USING iv_object      TYPE string
+                                 iv_dot         TYPE f
+                                 iv_chunk_id    TYPE sysuuid_x16
+                                 it_chunk_norms TYPE tt_chunk_norm
+                           CHANGING ct_best     TYPE tt_score.
+  DATA lv_cosine TYPE f.
 
   CHECK iv_object IS NOT INITIAL.
 
-  lv_chunk_norm = sqrt( iv_norm_sq ).
+  READ TABLE it_chunk_norms INTO DATA(ls_norm) WITH TABLE KEY chunk_id = iv_chunk_id.
+  DATA(lv_chunk_norm) = COND #( WHEN sy-subrc = 0 THEN ls_norm-chunk_norm ELSE 0 ).
+
   lv_cosine = COND #( WHEN gv_req_norm > 0 AND lv_chunk_norm > 0
                        THEN iv_dot / ( gv_req_norm * lv_chunk_norm )
                        ELSE 0 ).
@@ -750,23 +766,31 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *       Max cosine similarity across an object's chunks - one strong
 *       matching chunk in a large object is real signal, so the maximum
-*       is used rather than an average. GT_SCOPE_TOKENS is sorted by
-*       CHUNK_ID here (was sorted by TOKEN for the IDF pass above) so
-*       each chunk's full token set can be walked in one contiguous
-*       group.
+*       is used rather than an average.
+*
+*       Only fetches ZDCCRT_CHUNK_TOK rows for chunks that share at
+*       least one word with the requirement (WHERE TOKEN IN GT_REQ_
+*       WEIGHTED's own tokens) - every other chunk's cosine is 0 by
+*       definition (a zero requirement-weight token contributes 0 to the
+*       dot product regardless of the chunk's own weight for it), so
+*       there is nothing to gain by loading them. The chunk's own norm
+*       (which DOES depend on its complete token set) is a lookup
+*       against ZDCCRT_CHUNKS-CHUNK_NORM instead, precomputed once at
+*       extraction time - see ZLLD_COMPUTE_CHUNK_NORM.
 *
 *       Group boundaries are detected with an explicit "did CHUNK_ID
 *       change since the last row" comparison, not AT NEW/AT END OF
-*       CHUNK_ID. ABAP's control-break rule fires "AT NEW f" whenever
-*       any field to f's LEFT in the row structure changes, and
-*       TS_CHUNK_TOKEN_ROW declares TOKEN before CHUNK_ID - so AT NEW/
-*       AT END OF CHUNK_ID would fire on a token change even within the
-*       same chunk. An explicit comparison has no such field-order
-*       sensitivity.
+*       CHUNK_ID - see this codebase's own history with that control-
+*       break rule firing on the wrong field (ABAP's "AT NEW f" also
+*       fires on any field to f's LEFT changing).
 *&---------------------------------------------------------------------*
 FORM compute_semantic_scores.
-  DATA: lv_dot          TYPE f,
-        lv_norm_sq      TYPE f,
+  DATA: lr_token        TYPE RANGE OF string,
+        lr_pack         TYPE tt_devclass_range,
+        lt_matches      TYPE tt_semantic_match,
+        lt_chunk_ids    TYPE STANDARD TABLE OF sysuuid_x16,
+        lt_chunk_norms  TYPE tt_chunk_norm,
+        lv_dot          TYPE f,
         lv_idf          TYPE f,
         lv_weight       TYPE f,
         lv_cur_chunk_id TYPE sysuuid_x16,
@@ -776,44 +800,69 @@ FORM compute_semantic_scores.
 
   CLEAR gt_obj_score.
 
-  SORT gt_scope_tokens BY chunk_id.
+  IF gt_req_weighted IS NOT INITIAL.
+    LOOP AT gt_req_weighted INTO DATA(ls_rw).
+      APPEND VALUE #( sign = 'I' option = 'EQ' low = ls_rw-token ) TO lr_token.
+    ENDLOOP.
+    PERFORM gt_pack_names_range CHANGING lr_pack.
 
-  LOOP AT gt_scope_tokens INTO DATA(ls_row).
-    IF lv_group_open = abap_false OR ls_row-chunk_id <> lv_cur_chunk_id.
-      " A new chunk group starts here - finalize the previous one first
-      " (unless this is the very first row of the whole table).
-      IF lv_group_open = abap_true.
-        PERFORM finalize_chunk_group USING lv_cur_object lv_dot lv_norm_sq
-                                      CHANGING lt_best.
+    SELECT tok~token AS token, tok~chunk_id AS chunk_id, tok~term_frequency AS tf,
+           c~obj_name AS object_name
+      FROM zdccrt_chunk_tok AS tok
+      INNER JOIN zdccrt_chunks  AS c ON c~chunk_id = tok~chunk_id
+      INNER JOIN zdccrt_objects AS o ON o~obj_name = c~obj_name
+      INTO TABLE @lt_matches
+      WHERE tok~token IN @lr_token
+        AND o~zpackage IN @lr_pack
+        AND c~chunk_length >= @gc_min_chunk_length.
+
+    IF lt_matches IS NOT INITIAL.
+      LOOP AT lt_matches INTO DATA(ls_id_scan).
+        APPEND ls_id_scan-chunk_id TO lt_chunk_ids.
+      ENDLOOP.
+      SORT lt_chunk_ids.
+      DELETE ADJACENT DUPLICATES FROM lt_chunk_ids.
+
+      SELECT chunk_id, chunk_norm FROM zdccrt_chunks
+        INTO TABLE @lt_chunk_norms
+        FOR ALL ENTRIES IN @lt_chunk_ids
+        WHERE chunk_id = @lt_chunk_ids-table_line.
+    ENDIF.
+
+    SORT lt_matches BY chunk_id.
+
+    LOOP AT lt_matches INTO DATA(ls_row).
+      IF lv_group_open = abap_false OR ls_row-chunk_id <> lv_cur_chunk_id.
+        IF lv_group_open = abap_true.
+          PERFORM finalize_chunk_match USING lv_cur_object lv_dot lv_cur_chunk_id lt_chunk_norms
+                                        CHANGING lt_best.
+        ENDIF.
+
+        lv_dot = 0.
+        lv_cur_chunk_id = ls_row-chunk_id.
+        lv_cur_object   = ls_row-object_name.
+        lv_group_open = abap_true.
       ENDIF.
 
-      lv_dot = 0.
-      lv_norm_sq = 0.
-      lv_cur_chunk_id = ls_row-chunk_id.
-      lv_group_open = abap_true.
-      READ TABLE gt_scope_chunks INTO DATA(ls_chunk_lookup) WITH KEY chunk_id = ls_row-chunk_id.
-      lv_cur_object = COND #( WHEN sy-subrc = 0 THEN ls_chunk_lookup-object_name ELSE '' ).
+      READ TABLE gt_idf INTO DATA(ls_idf) WITH KEY token = ls_row-token BINARY SEARCH.
+      lv_idf = COND #( WHEN sy-subrc = 0 THEN ls_idf-idf ELSE 0 ).
+      lv_weight = ls_row-tf * lv_idf.
+
+      READ TABLE gt_req_weighted INTO DATA(ls_req) WITH KEY token = ls_row-token BINARY SEARCH.
+      IF sy-subrc = 0.
+        lv_dot = lv_dot + lv_weight * ls_req-weight.
+      ENDIF.
+    ENDLOOP.
+
+    " Finalize the last group in the table (no further row triggers it).
+    IF lv_group_open = abap_true.
+      PERFORM finalize_chunk_match USING lv_cur_object lv_dot lv_cur_chunk_id lt_chunk_norms
+                                    CHANGING lt_best.
     ENDIF.
-
-    READ TABLE gt_idf INTO DATA(ls_idf) WITH KEY token = ls_row-token BINARY SEARCH.
-    lv_idf = COND #( WHEN sy-subrc = 0 THEN ls_idf-idf ELSE 0 ).
-    lv_weight = ls_row-tf * lv_idf.
-    lv_norm_sq = lv_norm_sq + lv_weight * lv_weight.
-
-    READ TABLE gt_req_weighted INTO DATA(ls_req) WITH KEY token = ls_row-token BINARY SEARCH.
-    IF sy-subrc = 0.
-      lv_dot = lv_dot + lv_weight * ls_req-weight.
-    ENDIF.
-  ENDLOOP.
-
-  " Finalize the last group in the table (no further row triggers it).
-  IF lv_group_open = abap_true.
-    PERFORM finalize_chunk_group USING lv_cur_object lv_dot lv_norm_sq
-                                  CHANGING lt_best.
   ENDIF.
 
   " Seed GT_OBJ_SCORE with every object in scope (score 0 for objects
-  " with no surviving chunks at all), then overlay the best cosine found.
+  " with no matching chunk at all), then overlay the best cosine found.
   LOOP AT gt_objects INTO DATA(ls_obj).
     INSERT VALUE #( object_name = ls_obj-name type = ls_obj-type package = ls_obj-package semantic = 0 )
       INTO TABLE gt_obj_score.

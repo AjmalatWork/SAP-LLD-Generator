@@ -186,7 +186,7 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
     SELECT COUNT(*) FROM zdccrt_stg_dep INTO lv_dep_staged_count WHERE run_id = iv_run_id.
     SELECT COUNT(*) FROM zdccrt_stg_ddic INTO lv_ddic_staged_count WHERE run_id = iv_run_id.
 
-    WRITE: / '--- DB-mode load summary for run', iv_run_id, '---'.
+    WRITE: / '--- DB-mode load summary for package', ls_stg_run-zpackage, 'run', iv_run_id, '---'.
     WRITE: / 'Staged (input to this run):'.
     WRITE: / '  ZDCCRT_STG_OBJ  :', lines( lt_staged_objects ).
     WRITE: / '  ZDCCRT_STG_DEP  :', lv_dep_staged_count.

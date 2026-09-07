@@ -598,8 +598,9 @@ FORM zlld_tokenize_chunk USING iv_text TYPE string
     " Purely numeric tokens (line-number-like literals, WIDTH/offset
     " constants, padding) carry no domain meaning for text similarity -
     " a plain-English requirement essentially never quotes a bare number
-    " to match against, so these just dilute the vector.
-    IF lv_token CO '0123456789'.
+    " to match against, so these just dilute the vector. A single letter
+    " (loop counters like i/n/x) is too short to carry any meaning either.
+    IF lv_token CO '0123456789' OR strlen( lv_token ) = 1.
       CONTINUE.
     ENDIF.
 

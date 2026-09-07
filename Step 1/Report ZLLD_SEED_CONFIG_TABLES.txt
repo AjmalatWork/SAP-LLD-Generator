@@ -114,7 +114,12 @@ FORM seed_config.
                    && 'standard,structure,changing,using,importing,exporting,returning,'
                    && 'optional,is,not,and,or,check,clear,move,append,read,write,'
                    && 'ev,lv,iv,cv,gv,gt,lt,ls,gs,rt,ct,it,wa,fs,'
-                   && 'ew,lw,iw,cw,gw,gi,li,ri,ci,ii' )
+                   && 'ew,lw,iw,cw,gw,gi,li,ri,ci,ii,'
+                   && 'eq,ei,er,et,es,rs,ne,ge,le,co,cn,ca,na,cs,ns,cp,np,bt,nb,'
+                   && 'try,catch,endtry,cleanup,raise,exception,exceptions,do,enddo,'
+                   && 'while,endwhile,interface,endinterface,definition,implementation,'
+                   && 'public,private,protected,section,constants,statics,initial,'
+                   && 'space,abap' )
     ( config_key = 'CHUNK_MERGE_MIN_LINES' config_value = '3' )
     ( config_key = 'EXTRACT_COMMIT_BATCH_SIZE' config_value = '200' )
     ( config_key = 'MIN_CHUNK_LENGTH' config_value = '15' )

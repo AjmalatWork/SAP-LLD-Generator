@@ -613,9 +613,11 @@ FORM tokenize_text USING iv_text TYPE string
   LOOP AT lt_matches INTO DATA(ls_match).
     lv_token = to_lower( substring( val = iv_text off = ls_match-offset len = ls_match-length ) ).
 
-    " Purely numeric tokens carry no domain meaning for text similarity -
-    " see ZLLD_TOKENIZE_CHUNK's matching check; must stay in lockstep.
-    IF lv_token CO '0123456789'.
+    " Purely numeric tokens carry no domain meaning for text similarity,
+    " and a single letter (loop counters like i/n/x) is too short to
+    " carry any either - see ZLLD_TOKENIZE_CHUNK's matching checks; must
+    " stay in lockstep.
+    IF lv_token CO '0123456789' OR strlen( lv_token ) = 1.
       CONTINUE.
     ENDIF.
 

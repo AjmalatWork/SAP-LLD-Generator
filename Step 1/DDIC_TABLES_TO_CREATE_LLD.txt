@@ -233,7 +233,7 @@ names/fields below.
     CHUNK_INDEX         I              INT4        10       0-based, in source order, after the minimum-length merge pass
     CHUNK_TEXT          Z_STRING (STRING)  STRING  -        the chunk's source lines, newline-joined
     CHUNK_LENGTH         I              INT4        10       STRLEN(CHUNK_TEXT), stored so ZLLD_GET_CANDIDATES can filter "too short to score" chunks in the WHERE clause (Open SQL on this system can't call STRLEN() directly) instead of pulling every chunk's full text into ABAP first to check its length
-    CHUNK_NORM            F              FLTP        16       precomputed TF-IDF vector norm of this chunk's own token set, written once by ZLLD_LOAD_ONE_OBJECT right after this chunk's ZDCCRT_CHUNK_TOK rows exist; 0/initial until then. Lets ZLLD_GET_CANDIDATES compute cosine similarity from only the chunks that share a word with the requirement, instead of loading every chunk/token in the whole package scope on every search - see COMPUTE_SEMANTIC_SCORES
+    CHUNK_NORM            FLOAT          FLTP        16       precomputed TF-IDF vector norm of this chunk's own token set, written once by ZLLD_LOAD_ONE_OBJECT right after this chunk's ZDCCRT_CHUNK_TOK rows exist; 0/initial until then. Lets ZLLD_GET_CANDIDATES compute cosine similarity from only the chunks that share a word with the requirement, instead of loading every chunk/token in the whole package scope on every search - see COMPUTE_SEMANTIC_SCORES
 
     Notes:
     - CHUNK_LENGTH/CHUNK_NORM are new fields added after the table's

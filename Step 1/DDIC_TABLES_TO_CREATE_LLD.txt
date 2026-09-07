@@ -313,10 +313,11 @@ names/fields below.
       CHUNK_MERGE_MIN_LINES, EXTRACT_COMMIT_BATCH_SIZE, MIN_CHUNK_LENGTH,
       SEMANTIC_WEIGHT, STRUCTURAL_WEIGHT, the three (placeholder,
       uncalibrated) score thresholds, the three tier multipliers, and
-      the seven structural-scoring/CERTAIN-tier tuning values
+      the eight structural-scoring/CERTAIN-tier tuning values
       (TOP_SEED_OBJECTS, STRUCTURAL_SEED_SCORE, STRUCTURAL_HOP1_SCORE,
       STRUCTURAL_HOP2_SCORE, STRUCTURAL_SHARED_TABLE_BONUS,
-      CERTAIN_HOP_RADIUS, CERTAIN_CONFLICT_MARGIN) - all of
-      ZLLD_GET_CANDIDATES' scoring/tuning values live here now, none are
-      fixed CONSTANTS in that report's source. See that report's own
+      STRUCTURAL_CLASS_REF_BONUS, CERTAIN_HOP_RADIUS,
+      CERTAIN_CONFLICT_MARGIN) - all of ZLLD_GET_CANDIDATES' scoring/
+      tuning values live here now, none are fixed CONSTANTS in that
+      report's source. See that report's own
       header comment for exactly what is and is NOT seeded.

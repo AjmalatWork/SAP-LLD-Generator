@@ -157,6 +157,7 @@ DATA: gt_pack_names   TYPE STANDARD TABLE OF devclass WITH EMPTY KEY,
       gt_objects      TYPE tt_object,
       gt_object_names TYPE string_t,
       gt_adjacency    TYPE tt_edge,
+      gt_class_refs   TYPE tt_edge,
       gt_obj_tables   TYPE tt_obj_table,
       gt_stopwords    TYPE string_t,
       gt_idf          TYPE tt_idf,
@@ -192,6 +193,7 @@ DATA: gt_pack_names   TYPE STANDARD TABLE OF devclass WITH EMPTY KEY,
       gv_structural_hop1_score  TYPE f,
       gv_structural_hop2_score  TYPE f,
       gv_structural_shared_tbl  TYPE f,
+      gv_structural_class_ref_bonus TYPE f,
       gv_certain_hop_radius     TYPE i,
       gv_certain_conflict_margin TYPE f,
       gv_requirement_text  TYPE string.
@@ -279,6 +281,7 @@ FORM main.
   PERFORM fetch_all_objects.
   PERFORM fetch_adjacency.
   PERFORM fetch_object_tables.
+  PERFORM fetch_class_refs.
   PERFORM build_stopword_list.
 
   PERFORM find_matched_chunks.
@@ -396,6 +399,9 @@ FORM load_config_constants.
 
   PERFORM get_config_value USING 'STRUCTURAL_SHARED_TABLE_BONUS' '0.4' CHANGING lv_str.
   gv_structural_shared_tbl = lv_str.
+
+  PERFORM get_config_value USING 'STRUCTURAL_CLASS_REF_BONUS' '0.25' CHANGING lv_str.
+  gv_structural_class_ref_bonus = lv_str.
 
   PERFORM get_config_value USING 'CERTAIN_HOP_RADIUS' '1' CHANGING lv_str.
   gv_certain_hop_radius = lv_str.
@@ -535,6 +541,44 @@ FORM fetch_adjacency.
   LOOP AT lt_raw INTO DATA(ls_edge).
     INSERT VALUE #( node = ls_edge-node neighbor = ls_edge-neighbor ) INTO TABLE gt_adjacency.
     INSERT VALUE #( node = ls_edge-neighbor neighbor = ls_edge-node ) INTO TABLE gt_adjacency.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  FETCH_CLASS_REFS
+*&---------------------------------------------------------------------*
+*       Bidirectional index over ZDCCRT_OBJ_CALLS' DEPENDENCY_TYPE =
+*       'CLAS' edges only - restricted to both objects being in the
+*       given package scope, same as FETCH_ADJACENCY. CLAS-type edges
+*       are deliberately excluded from GT_ADJACENCY/the call-graph BFS
+*       (ZDCCRT_EKIND_MAP: CLAS -> is_call_like = false), since "this
+*       object references that class's type" is much weaker/noisier
+*       evidence than a confirmed method call - a parameter type or
+*       exception class reference doesn't mean one object calls the
+*       other. It is still real, non-zero evidence though (see
+*       COMPUTE_SEED_STRUCT_SCORES' own STRUCTURAL_CLASS_REF_BONUS use),
+*       just weighted as a flat bonus rather than full BFS-hop credit,
+*       the same way DDIC-table-sharing already is.
+*&---------------------------------------------------------------------*
+FORM fetch_class_refs.
+  DATA: lt_raw  TYPE STANDARD TABLE OF ts_edge,
+        lr_pack TYPE tt_devclass_range.
+
+  CLEAR gt_class_refs.
+  PERFORM gt_pack_names_range CHANGING lr_pack.
+
+  SELECT oc~source_object AS node, oc~target_object AS neighbor
+    FROM zdccrt_obj_calls AS oc
+    INNER JOIN zdccrt_objects AS o1 ON o1~obj_name = oc~source_object
+    INNER JOIN zdccrt_objects AS o2 ON o2~obj_name = oc~target_object
+    INTO TABLE @lt_raw
+    WHERE oc~dependency_type = 'CLAS'
+      AND o1~zpackage IN @lr_pack
+      AND o2~zpackage IN @lr_pack.
+
+  LOOP AT lt_raw INTO DATA(ls_edge).
+    INSERT VALUE #( node = ls_edge-node neighbor = ls_edge-neighbor ) INTO TABLE gt_class_refs.
+    INSERT VALUE #( node = ls_edge-neighbor neighbor = ls_edge-node ) INTO TABLE gt_class_refs.
   ENDLOOP.
 ENDFORM.
 
@@ -929,7 +973,7 @@ FORM compute_semantic_scores.
 ENDFORM.
 
 *&=======================================================================*
-*& Structural scoring (BFS + table-sharing bonus)
+*& Structural scoring (BFS + table-sharing/class-ref bonuses)
 *&=======================================================================*
 
 *&---------------------------------------------------------------------*
@@ -981,8 +1025,7 @@ ENDFORM.
 *       clears this threshold. Without the gate, the top-3 objects would
 *       always get structural_score=1.0 via self-membership regardless
 *       of how weak their real semantic match is, making
-*       likely_new_object mathematically unreachable. Structural score
-*       is max(hop-decay, table-sharing bonus), never summed.
+*       likely_new_object mathematically unreachable.
 *
 *       GT_NAMED (the developer's resolved scoping note, if any) is
 *       UNIONED into the seed list, ungated by GV_SEED_MIN_SEMANTIC. A
@@ -992,16 +1035,31 @@ ENDFORM.
 *       automatic candidates. This requires RESOLVE_NOTE_AND_NEIGHBORS
 *       to run before this FORM (see MAIN) so GT_NAMED is already
 *       populated here.
+*
+*       Structural score is max(hop-decay, table-sharing bonus,
+*       class-ref bonus), never summed - three independent, weaker-
+*       than-a-confirmed-call signals, not stacked evidence. The class-
+*       ref bonus (GT_CLASS_REFS, built by FETCH_CLASS_REFS) exists
+*       because a real call made through an object reference (rather
+*       than a static CLASS=>METHOD( ) call) is sometimes recorded by
+*       REPOSITORY_ENVIRONMENT_RFC only as a CLAS-type "this object
+*       references that class's type" edge, with no method-level detail
+*       - too weak/noisy to treat as a full call-graph hop (see
+*       ZDCCRT_EKIND_MAP: CLAS -> is_call_like = false), but still real,
+*       non-zero evidence worth a smaller flat bonus.
 *&---------------------------------------------------------------------*
 FORM compute_seed_struct_scores.
   DATA: lt_sorted_by_semantic TYPE STANDARD TABLE OF ts_obj_score,
         lt_top3               TYPE string_t,
         lt_seeds              TYPE string_t,
         lt_seed_tables        TYPE string_t,
+        lt_seed_class_refs    TYPE string_t,
         lt_dist               TYPE tt_node_dist,
         lv_hop_score          TYPE f,
         lv_table_score        TYPE f,
-        lv_shares_table       TYPE abap_bool.
+        lv_classref_score     TYPE f,
+        lv_shares_table       TYPE abap_bool,
+        lv_has_class_ref      TYPE abap_bool.
 
   lt_sorted_by_semantic = gt_obj_score.
   SORT lt_sorted_by_semantic BY semantic DESCENDING object_name ASCENDING.
@@ -1031,6 +1089,18 @@ FORM compute_seed_struct_scores.
   SORT lt_seed_tables.
   DELETE ADJACENT DUPLICATES FROM lt_seed_tables.
 
+  " Seed class-refs: union of every seed's own CLAS-type neighbors.
+  " GT_CLASS_REFS already carries both directions (see FETCH_CLASS_REFS),
+  " so this covers "seed references candidate's type" and "candidate
+  " references seed's type" alike.
+  LOOP AT lt_seeds INTO DATA(lv_seed_cref).
+    LOOP AT gt_class_refs INTO DATA(ls_cref) WHERE node = lv_seed_cref.
+      APPEND ls_cref-neighbor TO lt_seed_class_refs.
+    ENDLOOP.
+  ENDLOOP.
+  SORT lt_seed_class_refs.
+  DELETE ADJACENT DUPLICATES FROM lt_seed_class_refs.
+
   LOOP AT gt_obj_score ASSIGNING FIELD-SYMBOL(<fs_os>).
     READ TABLE lt_seeds TRANSPORTING NO FIELDS WITH KEY table_line = <fs_os>-object_name.
     IF sy-subrc = 0.
@@ -1058,7 +1128,11 @@ FORM compute_seed_struct_scores.
     ENDLOOP.
     lv_table_score = COND #( WHEN lv_shares_table = abap_true THEN gv_structural_shared_tbl ELSE 0 ).
 
-    <fs_os>-structural = nmax( val1 = lv_hop_score val2 = lv_table_score ).
+    READ TABLE lt_seed_class_refs TRANSPORTING NO FIELDS WITH KEY table_line = <fs_os>-object_name.
+    lv_has_class_ref = COND #( WHEN sy-subrc = 0 THEN abap_true ELSE abap_false ).
+    lv_classref_score = COND #( WHEN lv_has_class_ref = abap_true THEN gv_structural_class_ref_bonus ELSE 0 ).
+
+    <fs_os>-structural = nmax( val1 = lv_hop_score val2 = nmax( val1 = lv_table_score val2 = lv_classref_score ) ).
   ENDLOOP.
 ENDFORM.
 

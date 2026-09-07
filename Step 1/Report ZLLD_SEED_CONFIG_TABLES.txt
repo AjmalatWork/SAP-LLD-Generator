@@ -89,7 +89,9 @@ FORM seed_config.
                    && 'value,values,class,endclass,method,endmethod,form,endform,perform,'
                    && 'function,endfunction,loop,endloop,into,from,where,select,table,'
                    && 'standard,structure,changing,using,importing,exporting,returning,'
-                   && 'optional,is,not,and,or,check,clear,move,append,read,write' )
+                   && 'optional,is,not,and,or,check,clear,move,append,read,write,'
+                   && 'ev,lv,iv,cv,gv,gt,lt,ls,gs,rt,ct,it,wa,fs,'
+                   && 'ew,lw,iw,cw,gw,gi,li,ri,ci,ii' )
     ( config_key = 'CHUNK_MERGE_MIN_LINES' config_value = '3' )
     ( config_key = 'SEMANTIC_WEIGHT'   config_value = '0.30' )
     ( config_key = 'STRUCTURAL_WEIGHT' config_value = '0.70' )

@@ -4,15 +4,19 @@ REPORT zlld_package_extractor.
 *& ZLLD_PACKAGE_EXTRACTOR
 *&---------------------------------------------------------------------*
 *  Package-scoped extraction with transport sync, one or more packages
-*  per run (S_PACK). Each selected package is processed independently,
-*  start to finish, including its own ALV review screen. First run
-*  against a package is a full extraction of every PROG/CLAS/FUNC
-*  (incl. FUGR members) it contains. Every run after that is
-*  incremental: only objects touched by released transports since the
-*  last sync, plus deletion detection against the package's live TADIR
-*  contents. In file mode, output is written in the LLD block format the
-*  downstream Python parser understands; in DB mode, the same data is
-*  staged and loaded into query-ready tables instead.
+*  per run (S_PACK). Every selected package's candidate objects are
+*  built up first, then reviewed together in ONE combined ALV screen
+*  (a PACKAGE column identifies which selected package each row came
+*  from) - not one screen per package. Once confirmed, each package's
+*  own output is written separately, using only that package's own
+*  checked rows. First run against a package is a full extraction of
+*  every PROG/CLAS/FUNC (incl. FUGR members) it contains. Every run
+*  after that is incremental: only objects touched by released
+*  transports since the last sync, plus deletion detection against the
+*  package's live TADIR contents. In file mode, output is written in
+*  the LLD block format the downstream Python parser understands; in DB
+*  mode, the same data is staged and loaded into query-ready tables
+*  instead.
 *
 *  For a large package (thousands of objects), run this via a
 *  background job (SE38 -> Program -> Execute in Background, or job
@@ -108,8 +112,16 @@ TYPES: BEGIN OF ts_lld_obj,
 " (see PROCESS_CHECKED_LLD_OBJECTS). This is the deliberate reconciliation
 " between reusing the original tool's fragment-level ALV UX pattern
 * (explicitly requested) and this report's whole-object output format.
+"
+" REVIEW_PACKAGE is which package (of possibly several selected via
+" S_PACK) this row came from - the whole screen shows every selected
+" package's objects together in one review, not one screen per package
+" (see MAIN/PREPARE_ONE_PACKAGE), so each row needs to say which package
+" it belongs to both for display and so FINALIZE_ONE_PACKAGE can filter
+" back down to one package's checked rows at output time.
 TYPES: BEGIN OF ts_lld_multi_obj,
          checked        TYPE abap_bool,
+         review_package TYPE devclass,
          pgmid          TYPE e071-pgmid,
          object         TYPE e071-object,
          obj_name       TYPE e071-obj_name,
@@ -121,6 +133,21 @@ TYPES: BEGIN OF ts_lld_multi_obj,
        END OF ts_lld_multi_obj,
        tt_lld_multi_obj TYPE STANDARD TABLE OF ts_lld_multi_obj WITH EMPTY KEY.
 
+" One selected package's outcome from the PREPARE pass (run type, sync
+" high-water mark, deletion-detection results, current inventory) -
+" needed again by FINALIZE_ONE_PACKAGE once the single combined ALV
+" screen has been confirmed, since PREPARE and FINALIZE now run as two
+" separate passes over S_PACK rather than one pass per package.
+TYPES: BEGIN OF ts_package_prep,
+         zpackage          TYPE devclass,
+         run_type          TYPE char4,
+         new_hwm           TYPE e070-trkorr,
+         prior_hwm         TYPE e070-trkorr,
+         removed_objects   TYPE tt_lld_obj,
+         current_inventory TYPE tt_lld_obj,
+       END OF ts_package_prep,
+       tt_package_prep TYPE STANDARD TABLE OF ts_package_prep WITH EMPTY KEY.
+
 *&---------------------------------------------------------------------*
 *& Global Data
 *&---------------------------------------------------------------------*
@@ -128,6 +155,7 @@ DATA: gt_e071        TYPE tt_e071,
       gr_class_name  TYPE RANGE OF seoclsname,
       gt_hits        TYPE tt_tr_hit,
       gt_lld_multi_obj TYPE tt_lld_multi_obj,
+      gt_package_prep  TYPE tt_package_prep,
       gt_output      TYPE tt_output,
       gv_filename    TYPE string,
       gv_full_path   TYPE string,
@@ -236,8 +264,9 @@ SELECTION-SCREEN END OF BLOCK b1.
 
 * text-002: maintain via SE38 Text Elements, e.g. "Package & Output"
 * S_PACK is low-only (NO INTERVALS) - each entered value is one whole
-* package, not a range; MAIN loops over the resolved values and runs
-* the full extraction independently for each one.
+* package, not a range; MAIN builds every resolved package's candidate
+* objects into one combined ALV review, then writes each package's own
+* output separately once that single screen is confirmed.
 TABLES: tdevc.
 SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE text-002.
 SELECT-OPTIONS: s_pack FOR tdevc-devclass OBLIGATORY NO INTERVALS.
@@ -289,10 +318,15 @@ START-OF-SELECTION.
 *&      Form  MAIN
 *&---------------------------------------------------------------------*
 *       Resolves S_PACK to a flat list of package values (each row is
-*       one EQ, low-only entry - see the selection screen) and runs the
-*       whole per-package extraction independently, once per package.
-*       DELETE ADJACENT DUPLICATES guards against the same package
-*       being entered twice on the selection screen.
+*       one EQ, low-only entry - see the selection screen), then runs
+*       two passes over it: PREPARE_ONE_PACKAGE builds every selected
+*       package's candidate object list into ONE combined GT_LLD_MULTI_
+*       OBJ (tagged per row with which package it came from), a single
+*       ALV review screen covers all of them together, and once
+*       confirmed FINALIZE_ONE_PACKAGE writes each package's own output
+*       using only that package's checked rows. DELETE ADJACENT
+*       DUPLICATES guards against the same package being entered twice
+*       on the selection screen.
 *&---------------------------------------------------------------------*
 FORM main.
   DATA lt_packages TYPE STANDARD TABLE OF devclass.
@@ -305,44 +339,67 @@ FORM main.
   SORT lt_packages.
   DELETE ADJACENT DUPLICATES FROM lt_packages.
 
+  CLEAR: gt_lld_multi_obj, gt_package_prep.
   LOOP AT lt_packages INTO gv_current_pack.
-    PERFORM process_one_package.
+    PERFORM prepare_one_package.
+  ENDLOOP.
+
+  CLEAR gv_multi_cancelled.
+
+  " A background job has no user to review/click through a dynpro -
+  " CALL SCREEN is not usable there at all (SY-BATCH = 'X'), so a
+  " background run skips the review screen entirely and proceeds with
+  " every object already checked - BUILD_UNIQUE_LLD_OBJECTS defaults
+  " CHECKED = abap_true for every row, so this is exactly what an online
+  " user accepting the screen as-is would produce anyway.
+  IF sy-batch = abap_false.
+    CALL SCREEN 9000.
+
+    IF go_alv_grid IS BOUND.
+      go_alv_grid->free( ).
+    ENDIF.
+    IF go_container IS BOUND.
+      go_container->free( ).
+    ENDIF.
+    CLEAR: go_alv_grid, go_container.
+  ENDIF.
+
+  CHECK gv_multi_cancelled = abap_false.
+
+  LOOP AT lt_packages INTO gv_current_pack.
+    PERFORM finalize_one_package.
   ENDLOOP.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
-*&      Form  PROCESS_ONE_PACKAGE
+*&      Form  PREPARE_ONE_PACKAGE
 *&---------------------------------------------------------------------*
-*       The full single-package extraction: determine FULL vs INCR, run
-*       deletion detection (always, regardless of run type), build the
-*       candidate object list, show the ALV review screen (skipped
-*       entirely when running in background - see the CALL SCREEN 9000
-*       guard below), and - once confirmed - write the LLD file and
-*       update sync state. Runs once per GV_CURRENT_PACK, called from
-*       MAIN's loop over S_PACK.
-*
-*       Output-mode branching happens ONLY after CALL SCREEN 9000
-*       returns, at the exact point file mode writes its output -
-*       everything above that point (object enumeration, sync, deletion
-*       detection, the ALV review) is identical regardless of mode, and
-*       the FILE branch below calls exactly the same three forms, in
-*       the same order, that file mode has always called.
+*       Determines FULL vs INCR, runs deletion detection (always,
+*       regardless of run type - on a first/FULL run there is simply
+*       nothing stored yet to compare against, so it naturally yields
+*       zero removed objects), and builds this package's candidate
+*       object list into GT_LLD_MULTI_OBJ (appended, tagged with
+*       REVIEW_PACKAGE - not cleared, since every selected package's
+*       rows share one combined ALV screen). This package's determined
+*       run type/HWM/removed-objects/inventory are stashed in
+*       GT_PACKAGE_PREP for FINALIZE_ONE_PACKAGE to pick back up once
+*       the single combined screen has been confirmed. Runs once per
+*       GV_CURRENT_PACK, called from MAIN's first loop over S_PACK.
 *&---------------------------------------------------------------------*
-FORM process_one_package.
+FORM prepare_one_package.
+  DATA ls_prep TYPE ts_package_prep.
+
   PERFORM validate_package USING gv_current_pack CHANGING gv_error.
   CHECK gv_error = abap_false.
 
   PERFORM read_sync_log USING gv_current_pack CHANGING gs_sync_log gv_sync_found.
   gv_run_type = COND #( WHEN gv_sync_found = abap_true THEN 'INCR' ELSE 'FULL' ).
 
-  " Deletion detection runs on every run - on a first (FULL) run there is
-  " simply nothing stored yet to compare against, so it naturally yields
-  " zero removed objects rather than needing a special case here.
   PERFORM build_package_inventory USING gv_current_pack CHANGING gt_current_inventory.
   PERFORM detect_removed_objects USING gv_current_pack gt_current_inventory
                                   CHANGING gt_removed_objects.
 
-  CLEAR: gt_e071, gr_class_name, gt_hits, gt_lld_multi_obj, gv_extracted_count.
+  CLEAR: gt_e071, gr_class_name, gt_hits.
 
   IF gv_run_type = 'FULL'.
     PERFORM build_object_list_from_package USING gv_current_pack.
@@ -361,37 +418,52 @@ FORM process_one_package.
   ENDIF.
 
   PERFORM build_unique_lld_objects USING gt_hits.
+
+  ls_prep-zpackage          = gv_current_pack.
+  ls_prep-run_type          = gv_run_type.
+  ls_prep-new_hwm           = gv_new_hwm.
+  ls_prep-prior_hwm         = gs_sync_log-last_trkorr_hwm.
+  ls_prep-removed_objects   = gt_removed_objects.
+  ls_prep-current_inventory = gt_current_inventory.
+  APPEND ls_prep TO gt_package_prep.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  FINALIZE_ONE_PACKAGE
+*&---------------------------------------------------------------------*
+*       Restores this package's own run type/HWM/removed-objects/
+*       inventory (stashed by PREPARE_ONE_PACKAGE) into the globals the
+*       output-writing forms below read, then writes this package's own
+*       output using only its own checked ALV rows (PROCESS_CHECKED_
+*       LLD_OBJECTS(_DB) filter GT_LLD_MULTI_OBJ by REVIEW_PACKAGE =
+*       GV_CURRENT_PACK) and updates its own sync state. A package that
+*       PREPARE_ONE_PACKAGE skipped (failed validation) has no
+*       GT_PACKAGE_PREP row and is silently skipped here too.
+*
+*       GS_SYNC_LOG-LAST_TRKORR_HWM is restored here too, not just the
+*       fields above - FINALIZE_SYNC_STATE falls back to it when an
+*       INCREMENTAL run had nothing qualify, and GS_SYNC_LOG itself gets
+*       overwritten once per package during the PREPARE pass, so by the
+*       time this runs it would otherwise still hold whichever package
+*       PREPARE_ONE_PACKAGE visited last, not this one.
+*
+*       Output-mode branching mirrors PREPARE's old single-pass
+*       structure exactly - the FILE branch below calls exactly the
+*       same three forms, in the same order, that file mode has always
+*       called, just once per package instead of interleaved with that
+*       package's own screen.
+*&---------------------------------------------------------------------*
+FORM finalize_one_package.
+  READ TABLE gt_package_prep INTO DATA(ls_prep) WITH KEY zpackage = gv_current_pack.
+  CHECK sy-subrc = 0.
+
+  gv_run_type                     = ls_prep-run_type.
+  gv_new_hwm                      = ls_prep-new_hwm.
+  gt_removed_objects              = ls_prep-removed_objects.
+  gt_current_inventory            = ls_prep-current_inventory.
+  gs_sync_log-last_trkorr_hwm     = ls_prep-prior_hwm.
+
   PERFORM determine_lld_output_path USING gv_current_pack gv_run_type.
-
-  CLEAR gv_multi_cancelled.
-
-  " A background job has no user to review/click through a dynpro -
-  " CALL SCREEN is not usable there at all (SY-BATCH = 'X'), so a large
-  " package that needs a background run for EXTRACT_TO_DB's own sake
-  " (see that form's header comment) skips the review screen entirely
-  " and proceeds with every object already checked - BUILD_UNIQUE_LLD_
-  " OBJECTS defaults CHECKED = abap_true for every row, so this is
-  " exactly what an online user accepting the screen as-is would produce
-  " anyway.
-  IF sy-batch = abap_false.
-    CALL SCREEN 9000.
-
-    " The ALV container/grid are freed here rather than left bound, so
-    " the next package's iteration (if any) rebuilds screen 9000's ALV
-    " fresh against ITS OWN GT_LLD_MULTI_OBJ - STATUS_9000's own PBO
-    " logic only calls CREATE_LLD_ALV when GO_CONTAINER is not yet
-    " bound, which would otherwise leave a second package's review
-    " screen showing the first package's rows.
-    IF go_alv_grid IS BOUND.
-      go_alv_grid->free( ).
-    ENDIF.
-    IF go_container IS BOUND.
-      go_container->free( ).
-    ENDIF.
-    CLEAR: go_alv_grid, go_container.
-  ENDIF.
-
-  CHECK gv_multi_cancelled = abap_false.
 
   CASE gv_output_mode.
     WHEN 'DB'.
@@ -1099,19 +1171,20 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  BUILD_UNIQUE_LLD_OBJECTS
 *&---------------------------------------------------------------------*
-*       Deduplicates IT_HITS by (object, obj_name) into
-*       GT_LLD_MULTI_OBJ, one ALV row per unique fragment, each
-*       resolved to its owning whole object via DETERMINE_OWNER.
-*       Fragments with no resolvable owner (DOMA/DTEL/TABL/TTYP) are
-*       dropped - they have no LLD object-block home.
+*       Deduplicates IT_HITS (this one package's own hits) by (object,
+*       obj_name) and APPENDS the result into GT_LLD_MULTI_OBJ, tagged
+*       with GV_CURRENT_PACK - never CLEARed here, since every selected
+*       package's rows accumulate into one combined ALV screen (see
+*       MAIN/PREPARE_ONE_PACKAGE). Each fragment is resolved to its
+*       owning whole object via DETERMINE_OWNER; fragments with no
+*       resolvable owner (DOMA/DTEL/TABL/TTYP) are dropped - they have
+*       no LLD object-block home.
 *&---------------------------------------------------------------------*
 FORM build_unique_lld_objects USING it_hits TYPE tt_tr_hit.
   DATA: lt_unique     TYPE tt_tr_hit,
         ls_multi      TYPE ts_lld_multi_obj,
         lv_owner_type TYPE e071-object,
         lv_owner_name TYPE e071-obj_name.
-
-  CLEAR gt_lld_multi_obj.
 
   lt_unique = it_hits.
   SORT lt_unique BY object obj_name.
@@ -1122,13 +1195,14 @@ FORM build_unique_lld_objects USING it_hits TYPE tt_tr_hit.
     CHECK lv_owner_type IS NOT INITIAL.
 
     CLEAR ls_multi.
-    ls_multi-checked     = abap_true.
-    ls_multi-pgmid       = ls_unique-pgmid.
-    ls_multi-object      = ls_unique-object.
-    ls_multi-obj_name    = ls_unique-obj_name.
-    ls_multi-obj_display = |{ ls_unique-obj_name } { ls_unique-object }|.
-    ls_multi-owner_type  = lv_owner_type.
-    ls_multi-owner_name  = lv_owner_name.
+    ls_multi-checked        = abap_true.
+    ls_multi-review_package = gv_current_pack.
+    ls_multi-pgmid          = ls_unique-pgmid.
+    ls_multi-object         = ls_unique-object.
+    ls_multi-obj_name       = ls_unique-obj_name.
+    ls_multi-obj_display    = |{ ls_unique-obj_name } { ls_unique-object }|.
+    ls_multi-owner_type     = lv_owner_type.
+    ls_multi-owner_name     = lv_owner_name.
 
     IF gv_run_type = 'INCR'.
       PERFORM build_tr_list USING ls_unique-object ls_unique-obj_name it_hits
@@ -1223,16 +1297,21 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  PROCESS_CHECKED_LLD_OBJECTS
 *&---------------------------------------------------------------------*
-*       Rolls up every checked ALV fragment to its owning whole object
-*       (any owner with >=1 checked fragment is extracted once), then
-*       extracts each distinct owner.
+*       Rolls up every checked ALV fragment BELONGING TO GV_CURRENT_PACK
+*       to its owning whole object (any owner with >=1 checked fragment
+*       is extracted once), then extracts each distinct owner. The
+*       REVIEW_PACKAGE filter matters because GT_LLD_MULTI_OBJ now holds
+*       every selected package's rows together (one combined ALV screen
+*       - see MAIN) - without it, FINALIZE_ONE_PACKAGE would re-extract
+*       every other package's checked objects into this one's output too.
 *&---------------------------------------------------------------------*
 FORM process_checked_lld_objects.
   DATA lt_owners TYPE tt_lld_obj.
 
   gv_extracted_count = 0.
 
-  LOOP AT gt_lld_multi_obj INTO DATA(ls_multi) WHERE checked = abap_true.
+  LOOP AT gt_lld_multi_obj INTO DATA(ls_multi)
+    WHERE checked = abap_true AND review_package = gv_current_pack.
     APPEND VALUE #( obj_type = ls_multi-owner_type obj_name = ls_multi-owner_name ) TO lt_owners.
   ENDLOOP.
 
@@ -1796,7 +1875,8 @@ FORM process_checked_lld_objects_db.
 
   gv_extracted_count = 0.
 
-  LOOP AT gt_lld_multi_obj INTO DATA(ls_multi) WHERE checked = abap_true.
+  LOOP AT gt_lld_multi_obj INTO DATA(ls_multi)
+    WHERE checked = abap_true AND review_package = gv_current_pack.
     APPEND VALUE #( obj_type = ls_multi-owner_type obj_name = ls_multi-owner_name ) TO lt_owners.
   ENDLOOP.
 
@@ -2443,24 +2523,25 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *       Only CHECKED is editable - no version/compare column exists in
 *       this report at all. TR_LIST/MOST_RECENT_TR are only populated on
-*       an INCREMENTAL run (see BUILD_UNIQUE_LLD_OBJECTS), so they're
-*       left out of the fieldcat entirely on a FULL run rather than
-*       shown blank.
+*       an INCREMENTAL run (see BUILD_UNIQUE_LLD_OBJECTS) and left blank
+*       otherwise - always shown regardless of run type, rather than
+*       hidden for FULL, since the single combined screen can hold rows
+*       from a mix of FULL- and INCREMENTAL-run packages at once (one
+*       column-visibility decision can no longer describe every row).
 *&---------------------------------------------------------------------*
 FORM build_lld_fieldcat CHANGING ct_fieldcat TYPE lvc_t_fcat.
   CLEAR ct_fieldcat.
 
   APPEND VALUE #( fieldname = 'CHECKED'        coltext = 'Include'
                    checkbox = abap_true edit = abap_true outputlen = 8 ) TO ct_fieldcat.
+  APPEND VALUE #( fieldname = 'REVIEW_PACKAGE' coltext = 'Package'
+                   outputlen = 15 ) TO ct_fieldcat.
   APPEND VALUE #( fieldname = 'OBJ_DISPLAY'    coltext = 'Object'
                    outputlen = 40 ) TO ct_fieldcat.
-
-  IF gv_run_type = 'INCR'.
-    APPEND VALUE #( fieldname = 'TR_LIST'        coltext = 'TRs Appeared In'
-                     outputlen = 40 ) TO ct_fieldcat.
-    APPEND VALUE #( fieldname = 'MOST_RECENT_TR' coltext = 'Most Recent TR'
-                     outputlen = 20 ) TO ct_fieldcat.
-  ENDIF.
+  APPEND VALUE #( fieldname = 'TR_LIST'        coltext = 'TRs Appeared In'
+                   outputlen = 40 ) TO ct_fieldcat.
+  APPEND VALUE #( fieldname = 'MOST_RECENT_TR' coltext = 'Most Recent TR'
+                   outputlen = 20 ) TO ct_fieldcat.
 ENDFORM.
 
 *&---------------------------------------------------------------------*

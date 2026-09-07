@@ -185,14 +185,14 @@ DATA: gt_pack_names   TYPE STANDARD TABLE OF devclass WITH EMPTY KEY,
       gv_likely_named_mult TYPE f,
       gv_likely_hop1_mult  TYPE f,
       gv_unsure_named_mult TYPE f,
-      gv_top_seed_objects              TYPE i,
-      gv_min_chunk_length              TYPE i,
-      gv_structural_seed_score         TYPE f,
-      gv_structural_hop1_score         TYPE f,
-      gv_structural_hop2_score         TYPE f,
-      gv_structural_shared_table_bonus TYPE f,
-      gv_certain_hop_radius            TYPE i,
-      gv_certain_conflict_margin       TYPE f,
+      gv_top_seed_objects       TYPE i,
+      gv_min_chunk_length       TYPE i,
+      gv_structural_seed_score  TYPE f,
+      gv_structural_hop1_score  TYPE f,
+      gv_structural_hop2_score  TYPE f,
+      gv_structural_shared_tbl  TYPE f,
+      gv_certain_hop_radius     TYPE i,
+      gv_certain_conflict_margin TYPE f,
       gv_requirement_text  TYPE string.
 
 *&---------------------------------------------------------------------*
@@ -393,7 +393,7 @@ FORM load_config_constants.
   gv_structural_hop2_score = lv_str.
 
   PERFORM get_config_value USING 'STRUCTURAL_SHARED_TABLE_BONUS' '0.4' CHANGING lv_str.
-  gv_structural_shared_table_bonus = lv_str.
+  gv_structural_shared_tbl = lv_str.
 
   PERFORM get_config_value USING 'CERTAIN_HOP_RADIUS' '1' CHANGING lv_str.
   gv_certain_hop_radius = lv_str.
@@ -1025,7 +1025,7 @@ FORM compute_seed_struct_scores.
         EXIT.
       ENDIF.
     ENDLOOP.
-    lv_table_score = COND #( WHEN lv_shares_table = abap_true THEN gv_structural_shared_table_bonus ELSE 0 ).
+    lv_table_score = COND #( WHEN lv_shares_table = abap_true THEN gv_structural_shared_tbl ELSE 0 ).
 
     <fs_os>-structural = nmax( val1 = lv_hop_score val2 = lv_table_score ).
   ENDLOOP.

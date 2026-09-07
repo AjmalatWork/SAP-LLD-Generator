@@ -33,8 +33,8 @@ FORM confirm_and_empty_tables.
   CALL FUNCTION 'POPUP_TO_CONFIRM'
     EXPORTING
       titlebar       = 'Empty ZDCCRT_* run-data tables'
-      text_question  = 'This deletes ALL rows from the 12 ZDCCRT_* run-data tables (sync-state, staging, query-ready) - ZDCCRT_EKIND_MAP and ZDCCRT_CONFIG are left untouched. This cannot be undone. Continue?'
-      text_button_1  = 'Yes, empty all'
+      text_question  = 'This deletes all rows from the 12 ZDCCRT_* run-data tables (ZDCCRT_EKIND_MAP and ZDCCRT_CONFIG are left untouched). This cannot be undone. Continue?'
+      text_button_1  = 'Yes'
       text_button_2  = 'Cancel'
       default_button = '2'
     IMPORTING

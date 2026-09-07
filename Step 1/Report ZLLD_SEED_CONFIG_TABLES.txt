@@ -87,6 +87,21 @@ ENDFORM.
 *       NEW_OBJECT_SPREAD_THRESHOLD are score thresholds tuned to this
 *       scoring scheme's actual value range; revisit them as usage
 *       confirms or adjusts what "strong" and "weak" mean in practice.
+*
+*       MIN_CHUNK_LENGTH is the minimum chunk character length to count
+*       as a scoreable "document" at all - read by both
+*       ZLLD_GET_CANDIDATES (query time) and ZLLD_EXTRACT_TO_DB (when
+*       precomputing a chunk's own CHUNK_NORM), which is why it lives
+*       here as one shared value rather than a constant maintained
+*       separately in each program.
+*
+*       TOP_SEED_OBJECTS, STRUCTURAL_SEED_SCORE, STRUCTURAL_HOP1_SCORE,
+*       STRUCTURAL_HOP2_SCORE, STRUCTURAL_SHARED_TABLE_BONUS,
+*       CERTAIN_HOP_RADIUS, and CERTAIN_CONFLICT_MARGIN drive
+*       ZLLD_GET_CANDIDATES' structural-scoring and CERTAIN-tier
+*       disagreement logic - see COMPUTE_SEED_STRUCT_SCORES,
+*       APPLY_TIER_ADJUSTMENT, and DETECT_CERTAIN_HINT_CONFLICT there
+*       for exactly how each one is used.
 *&---------------------------------------------------------------------*
 FORM seed_config.
   TYPES: tt_config_seed TYPE STANDARD TABLE OF zdccrt_config WITH EMPTY KEY.
@@ -102,6 +117,7 @@ FORM seed_config.
                    && 'ew,lw,iw,cw,gw,gi,li,ri,ci,ii' )
     ( config_key = 'CHUNK_MERGE_MIN_LINES' config_value = '3' )
     ( config_key = 'EXTRACT_COMMIT_BATCH_SIZE' config_value = '200' )
+    ( config_key = 'MIN_CHUNK_LENGTH' config_value = '15' )
     ( config_key = 'SEMANTIC_WEIGHT'   config_value = '0.30' )
     ( config_key = 'STRUCTURAL_WEIGHT' config_value = '0.70' )
     ( config_key = 'SEED_MIN_SEMANTIC_SCORE'      config_value = '0.30' )
@@ -110,6 +126,13 @@ FORM seed_config.
     ( config_key = 'LIKELY_NAMED_MULTIPLIER' config_value = '1.5' )
     ( config_key = 'LIKELY_HOP1_MULTIPLIER'  config_value = '1.2' )
     ( config_key = 'UNSURE_NAMED_MULTIPLIER' config_value = '1.1' )
+    ( config_key = 'TOP_SEED_OBJECTS'         config_value = '3' )
+    ( config_key = 'STRUCTURAL_SEED_SCORE'    config_value = '1.0' )
+    ( config_key = 'STRUCTURAL_HOP1_SCORE'    config_value = '0.6' )
+    ( config_key = 'STRUCTURAL_HOP2_SCORE'    config_value = '0.3' )
+    ( config_key = 'STRUCTURAL_SHARED_TABLE_BONUS' config_value = '0.4' )
+    ( config_key = 'CERTAIN_HOP_RADIUS'       config_value = '1' )
+    ( config_key = 'CERTAIN_CONFLICT_MARGIN'  config_value = '0.15' )
   ).
 
   LOOP AT lt_seed INTO DATA(ls_seed).

@@ -150,20 +150,6 @@ TYPES: string_t TYPE STANDARD TABLE OF string WITH EMPTY KEY.
 TYPES: tt_devclass_range TYPE RANGE OF devclass.
 
 *&---------------------------------------------------------------------*
-*& Constants - tuning knobs that stay fixed at this fidelity level
-*& rather than moving to ZDCCRT_CONFIG
-*&---------------------------------------------------------------------*
-CONSTANTS: gc_top_seed_objects        TYPE i VALUE 3,
-           gc_min_chunk_length        TYPE i VALUE 15,
-           gc_structural_seed        TYPE f VALUE '1.0',
-           gc_structural_1hop        TYPE f VALUE '0.6',
-           gc_structural_2hop        TYPE f VALUE '0.3',
-           gc_structural_shared_tbl  TYPE f VALUE '0.4',
-           gc_certain_hop_radius      TYPE i VALUE 1,
-           gc_certain_conflict_margin TYPE f VALUE '0.15',
-           gc_unadjusted_ranking_size TYPE i VALUE 5.
-
-*&---------------------------------------------------------------------*
 *& Global Data
 *&---------------------------------------------------------------------*
 DATA: gt_pack_names   TYPE STANDARD TABLE OF devclass WITH EMPTY KEY,
@@ -199,6 +185,14 @@ DATA: gt_pack_names   TYPE STANDARD TABLE OF devclass WITH EMPTY KEY,
       gv_likely_named_mult TYPE f,
       gv_likely_hop1_mult  TYPE f,
       gv_unsure_named_mult TYPE f,
+      gv_top_seed_objects              TYPE i,
+      gv_min_chunk_length              TYPE i,
+      gv_structural_seed_score         TYPE f,
+      gv_structural_hop1_score         TYPE f,
+      gv_structural_hop2_score         TYPE f,
+      gv_structural_shared_table_bonus TYPE f,
+      gv_certain_hop_radius            TYPE i,
+      gv_certain_conflict_margin       TYPE f,
       gv_requirement_text  TYPE string.
 
 *&---------------------------------------------------------------------*
@@ -347,11 +341,11 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  LOAD_CONFIG_CONSTANTS
 *&---------------------------------------------------------------------*
-*       SEMANTIC_WEIGHT/STRUCTURAL_WEIGHT/SEED_MIN_SEMANTIC_SCORE/
-*       NEW_OBJECT_SCORE_FLOOR/NEW_OBJECT_SPREAD_THRESHOLD/tier
-*       multipliers all live in ZDCCRT_CONFIG, editable without a
-*       transport. The values below are the fallback used only if a
-*       key is missing from the table.
+*       Every scoring/tuning value this report uses lives in
+*       ZDCCRT_CONFIG, editable via SM30 without a transport - none of
+*       them are fixed CONSTANTS in the source. The values passed below
+*       are only the fallback used if a key happens to be missing from
+*       the table (e.g. before ZLLD_SEED_CONFIG_TABLES has been run).
 *&---------------------------------------------------------------------*
 FORM load_config_constants.
   DATA lv_str TYPE string.
@@ -379,6 +373,33 @@ FORM load_config_constants.
 
   PERFORM get_config_value USING 'UNSURE_NAMED_MULTIPLIER' '1.1' CHANGING lv_str.
   gv_unsure_named_mult = lv_str.
+
+  PERFORM get_config_value USING 'TOP_SEED_OBJECTS' '3' CHANGING lv_str.
+  gv_top_seed_objects = lv_str.
+
+  " Must equal ZLLD_EXTRACT_TO_DB_F01's own MIN_CHUNK_LENGTH lookup
+  " exactly - both read the same ZDCCRT_CONFIG key, so they can never
+  " drift apart the way two independently-maintained constants could.
+  PERFORM get_config_value USING 'MIN_CHUNK_LENGTH' '15' CHANGING lv_str.
+  gv_min_chunk_length = lv_str.
+
+  PERFORM get_config_value USING 'STRUCTURAL_SEED_SCORE' '1.0' CHANGING lv_str.
+  gv_structural_seed_score = lv_str.
+
+  PERFORM get_config_value USING 'STRUCTURAL_HOP1_SCORE' '0.6' CHANGING lv_str.
+  gv_structural_hop1_score = lv_str.
+
+  PERFORM get_config_value USING 'STRUCTURAL_HOP2_SCORE' '0.3' CHANGING lv_str.
+  gv_structural_hop2_score = lv_str.
+
+  PERFORM get_config_value USING 'STRUCTURAL_SHARED_TABLE_BONUS' '0.4' CHANGING lv_str.
+  gv_structural_shared_table_bonus = lv_str.
+
+  PERFORM get_config_value USING 'CERTAIN_HOP_RADIUS' '1' CHANGING lv_str.
+  gv_certain_hop_radius = lv_str.
+
+  PERFORM get_config_value USING 'CERTAIN_CONFLICT_MARGIN' '0.15' CHANGING lv_str.
+  gv_certain_conflict_margin = lv_str.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
@@ -665,7 +686,7 @@ FORM compute_idf_table.
     FROM zdccrt_chunks AS c
     INNER JOIN zdccrt_objects AS o ON o~obj_name = c~obj_name
     WHERE o~zpackage IN @lr_pack
-      AND c~chunk_length >= @gc_min_chunk_length
+      AND c~chunk_length >= @gv_min_chunk_length
     INTO @gv_total_chunks.
 
   CHECK gv_total_chunks > 0.
@@ -677,7 +698,7 @@ FORM compute_idf_table.
     INTO TABLE @DATA(lt_raw_freq)
     WHERE tok~token IN @lr_token
       AND o~zpackage IN @lr_pack
-      AND c~chunk_length >= @gc_min_chunk_length
+      AND c~chunk_length >= @gv_min_chunk_length
     GROUP BY tok~token.
 
   LOOP AT lt_raw_freq INTO DATA(ls_df).
@@ -814,7 +835,7 @@ FORM compute_semantic_scores.
       INTO TABLE @lt_matches
       WHERE tok~token IN @lr_token
         AND o~zpackage IN @lr_pack
-        AND c~chunk_length >= @gc_min_chunk_length.
+        AND c~chunk_length >= @gv_min_chunk_length.
 
     IF lt_matches IS NOT INITIAL.
       LOOP AT lt_matches INTO DATA(ls_id_scan).
@@ -954,7 +975,7 @@ FORM compute_seed_struct_scores.
   lt_sorted_by_semantic = gt_obj_score.
   SORT lt_sorted_by_semantic BY semantic DESCENDING object_name ASCENDING.
 
-  LOOP AT lt_sorted_by_semantic INTO DATA(ls_top) TO gc_top_seed_objects.
+  LOOP AT lt_sorted_by_semantic INTO DATA(ls_top) TO gv_top_seed_objects.
     APPEND ls_top-object_name TO lt_top3.
   ENDLOOP.
 
@@ -982,13 +1003,13 @@ FORM compute_seed_struct_scores.
   LOOP AT gt_obj_score ASSIGNING FIELD-SYMBOL(<fs_os>).
     READ TABLE lt_seeds TRANSPORTING NO FIELDS WITH KEY table_line = <fs_os>-object_name.
     IF sy-subrc = 0.
-      lv_hop_score = gc_structural_seed.
+      lv_hop_score = gv_structural_seed_score.
     ELSE.
       READ TABLE lt_dist INTO DATA(ls_dist) WITH KEY node = <fs_os>-object_name.
       IF sy-subrc = 0.
         CASE ls_dist-dist.
-          WHEN 1. lv_hop_score = gc_structural_1hop.
-          WHEN 2. lv_hop_score = gc_structural_2hop.
+          WHEN 1. lv_hop_score = gv_structural_hop1_score.
+          WHEN 2. lv_hop_score = gv_structural_hop2_score.
           WHEN OTHERS. lv_hop_score = 0.
         ENDCASE.
       ELSE.
@@ -1004,7 +1025,7 @@ FORM compute_seed_struct_scores.
         EXIT.
       ENDIF.
     ENDLOOP.
-    lv_table_score = COND #( WHEN lv_shares_table = abap_true THEN gc_structural_shared_tbl ELSE 0 ).
+    lv_table_score = COND #( WHEN lv_shares_table = abap_true THEN gv_structural_shared_table_bonus ELSE 0 ).
 
     <fs_os>-structural = nmax( val1 = lv_hop_score val2 = lv_table_score ).
   ENDLOOP.
@@ -1106,7 +1127,7 @@ FORM resolve_note_and_neighbors.
     DELETE gt_named_hop1 WHERE table_line = lv_named.
   ENDLOOP.
 
-  PERFORM bfs_hop_distances USING gt_named gc_certain_hop_radius CHANGING lt_dist.
+  PERFORM bfs_hop_distances USING gt_named gv_certain_hop_radius CHANGING lt_dist.
   LOOP AT lt_dist INTO DATA(ls_d).
     APPEND ls_d-node TO gt_named_certain.
   ENDLOOP.
@@ -1160,7 +1181,7 @@ FORM apply_tier_adjustment.
         ELSE.
           READ TABLE gt_named_certain TRANSPORTING NO FIELDS WITH KEY table_line = <fs>-object_name.
           IF sy-subrc = 0.
-            <fs>-tier_label = |certain: in filter (within { gc_certain_hop_radius } hop(s) of named)|.
+            <fs>-tier_label = |certain: in filter (within { gv_certain_hop_radius } hop(s) of named)|.
           ELSE.
             <fs>-tier_label = 'certain: excluded (outside filter)'.
           ENDIF.
@@ -1269,7 +1290,7 @@ FORM detect_certain_hint_conflict.
   CHECK sy-subrc = 0.
 
   lv_gap = ls_top-base_score - lv_best_in_filter.
-  CHECK lv_gap > gc_certain_conflict_margin.
+  CHECK lv_gap > gv_certain_conflict_margin.
 
   INSERT VALUE #(
     kind = 'certain_hint_conflict'

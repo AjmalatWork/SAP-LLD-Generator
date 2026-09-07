@@ -293,12 +293,18 @@ names/fields below.
     Field            Key   Data Element   Data Type   Length   Notes
     ---------------  ----  -------------  ----------  -------  ----------------------------------
     MANDT            X     MANDT          CLNT        3        client
-    CONFIG_KEY       X     CHAR40         CHAR        40       longest real key so far is 'NEW_OBJECT_SPREAD_THRESHOLD' at 28 chars
+    CONFIG_KEY       X     CHAR40         CHAR        40       longest real key so far is 'STRUCTURAL_SHARED_TABLE_BONUS' at 29 chars
     CONFIG_VALUE           Z_STRING (STRING)  STRING  -
 
     Notes:
     - Seeded via Report ZLLD_SEED_CONFIG_TABLES with STOPWORDS,
-      CHUNK_MERGE_MIN_LINES, EXTRACT_COMMIT_BATCH_SIZE, SEMANTIC_WEIGHT,
-      STRUCTURAL_WEIGHT, the three (placeholder, uncalibrated) score
-      thresholds, and the three tier multipliers - see that report's own
+      CHUNK_MERGE_MIN_LINES, EXTRACT_COMMIT_BATCH_SIZE, MIN_CHUNK_LENGTH,
+      SEMANTIC_WEIGHT, STRUCTURAL_WEIGHT, the three (placeholder,
+      uncalibrated) score thresholds, the three tier multipliers, and
+      the seven structural-scoring/CERTAIN-tier tuning values
+      (TOP_SEED_OBJECTS, STRUCTURAL_SEED_SCORE, STRUCTURAL_HOP1_SCORE,
+      STRUCTURAL_HOP2_SCORE, STRUCTURAL_SHARED_TABLE_BONUS,
+      CERTAIN_HOP_RADIUS, CERTAIN_CONFLICT_MARGIN) - all of
+      ZLLD_GET_CANDIDATES' scoring/tuning values live here now, none are
+      fixed CONSTANTS in that report's source. See that report's own
       header comment for exactly what is and is NOT seeded.

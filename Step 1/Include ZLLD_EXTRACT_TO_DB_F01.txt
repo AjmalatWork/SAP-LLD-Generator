@@ -1,59 +1,33 @@
 *&---------------------------------------------------------------------*
 *& Include ZLLD_EXTRACT_TO_DB_F01
 *&---------------------------------------------------------------------*
-*  Native chunk/token/graph load (step2_native_processing_brief.md),
-*  folded directly into ZLLD_PACKAGE_EXTRACTOR as an INCLUDE rather than
-*  a separate function module - no SE37/function group ceremony needed,
-*  just a plain include + PERFORM, the same way this report already
-*  organizes every other piece of its own logic. Add
+*  Native chunk/token/graph load, included directly into
+*  ZLLD_PACKAGE_EXTRACTOR rather than kept as a separate function
+*  module - a plain include + PERFORM, consistent with how that report
+*  organizes the rest of its own logic. Included via
 *    INCLUDE zlld_extract_to_db_f01.
-*  near the top of ZLLD_PACKAGE_EXTRACTOR (see that report's own
-*  "REQUIRES" header comment and its CALL_EXTRACT_TO_DB form, which
-*  PERFORMs EXTRACT_TO_DB below).
+*  near the top of ZLLD_PACKAGE_EXTRACTOR; called from that report's
+*  CALL_EXTRACT_TO_DB form, which PERFORMs EXTRACT_TO_DB below.
 *
 *  Reads the already-staged ZDCCRT_STG_RUN/_OBJ/_DEP/_DDIC rows (written
 *  by ZLLD_PACKAGE_EXTRACTOR's own DB-mode staging forms) and loads them
 *  into six final, query-ready tables (ZDCCRT_OBJECTS, ZDCCRT_OBJ_CALLS,
 *  ZDCCRT_OBJ_DDREF, ZDCCRT_DDIC_OBJ, ZDCCRT_CHUNKS, ZDCCRT_CHUNK_TOK)
-*  plus edge-kind derivation via ZDCCRT_EKIND_MAP. Direct port of the
-*  Python pipeline.py/graph_loader.py logic, with vector embeddings
-*  replaced by lexical tokenization throughout (per the real-data
-*  evidence that the embedding model wasn't earning its keep). Does no
-*  JSON parsing of its own - ZDCCRT_STG_DEP/_DDIC already have
+*  plus edge-kind derivation via ZDCCRT_EKIND_MAP. Source similarity is
+*  scored by lexical tokenization rather than vector embeddings. Does
+*  no JSON parsing of its own - ZDCCRT_STG_DEP/_DDIC already have
 *  DEPENDENCY_TYPE/NAME/SIGNATURE_JSON and DDIC_TYPE/NAME/DETAIL_JSON
 *  split into columns by ZLLD_PACKAGE_EXTRACTOR's own JSON walker.
-*
-*  TABLE/FIELD NAMES BELOW ARE THE AS-BUILT NAMES (this system renamed
-*  several from the original ZLLD_* proposal in DDIC_TABLES_TO_CREATE_LLD.txt,
-*  the same way ZDCCRT_SYNC_LOG/OBJ were renamed earlier in this project -
-*  see that doc's own "as-built" notes for the full old-name -> new-name
-*  map). All 12 tables are created:
-*    - Table ZDCCRT_STG_RUN, ZDCCRT_STG_OBJ, ZDCCRT_STG_DEP, ZDCCRT_STG_DDIC
-*    - Table ZDCCRT_OBJECTS, ZDCCRT_OBJ_CALLS, ZDCCRT_OBJ_DDREF,
-*      ZDCCRT_DDIC_OBJ, ZDCCRT_CHUNKS, ZDCCRT_CHUNK_TOK, ZDCCRT_EKIND_MAP,
-*      ZDCCRT_CONFIG
-*  A real problem was found and fixed in the as-built ZDCCRT_STG_DEP:
-*  DEPENDENCY_SEQ was initially missing from its key, which would have
-*  meant only the first dependency staged per object could insert -
-*  DEPENDENCY_SEQ is now confirmed part of the key (MANDT, RUN_ID,
-*  OBJ_NAME, DEPENDENCY_SEQ).
 *
 *  NOTE ON STYLE: every final-table INSERT/MODIFY below builds its row
 *  into a named work area first (e.g. "DATA(ls_x) = VALUE
 *  zdccrt_xxx( ... ). MODIFY zdccrt_xxx FROM ls_x.") rather than writing
-*  "MODIFY zdccrt_xxx FROM VALUE #( ... )." directly - this system's
-*  Open SQL does not accept an inline VALUE #(...) constructor as the
-*  FROM source of INSERT/MODIFY ("'VALUE' is unknown"), even though
-*  VALUE #(...)/VALUE type(...) work fine everywhere else (APPEND,
-*  plain DATA(...) assignment, etc.) - it's specifically the Open SQL
-*  statement's FROM clause that's restrictive here. The two-step form
-*  is universally valid Open SQL regardless of release.
-*
-*  VERIFY: the logic below has not been created/tested in the system -
-*  written without SAP access, like everything else in this project
-*  originally was. See LLD_EXTRACTOR_DESIGN_NOTES.md's "Native
-*  processing" section for the full assumptions list and acceptance-
-*  criteria test plan.
+*  "MODIFY zdccrt_xxx FROM VALUE #( ... )." directly - Open SQL does not
+*  accept an inline VALUE #(...) constructor as the FROM source of
+*  INSERT/MODIFY, even though VALUE #(...)/VALUE type(...) work fine
+*  everywhere else (APPEND, plain DATA(...) assignment, etc.); it is
+*  specifically the Open SQL statement's FROM clause that is
+*  restrictive here. The two-step form is universally valid Open SQL.
 *&---------------------------------------------------------------------*
 
 *&---------------------------------------------------------------------*
@@ -133,21 +107,18 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
 
   PERFORM zlld_load_edge_kind_map CHANGING lt_edge_map.
 
-  " STOPWORDS/CHUNK_MERGE_MIN_LINES both live in ZLLD_CONFIG so they can
-  " be tuned via SM30 without a transport - see the brief. Missing rows
-  " fall back to safe defaults rather than erroring, matching this
-  " project's open-vocabulary/no-hard-fail philosophy for anything
-  " tunable via a maintainable table.
+  " STOPWORDS/CHUNK_MERGE_MIN_LINES both live in ZDCCRT_CONFIG so they
+  " can be tuned via SM30 without a transport. A missing row falls back
+  " to a safe default rather than erroring.
   PERFORM zlld_get_config_value USING 'STOPWORDS' '' CHANGING lv_stopword_csv.
   PERFORM zlld_parse_stopwords USING lv_stopword_csv CHANGING lt_stopwords.
 
   PERFORM zlld_get_config_value USING 'CHUNK_MERGE_MIN_LINES' '3' CHANGING lv_min_lines_str.
   lv_min_lines = lv_min_lines_str.
 
-  " FULL vs INCREMENTAL, same semantics as the already-validated Python
-  " loader (see graph_loader.py) - untouched-row guarantee: an object
-  " neither removed nor present in this run's staged data is never
-  " referenced by any DELETE/INSERT/MODIFY statement below.
+  " FULL vs INCREMENTAL: an object neither removed nor present in this
+  " run's staged data is never referenced by any DELETE/INSERT/MODIFY
+  " statement below.
   IF ls_stg_run-run_type = 'FULL'.
     PERFORM zlld_delete_package_rows USING ls_stg_run-zpackage.
   ELSE.
@@ -163,9 +134,9 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
     IF ls_stg_run-run_type = 'INCR'.
       " FULL already cleared the whole package above; INCR only cleared
       " REMOVED_OBJECTS so far - a touched-but-not-removed object's own
-      " prior rows still need clearing before it's reloaded (delete-then-
-      " reinsert one object at a time, same reasoning as the Python
-      " loader: simpler and safer than diffing individual edges).
+      " prior rows still need clearing before it's reloaded. Deleting
+      " and reinserting one object at a time is simpler and safer than
+      " diffing individual edges.
       PERFORM zlld_delete_object_rows USING ls_staged-obj_name.
     ENDIF.
 
@@ -289,9 +260,7 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  ZLLD_GET_CONFIG_VALUE
 *&---------------------------------------------------------------------*
-*       Never errors on a missing key - falls back to IV_DEFAULT,
-*       matching this project's open-vocabulary/no-hard-fail philosophy
-*       for anything tunable via a maintainable table.
+*       Never errors on a missing key - falls back to IV_DEFAULT.
 *&---------------------------------------------------------------------*
 FORM zlld_get_config_value USING iv_key TYPE string
                                   iv_default TYPE string
@@ -343,9 +312,8 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *       Any DEPENDENCY_TYPE with no matching row defaults to
 *       edge_kind = 'reference', is_call_like = false - never errors on
-*       an unrecognized type, per the brief (the real vocabulary has
-*       already proven larger than expected - 18 types on one package
-*       alone).
+*       an unrecognized type, since the real DEPENDENCY_TYPE vocabulary
+*       is open-ended rather than fixed.
 *&---------------------------------------------------------------------*
 FORM zlld_lookup_edge_kind USING iv_dep_type TYPE string
                                   it_map TYPE zlld_tt_edge_map
@@ -417,10 +385,9 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  ZLLD_MERGE_SMALL_CHUNKS
 *&---------------------------------------------------------------------*
-*       Deliberate improvement over the Python chunker (which always
-*       produced a trailing "ENDCLASS."-only chunk per class, confirmed
-*       to pollute similarity scoring - see the brief): any chunk under
-*       IV_MIN_LINES merges into its preceding chunk; the very first
+*       Any chunk under IV_MIN_LINES merges into its preceding chunk, so
+*       a trivial fragment (e.g. a trailing "ENDCLASS." on its own) does
+*       not stand alone and dilute similarity scoring; the very first
 *       chunk (no predecessor) merges FORWARD into the next one instead,
 *       so nothing is ever silently dropped. A single-chunk result is
 *       left as-is regardless of length (nothing to merge into).
@@ -472,9 +439,9 @@ ENDFORM.
 *&      Form  ZLLD_CHUNK_SOURCE
 *&---------------------------------------------------------------------*
 *       Splits on METHOD/ENDMETHOD, FORM/ENDFORM, FUNCTION/ENDFUNCTION
-*       boundaries (same heuristic as the Python chunker); falls back to
-*       fixed ~100-line chunks if no such boundary appears anywhere in
-*       the source at all. Lines outside any boundary block (CLASS/
+*       boundaries; falls back to fixed ~100-line chunks if no such
+*       boundary appears anywhere in the source at all. Lines outside
+*       any boundary block (CLASS/
 *       ENDCLASS wrapper, top-level DATA/TYPES, includes with only
 *       declarations) accumulate into their own loose chunk(s) between
 *       boundary blocks, then go through the same min-length merge pass.
@@ -561,15 +528,12 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *       Splits on non-alphanumeric characters AND underscores (ABAP
 *       identifiers like GET_USER_AC_PROGRAM are naturally underscore-
-*       delimited into meaningful words - a free signal specific to this
-*       codebase's naming convention), lowercases, filters IT_STOPWORDS,
-*       and counts term frequency per distinct token. No IDF/document-
-*       frequency weighting computed here - that's a corpus-wide
-*       statistic left as a query-time aggregate for the retrieval
-*       report (ZLLD_GET_CANDIDATES), per the brief (materializing
-*       it here would need re-deriving on every incremental change - the
-*       same class of staleness risk the untouched-row guarantee already
-*       exists to avoid elsewhere on this project).
+*       delimited into meaningful words), lowercases, filters
+*       IT_STOPWORDS, and counts term frequency per distinct token. No
+*       IDF/document-frequency weighting is computed here - that is a
+*       corpus-wide statistic left as a query-time aggregate for the
+*       retrieval report (ZLLD_GET_CANDIDATES), so it never needs
+*       re-deriving on every incremental change.
 *
 *       IMPORTANT: ZLLD_GET_CANDIDATES duplicates this exact
 *       tokenizer (its own TOKENIZE_TEXT form) so the requirement vector
@@ -680,10 +644,8 @@ ENDFORM.
 *       staged row count, not a call-like-only subset) plus
 *       ZLLD_OBJ_DDIC_REF for the DDIC-shaped dependency types, and its
 *       chunked/tokenized source into ZLLD_CHUNKS/ZLLD_CHUNK_TOKENS.
-*       CV_FAILED/CV_ERROR_MESSAGE are the failure-signaling convention
-*       already used elsewhere in this codebase (CHANGING cv_skip) -
-*       plain flags instead of exception classes, consistent with the
-*       rest of this project's style.
+*       CV_FAILED/CV_ERROR_MESSAGE signal failure via plain CHANGING
+*       flags rather than an exception class.
 *
 *       IV_OBJ_NAME is TYPE SEOCLSNAME, same reasoning as
 *       ZLLD_DELETE_OBJECT_ROWS's own IV_OBJ_NAME - its only caller
@@ -757,24 +719,22 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
     cv_calls_written = cv_calls_written + 1.
 
     " DDIC-shaped dependency types also get a structured secondary index
-    " in ZDCCRT_OBJ_DDREF, covering every DDIC type (not just TABL) -
-    " per the brief, this table supports either table-sharing-bonus
-    " scope going forward without a schema change; which DDIC_TYPE(s)
-    " actually count toward that bonus is the retrieval report's own,
-    " separately evidence-backed decision, not made here.
+    " in ZDCCRT_OBJ_DDREF, covering every DDIC type (not just TABL), so
+    " a DDIC-relationship query never has to filter ZDCCRT_OBJ_CALLS by
+    " type. Which DDIC_TYPE(s) actually factor into any table-sharing
+    " scoring is decided by the retrieval report, not here.
     IF ls_dep-dependency_type = 'DOMA' OR ls_dep-dependency_type = 'DTEL'
     OR ls_dep-dependency_type = 'TABL' OR ls_dep-dependency_type = 'STRU'
     OR ls_dep-dependency_type = 'TTYP'.
-      " MODIFY, not INSERT, DELIBERATELY - despite every field here
-      " being part of the key. The same (OBJ_NAME, DDIC_TYPE,
-      " DDIC_OBJECT_NAME) triple can legitimately repeat within one
-      " object's dependency list (e.g. a class referencing the same
-      " table from several method signatures produces several
-      " DEPENDENCY_SEQ rows with identical TYPE/NAME) - LT_DEPS is
-      " never deduped by (type, name) before this loop. INSERT would
-      " raise a duplicate-key SQL error on the second occurrence;
-      " MODIFY is a harmless no-op since there's no non-key payload to
-      " actually overwrite - exactly the "insert if not already
+      " MODIFY, not INSERT, even though every field here is part of the
+      " key: the same (OBJ_NAME, DDIC_TYPE, DDIC_OBJECT_NAME) triple can
+      " legitimately repeat within one object's dependency list (e.g. a
+      " class referencing the same table from several method signatures
+      " produces several DEPENDENCY_SEQ rows with identical TYPE/NAME),
+      " and LT_DEPS is not deduped by (type, name) before this loop.
+      " INSERT would raise a duplicate-key error on the second
+      " occurrence; MODIFY is a no-op there since there is no non-key
+      " payload to overwrite - exactly the "insert if not already
       " there" behavior this junction table needs.
       DATA(ls_ddref) = VALUE zdccrt_obj_ddref( obj_name         = iv_obj_name
                                                 ddic_type        = ls_dep-dependency_type

@@ -3,31 +3,22 @@ REPORT zlld_seed_config_tables.
 *&---------------------------------------------------------------------*
 *& ZLLD_SEED_CONFIG_TABLES
 *&---------------------------------------------------------------------*
-*  One-time (idempotent - safe to re-run) seeding of ZDCCRT_EKIND_MAP
-*  (as-built name for the originally-proposed ZLLD_EDGE_KIND_MAP - see
-*  DDIC_TABLES_TO_CREATE_LLD.txt) and ZDCCRT_CONFIG (as-built name for
-*  ZLLD_CONFIG), covering both ZLLD_EXTRACT_TO_DB (per
-*  step2_native_processing_brief.md) and ZLLD_GET_CANDIDATES (renamed from
-*  ZLLD_RETRIEVE_CANDIDATES - per zlld_retrieve_candidates_brief.md's
-*  deliverable #3 - scoring weights, score thresholds, tier multipliers).
-*  Run this ONCE after creating all the relevant tables in SE11, before
-*  the first ZLLD_EXTRACT_TO_DB or ZLLD_GET_CANDIDATES run. Uses MODIFY
-*  throughout, so re-running it
-*  later (e.g. after editing a VALUE #( ... ) list below) is always safe.
+*  Seeds ZDCCRT_EKIND_MAP and ZDCCRT_CONFIG, the two config tables used
+*  by ZLLD_EXTRACT_TO_DB (edge-kind derivation) and ZLLD_GET_CANDIDATES
+*  (scoring weights, score thresholds, tier multipliers). Run once
+*  after creating the tables in SE11, before the first extraction or
+*  retrieval run. Uses MODIFY throughout, so re-running it later (e.g.
+*  after editing a VALUE #( ... ) list below) is always safe.
 *
-*  Deliberately a table, not a hardcoded CASE - see ZLLD_EXTRACT_TO_DB's
-*  ZLLD_LOOKUP_EDGE_KIND form. Adding a row here for a newly-observed
-*  DEPENDENCY_TYPE never needs a transport for logic, only a data change
-*  (SM30 on ZDCCRT_EKIND_MAP directly also works going forward - this
-*  report is just the bulk one-time load).
+*  ZDCCRT_EKIND_MAP is a table rather than a hardcoded CASE - see
+*  ZLLD_EXTRACT_TO_DB's ZLLD_LOOKUP_EDGE_KIND form. Adding a row here
+*  for a newly-observed DEPENDENCY_TYPE never needs a transport, only a
+*  data change (SM30 on ZDCCRT_EKIND_MAP directly also works going
+*  forward - this report is just the bulk one-time load).
 *
-*  EDGE_KIND/IS_CALL_LIKE values below are a straight port of
-*  EDGE_KIND_MAP/CALL_LIKE_EDGE_KINDS from graph_loader.py, mapped onto
-*  the real DEPENDENCY_TYPE vocabulary confirmed on ZZBA91 (18 types -
-*  see the real-data validation report / this project's acceptance
-*  criteria for ZLLD_EXTRACT_TO_DB). CALL_LIKE = METH/OM (calls_method)
-*  and FUNC (calls_function) only, matching Python's tuple - everything
-*  else is a structural/reference edge, not a call.
+*  CALL_LIKE is true only for METH/OM (calls_method) and FUNC
+*  (calls_function) - every other DEPENDENCY_TYPE is a structural or
+*  reference edge, not a call.
 *&---------------------------------------------------------------------*
 
 START-OF-SELECTION.
@@ -70,28 +61,24 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  SEED_CONFIG
 *&---------------------------------------------------------------------*
-*       Short, tunable-without-a-transport stopword list of ABAP-generic
-*       noise tokens that would otherwise dominate every chunk
-*       indiscriminately - kept deliberately short per the brief. Add/
-*       remove words directly in SM30 on ZDCCRT_CONFIG afterward; this
-*       report only sets the initial baseline. CHUNK_MERGE_MIN_LINES is
-*       a placeholder default (3) - the brief flags it as a knob to
-*       tune, not a calibrated value from real-data evidence yet.
+*       STOPWORDS is a short list of ABAP-generic noise tokens filtered
+*       out before tokenizing, so they don't dominate every chunk
+*       indiscriminately. Editable directly via SM30 on ZDCCRT_CONFIG;
+*       this report only sets the initial baseline.
 *
-*       SEMANTIC_WEIGHT/STRUCTURAL_WEIGHT/SEED_MIN_SEMANTIC_SCORE/
-*       NEW_OBJECT_SCORE_FLOOR/NEW_OBJECT_SPREAD_THRESHOLD/tier
-*       multipliers below were added for ZLLD_GET_CANDIDATES, per
-*       zlld_retrieve_candidates_brief.md's deliverable #3. The weights
-*       and multipliers are ported starting points (same values
-*       retrieval.py started with). The three score thresholds
-*       (SEED_MIN_SEMANTIC_SCORE/NEW_OBJECT_SCORE_FLOOR/
-*       NEW_OBJECT_SPREAD_THRESHOLD) are EXPLICIT PLACEHOLDERS, not
-*       calibrated values - see that report's own header comment and
-*       LLD_EXTRACTOR_DESIGN_NOTES.md's "Native retrieval" section for
-*       why Python's 0.67/0.35/0.05 cannot simply be ported (lexical
-*       cosine and neural cosine are both bounded [0,1] but are not
-*       the same scale) and for the calibration procedure to run for
-*       real values once this is activated against real data.
+*       CHUNK_MERGE_MIN_LINES is the minimum chunk size, in lines - a
+*       fragment shorter than this gets merged into a neighboring
+*       chunk instead of standing alone.
+*
+*       SEMANTIC_WEIGHT/STRUCTURAL_WEIGHT control how much each score
+*       component contributes to an object's base score. SEMANTIC_WEIGHT
+*       starts low: lexical text similarity alone is a weaker signal
+*       than graph proximity, so it is weighted accordingly.
+*
+*       SEED_MIN_SEMANTIC_SCORE, NEW_OBJECT_SCORE_FLOOR, and
+*       NEW_OBJECT_SPREAD_THRESHOLD are score thresholds tuned to this
+*       scoring scheme's actual value range; revisit them as usage
+*       confirms or adjusts what "strong" and "weak" mean in practice.
 *&---------------------------------------------------------------------*
 FORM seed_config.
   TYPES: tt_config_seed TYPE STANDARD TABLE OF zdccrt_config WITH EMPTY KEY.
@@ -106,9 +93,9 @@ FORM seed_config.
     ( config_key = 'CHUNK_MERGE_MIN_LINES' config_value = '3' )
     ( config_key = 'SEMANTIC_WEIGHT'   config_value = '0.30' )
     ( config_key = 'STRUCTURAL_WEIGHT' config_value = '0.70' )
-    ( config_key = 'SEED_MIN_SEMANTIC_SCORE'      config_value = '0.30' )   " PLACEHOLDER - calibrate (lowered from 0.50: real lexical-cosine scores observed against ZZBA91 topped out ~0.33-0.47, so 0.50 never activated structural scoring at all)
-    ( config_key = 'NEW_OBJECT_SCORE_FLOOR'       config_value = '0.20' )   " PLACEHOLDER - calibrate
-    ( config_key = 'NEW_OBJECT_SPREAD_THRESHOLD'  config_value = '0.05' )   " PLACEHOLDER - calibrate
+    ( config_key = 'SEED_MIN_SEMANTIC_SCORE'      config_value = '0.30' )
+    ( config_key = 'NEW_OBJECT_SCORE_FLOOR'       config_value = '0.20' )
+    ( config_key = 'NEW_OBJECT_SPREAD_THRESHOLD'  config_value = '0.05' )
     ( config_key = 'LIKELY_NAMED_MULTIPLIER' config_value = '1.5' )
     ( config_key = 'LIKELY_HOP1_MULTIPLIER'  config_value = '1.2' )
     ( config_key = 'UNSURE_NAMED_MULTIPLIER' config_value = '1.1' )

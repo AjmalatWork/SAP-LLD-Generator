@@ -1,41 +1,30 @@
 REPORT zlld_get_candidates.
 
 *&---------------------------------------------------------------------*
-*& ZLLD_GET_CANDIDATES (renamed from ZLLD_RETRIEVE_CANDIDATES)
+*& ZLLD_GET_CANDIDATES
 *&---------------------------------------------------------------------*
-*  Step 3, native: the report a developer runs day to day. Direct port
-*  of lld_step2/retrieval.py's retrieve() against the query-ready tables
-*  ZLLD_EXTRACT_TO_DB already built (ZLLD_OBJECTS, ZLLD_OBJ_CALLS,
-*  ZLLD_OBJ_DDIC_REF, ZLLD_DDIC_OBJECTS, ZLLD_CHUNKS, ZLLD_CHUNK_TOKENS,
-*  ZLLD_EDGE_KIND_MAP) - same tiering, same disagreement detection, same
-*  new-object flagging, writing the same candidate file format the gem
-*  already reads (no gem-instruction change needed).
+*  The report a developer runs to find which existing ABAP objects a
+*  new requirement most likely belongs to. Searches the query-ready
+*  tables ZLLD_EXTRACT_TO_DB builds (ZDCCRT_OBJECTS, ZDCCRT_OBJ_CALLS,
+*  ZDCCRT_OBJ_DDREF, ZDCCRT_DDIC_OBJ, ZDCCRT_CHUNKS, ZDCCRT_CHUNK_TOK,
+*  ZDCCRT_EKIND_MAP), scores and ranks candidate objects, detects
+*  disagreements between a developer's own scoping note and the
+*  independent ranking, flags likely-new-work requirements, and writes
+*  a candidate file in the format the downstream gem tool reads.
 *
-*  READ-ONLY against those tables - never writes to ZLLD_OBJECTS/
-*  ZLLD_OBJ_CALLS/etc. No untouched-row concerns here, unlike the loader.
+*  READ-ONLY against those tables - never writes to ZDCCRT_OBJECTS/
+*  ZDCCRT_OBJ_CALLS/etc.
 *
-*  ONE LOAD-BEARING DESIGN CHANGE from the Python version: semantic
-*  scoring is TF-IDF cosine similarity over sparse lexical vectors, not
-*  neural embedding cosine similarity - see COMPUTE_IDF_TABLE/
-*  COMPUTE_SEMANTIC_SCORES below and the brief's own extensive rationale
-*  for why raw summed TF-IDF scores (or query-relative normalization)
-*  would silently break the seed-floor/new-object mechanisms. Both are
-*  bounded [0,1] cosine similarities over non-negative-weighted vectors,
-*  so they remain comparable in the way the constants below assume.
+*  Semantic scoring is TF-IDF cosine similarity over sparse lexical
+*  vectors - see COMPUTE_IDF_TABLE/COMPUTE_SEMANTIC_SCORES below. It is
+*  a cosine similarity bounded [0,1] over non-negative-weighted vectors,
+*  which is what the score thresholds below assume; a raw summed TF-IDF
+*  score would not stay comparable across queries the same way.
 *
-*  CALIBRATION IS NOT DONE HERE. ZLLD_CONFIG's SEED_MIN_SEMANTIC_SCORE/
-*  NEW_OBJECT_SCORE_FLOOR/NEW_OBJECT_SPREAD_THRESHOLD are seeded with
-*  clearly-flagged PLACEHOLDER values below (this project was built
-*  without SAP access, so there is no real lexical-score data to
-*  calibrate against yet) - see LLD_EXTRACTOR_DESIGN_NOTES.md's
-*  "Native retrieval" section for the exact calibration procedure to run
-*  once this is activated against real ZZBA91 data. Do not trust the
-*  seeded defaults for anything beyond the hand-checkable example this
-*  report's own header math is meant to satisfy.
-*
-*  VERIFY: this has not been created/tested in the system - written
-*  without SAP access, like every other piece of this project originally
-*  was.
+*  ZDCCRT_CONFIG's SEED_MIN_SEMANTIC_SCORE, NEW_OBJECT_SCORE_FLOOR, and
+*  NEW_OBJECT_SPREAD_THRESHOLD are tunable via SM30 without a transport;
+*  treat them as working values to revisit as usage confirms or adjusts
+*  them, not as fixed constants.
 *&---------------------------------------------------------------------*
 
 *&---------------------------------------------------------------------*
@@ -137,18 +126,15 @@ TYPES: BEGIN OF ts_node_dist,
 TYPES: string_t TYPE STANDARD TABLE OF string WITH EMPTY KEY.
 
 * A FORM's USING/CHANGING parameter type must be a pre-declared, named
-* type on this system - an inline "TYPE RANGE OF devclass" directly in
-* the parameter list is rejected (same restriction class as the
-* VALUE #(...)-in-Open-SQL-FROM issue found earlier). Named here so
-* GT_PACK_NAMES_RANGE's CHANGING parameter (and every DATA declaration
-* that feeds it) can reference one common type.
+* type - an inline "TYPE RANGE OF devclass" directly in the parameter
+* list is rejected. Named here so GT_PACK_NAMES_RANGE's CHANGING
+* parameter (and every DATA declaration that feeds it) can reference
+* one common type.
 TYPES: tt_devclass_range TYPE RANGE OF devclass.
 
 *&---------------------------------------------------------------------*
-*& Constants (ported from retrieval.py - see brief's deliverable #3 for
-*& which of these move to ZLLD_CONFIG instead; the rest stay plain
-*& constants here, matching Python's own choice to leave some of these
-*& as module constants rather than tunables)
+*& Constants - tuning knobs that stay fixed at this fidelity level
+*& rather than moving to ZDCCRT_CONFIG
 *&---------------------------------------------------------------------*
 CONSTANTS: gc_top_seed_objects        TYPE i VALUE 3,
            gc_min_chunk_length        TYPE i VALUE 15,
@@ -310,9 +296,8 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  VALIDATE_INPUTS
 *&---------------------------------------------------------------------*
-*       Mirrors retrieve()'s own upfront validation: a scoping note
-*       requires a tier and vice versa. P_CONF is normalized to
-*       uppercase; blank means "no tier" (Python's confidence=None).
+*       A scoping note requires a tier and vice versa. P_CONF is
+*       normalized to uppercase; blank means no tier.
 *&---------------------------------------------------------------------*
 FORM validate_inputs.
   CLEAR gv_error.
@@ -349,12 +334,9 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *       SEMANTIC_WEIGHT/STRUCTURAL_WEIGHT/SEED_MIN_SEMANTIC_SCORE/
 *       NEW_OBJECT_SCORE_FLOOR/NEW_OBJECT_SPREAD_THRESHOLD/tier
-*       multipliers all live in ZLLD_CONFIG, per the brief's deliverable
-*       #3 - editable without a transport. Defaults below are PORTED
-*       STARTING POINTS (weights) or EXPLICIT PLACEHOLDERS (the three
-*       score thresholds) - see this report's own header comment and
-*       LLD_EXTRACTOR_DESIGN_NOTES.md for why the thresholds cannot
-*       simply reuse Python's 0.67/0.35/0.05.
+*       multipliers all live in ZDCCRT_CONFIG, editable without a
+*       transport. The values below are the fallback used only if a
+*       key is missing from the table.
 *&---------------------------------------------------------------------*
 FORM load_config_constants.
   DATA lv_str TYPE string.
@@ -365,8 +347,6 @@ FORM load_config_constants.
   PERFORM get_config_value USING 'STRUCTURAL_WEIGHT' '0.70' CHANGING lv_str.
   gv_structural_weight = lv_str.
 
-  " PLACEHOLDER - see calibration procedure. Not calibrated against real
-  " lexical-score data; do not trust these three until that's been run.
   PERFORM get_config_value USING 'SEED_MIN_SEMANTIC_SCORE' '0.30' CHANGING lv_str.
   gv_seed_min_semantic = lv_str.
 
@@ -399,19 +379,17 @@ FORM get_config_value USING iv_key TYPE string iv_default TYPE string
 ENDFORM.
 
 *&=======================================================================*
-*& Package validation (hard error on any unknown package - see
-*& _validate_packages in retrieval.py)
+*& Package validation (hard error on any unknown package)
 *&=======================================================================*
 
 *&---------------------------------------------------------------------*
 *&      Form  VALIDATE_PACKAGES
 *&---------------------------------------------------------------------*
-*       Only single-value EQ entries in S_PACK are supported (a
-*       deliberate simplification, not a range-processing gap) - each
-*       named package is checked individually against ZLLD_OBJECTS, so
-*       a typo'd package is a hard, immediate error rather than a
-*       silently empty candidate set (matching Python's own reasoning:
-*       a typo could otherwise produce a false LIKELY_NEW_OBJECT).
+*       Only single-value EQ entries in S_PACK are supported. Each
+*       named package is checked individually against ZDCCRT_OBJECTS,
+*       so a typo'd package is a hard, immediate error rather than a
+*       silently empty candidate set that could otherwise produce a
+*       false LIKELY_NEW_OBJECT.
 *&---------------------------------------------------------------------*
 FORM validate_packages.
   DATA: lt_known TYPE STANDARD TABLE OF devclass,
@@ -492,15 +470,12 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  FETCH_ADJACENCY
 *&---------------------------------------------------------------------*
-*       Bidirectional adjacency over ZLLD_OBJ_CALLS, restricted to
+*       Bidirectional adjacency over ZDCCRT_OBJ_CALLS, restricted to
 *       edges between two objects BOTH in the given package scope, and
-*       to IS_CALL_LIKE edge kinds only (joined via ZLLD_EDGE_KIND_MAP,
-*       not by filtering on the stored EDGE_KIND text directly, so a
-*       future change to which edge kinds count as call-like needs only
-*       a ZLLD_EDGE_KIND_MAP data change - see
-*       _fetch_bidirectional_adjacency in retrieval.py, ported unchanged
-*       except for the package-scope join replacing a Python dict
-*       membership check).
+*       to IS_CALL_LIKE edge kinds only. This is joined via
+*       ZDCCRT_EKIND_MAP rather than filtering on the stored EDGE_KIND
+*       text directly, so a future change to which edge kinds count as
+*       call-like needs only a ZDCCRT_EKIND_MAP data change.
 *&---------------------------------------------------------------------*
 FORM fetch_adjacency.
   DATA: lt_raw TYPE STANDARD TABLE OF ts_edge,
@@ -528,9 +503,9 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  FETCH_OBJECT_TABLES
 *&---------------------------------------------------------------------*
-*       Object -> DDIC TABLE names, scoped to DDIC_TYPE = 'TABL' only
-*       (not STRU/DTEL) - the table-sharing bonus's scope is explicitly
-*       NOT widened here, per the brief.
+*       Object -> DDIC TABLE names, scoped to DDIC_TYPE = 'TABL' only.
+*       The table-sharing bonus is scoped to real database tables;
+*       STRU/DTEL are deliberately excluded.
 *&---------------------------------------------------------------------*
 FORM fetch_object_tables.
   DATA: lt_raw TYPE STANDARD TABLE OF ts_obj_table,
@@ -617,18 +592,19 @@ FORM tokenize_text USING iv_text TYPE string
 ENDFORM.
 
 *&=======================================================================*
-*& TF-IDF cosine similarity - the brief's central design decision
+*& TF-IDF cosine similarity
 *&=======================================================================*
 
 *&---------------------------------------------------------------------*
 *&      Form  COMPUTE_IDF_TABLE
 *&---------------------------------------------------------------------*
 *       IDF(token) = LOG(total_chunk_count / distinct_chunk_count
-*       containing token), computed at query time over ZLLD_CHUNK_TOKENS/
-*       ZLLD_CHUNKS scoped to the given package(s) - per the brief's
-*       explicit "not materialized at load time" decision.
-*       ZLLD_CHUNK_TOKENS's key is already (TOKEN, CHUNK_ID), so each
-*       row IS one distinct (token, chunk) pair - counting rows per
+*       containing token), computed at query time over
+*       ZDCCRT_CHUNK_TOK/ZDCCRT_CHUNKS scoped to the given package(s) -
+*       not materialized at load time, since IDF is a corpus-wide
+*       statistic that would need re-deriving on every incremental
+*       change. ZDCCRT_CHUNK_TOK's key is already (TOKEN, CHUNK_ID), so
+*       each row IS one distinct (token, chunk) pair - counting rows per
 *       token within the scoped chunk set already gives doc_freq
 *       directly, no extra DISTINCT needed. Also builds GT_SCOPE_TOKENS
 *       (every token row for every scoped chunk) and GT_SCOPE_CHUNKS -
@@ -636,9 +612,9 @@ ENDFORM.
 *       fetched once.
 *
 *       Chunks shorter than GC_MIN_CHUNK_LENGTH characters are excluded
-*       from the scoring corpus entirely (same MIN_CHUNK_LENGTH filter
-*       Python applied) - defense in depth alongside
-*       ZLLD_EXTRACT_TO_DB's own chunk-merge fix, not a substitute for it.
+*       from the scoring corpus entirely - a second line of defense
+*       alongside ZLLD_EXTRACT_TO_DB's own chunk-merge step, not a
+*       substitute for it.
 *&---------------------------------------------------------------------*
 FORM compute_idf_table.
   DATA: lt_chunks_raw TYPE STANDARD TABLE OF zdccrt_chunks,
@@ -650,13 +626,11 @@ FORM compute_idf_table.
   CLEAR: gt_idf, gv_total_chunks, gt_scope_chunks, gt_scope_tokens.
   PERFORM gt_pack_names_range CHANGING lr_pack.
 
-  " STRLEN() is not usable inside this system's Open SQL WHERE clause
-  " (confirmed: "strlen is unknown" on activation) - fetch every chunk
-  " in scope via plain Open SQL, then apply the MIN_CHUNK_LENGTH filter
-  " as a normal ABAP expression in the loop below instead (STRLEN() as
-  " a plain ABAP function, outside Open SQL, is unaffected and already
-  " confirmed working elsewhere in this project - see
-  " ZLLD_PACKAGE_EXTRACTOR's own BUILD_FULL_PATH).
+  " STRLEN() is not usable inside an Open SQL WHERE clause on this
+  " system - fetch every chunk in scope via plain Open SQL, then apply
+  " the MIN_CHUNK_LENGTH filter as a normal ABAP expression in the loop
+  " below instead. STRLEN() as a plain ABAP function, outside Open SQL,
+  " is unaffected.
   SELECT c~*
     FROM zdccrt_chunks AS c
     INNER JOIN zdccrt_objects AS o ON o~obj_name = c~obj_name
@@ -768,25 +742,20 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  COMPUTE_SEMANTIC_SCORES
 *&---------------------------------------------------------------------*
-*       Max cosine similarity across an object's chunks (same "max not
-*       mean" reasoning as Python's compute_semantic_scores - one strong
-*       matching chunk in a large object is real signal). GT_SCOPE_TOKENS
-*       is sorted by CHUNK_ID here (was sorted by TOKEN for the IDF pass
-*       above) so each chunk's full token set can be walked in one
-*       contiguous group. Group boundaries are detected with an explicit
-*       "did CHUNK_ID change since the last row" comparison, NOT
-*       AT NEW/AT END OF CHUNK_ID - confirmed live (via a temporary
-*       from-scratch recompute) that AT NEW/AT END OF fired on almost
-*       every single row instead of once per chunk. Per
-*       ABAP's own control-break rule, "AT NEW f" also fires whenever
-*       any field to f's LEFT in the row structure changes - and
-*       TS_CHUNK_TOKEN_ROW declares TOKEN before CHUNK_ID, so a token
-*       change (true on nearly every row) was spuriously re-triggering
-*       the "new chunk" boundary. That silently shrank most chunks down
-*       to tiny 1-2 token fragments, undercounting the true dot product/
-*       norm by an order of magnitude and letting unrelated objects tie
-*       whenever their best surviving fragment reduced to the same
-*       single shared token. Explicit comparison has no such field-order
+*       Max cosine similarity across an object's chunks - one strong
+*       matching chunk in a large object is real signal, so the maximum
+*       is used rather than an average. GT_SCOPE_TOKENS is sorted by
+*       CHUNK_ID here (was sorted by TOKEN for the IDF pass above) so
+*       each chunk's full token set can be walked in one contiguous
+*       group.
+*
+*       Group boundaries are detected with an explicit "did CHUNK_ID
+*       change since the last row" comparison, not AT NEW/AT END OF
+*       CHUNK_ID. ABAP's control-break rule fires "AT NEW f" whenever
+*       any field to f's LEFT in the row structure changes, and
+*       TS_CHUNK_TOKEN_ROW declares TOKEN before CHUNK_ID - so AT NEW/
+*       AT END OF CHUNK_ID would fire on a token change even within the
+*       same chunk. An explicit comparison has no such field-order
 *       sensitivity.
 *&---------------------------------------------------------------------*
 FORM compute_semantic_scores.
@@ -900,27 +869,22 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  COMPUTE_SEED_STRUCT_SCORES
 *&---------------------------------------------------------------------*
-*       Top-3 by semantic score, gated by GV_SEED_MIN_SEMANTIC (the same
-*       "additional gate on top of the top-3 selection" fix already made
-*       in retrieval.py - see SEED_MIN_SEMANTIC_SCORE's own comment
-*       there for the bug this prevents: without the gate, the top-3
-*       objects always get structural_score=1.0 via self-membership
-*       regardless of how weak their real semantic match is, making
-*       likely_new_object mathematically unreachable). Structural score
+*       Top-3 by semantic score, gated by GV_SEED_MIN_SEMANTIC: an
+*       object only becomes a structural seed if its own semantic score
+*       clears this threshold. Without the gate, the top-3 objects would
+*       always get structural_score=1.0 via self-membership regardless
+*       of how weak their real semantic match is, making
+*       likely_new_object mathematically unreachable. Structural score
 *       is max(hop-decay, table-sharing bonus), never summed.
 *
 *       GT_NAMED (the developer's resolved scoping note, if any) is
-*       UNIONED into the seed list, ungated by GV_SEED_MIN_SEMANTIC -
-*       confirmed live that without this, naming an object in the note
-*       had zero effect on structural scoring whenever that object's own
-*       semantic score happened to fall short of the gate, silently
-*       discarding a human's direct identification in favor of relying
-*       only on incidental text-similarity ranking. A developer naming
-*       an object is stronger evidence than a coincidental top-3 finish,
-*       not weaker, so it does not need to additionally clear the same
-*       gate designed to filter out weak automatic candidates. This
-*       requires RESOLVE_NOTE_AND_NEIGHBORS to run before this FORM (see
-*       MAIN) so GT_NAMED is already populated here.
+*       UNIONED into the seed list, ungated by GV_SEED_MIN_SEMANTIC. A
+*       developer naming an object directly is stronger evidence than a
+*       coincidental top-3 finish, not weaker, so it does not need to
+*       additionally clear the same gate designed to filter out weak
+*       automatic candidates. This requires RESOLVE_NOTE_AND_NEIGHBORS
+*       to run before this FORM (see MAIN) so GT_NAMED is already
+*       populated here.
 *&---------------------------------------------------------------------*
 FORM compute_seed_struct_scores.
   DATA: lt_sorted_by_semantic TYPE STANDARD TABLE OF ts_obj_score,
@@ -1008,10 +972,10 @@ ENDFORM.
 *&      Form  RESOLVE_NOTE_AND_NEIGHBORS
 *&---------------------------------------------------------------------*
 *       Exact match first, then case-insensitive, then substring (either
-*       direction) - direct port of resolve_scoping_note. An unresolved
-*       note is recorded as a disagreement, not an error (per the brief:
-*       useful signal, not failure) - GV_EFFECTIVE_CONFIDENCE stays
-*       blank in that case (nothing to anchor a tier adjustment to).
+*       direction). An unresolved note is recorded as a disagreement,
+*       not an error - useful signal for the developer, not a failure.
+*       GV_EFFECTIVE_CONFIDENCE stays blank in that case (nothing to
+*       anchor a tier adjustment to).
 *&---------------------------------------------------------------------*
 FORM resolve_note_and_neighbors.
   DATA: lt_exact TYPE string_t,
@@ -1287,7 +1251,9 @@ FORM detect_tier_override.
 ENDFORM.
 
 *&=======================================================================*
-*& New-object detection (uses BASE_SCORE, not FINAL_SCORE - see brief)
+*& New-object detection (uses BASE_SCORE, not the tier-adjusted
+*& FINAL_SCORE, so a scoping-note boost never masks a genuinely weak
+*& match)
 *&=======================================================================*
 
 *&---------------------------------------------------------------------*
@@ -1337,8 +1303,8 @@ FORM detect_new_object.
 ENDFORM.
 
 *&=======================================================================*
-*& Export - same file contract lld_step2.parser/the gem already read;
-*& no gem-instruction change needed (see brief)
+*& Export - writes the candidate file in the format the downstream
+*& gem tool reads
 *&=======================================================================*
 
 *&---------------------------------------------------------------------*
@@ -1365,27 +1331,20 @@ ENDFORM.
 *&      Form  BUILD_DEPENDENCIES_JSON
 *&---------------------------------------------------------------------*
 *       Reconstructs the real, flat {"TYPE","NAME","SIGNATURE"} shape
-*       from ZLLD_OBJ_CALLS (raw DEPENDENCY_TYPE, not EDGE_KIND - the
-*       gem's evidence rule was written against the real ABAP type
-*       vocabulary). SIGNATURE_JSON is embedded VERBATIM, unescaped -
-*       it is already a raw JSON object/array substring copied straight
-*       through by ZLLD_EXTRACT_TO_DB, so re-escaping it as a JSON
-*       string value would double-encode it and produce a shape the
-*       parser/gem does not expect (see ZLLD_OBJ_CALLS's own field
-*       comment - "never parsed here" applies just as much on the way
-*       back out as it did on the way in). Outer TYPE uses this table's
-*       own short OBJECT_TYPE code directly - unlike Python, which had
-*       to reverse-map its long LLD-level type name back to the short
-*       code, ZLLD_OBJECTS already stores the short code, so no mapping
-*       is needed here.
+*       from ZDCCRT_OBJ_CALLS, using the raw DEPENDENCY_TYPE rather than
+*       EDGE_KIND, since the gem's evidence rule is written against the
+*       real ABAP type vocabulary. SIGNATURE_JSON is embedded VERBATIM,
+*       unescaped - it is already a raw JSON object/array substring
+*       copied straight through by ZLLD_EXTRACT_TO_DB, so re-escaping it
+*       as a JSON string value would double-encode it and produce a
+*       shape the parser/gem does not expect. Outer TYPE uses
+*       ZDCCRT_OBJECTS' own short OBJ_TYPE code directly.
 *
-*       ZLLD_OBJ_DDIC_REF is NOT separately unioned in here: every
+*       ZDCCRT_OBJ_DDREF is NOT separately unioned in here: every
 *       DDIC-shaped dependency ZLLD_EXTRACT_TO_DB staged into
-*       ZLLD_OBJ_DDIC_REF was ALSO written to ZLLD_OBJ_CALLS (see that
-*       function's ZLLD_LOAD_ONE_OBJECT form) - reading ZLLD_OBJ_CALLS
-*       alone already includes every DDIC reference, matching Python's
-*       own _build_real_dependencies_json exactly (which also reads
-*       only object_calls, not object_uses_table).
+*       ZDCCRT_OBJ_DDREF was ALSO written to ZDCCRT_OBJ_CALLS (see that
+*       include's ZLLD_LOAD_ONE_OBJECT form) - reading ZDCCRT_OBJ_CALLS
+*       alone already includes every DDIC reference.
 *&---------------------------------------------------------------------*
 FORM build_dependencies_json USING iv_object_name TYPE string iv_object_type TYPE char4
                               CHANGING cv_json TYPE string.
@@ -1423,12 +1382,11 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  BUILD_SOURCE_TEXT
 *&---------------------------------------------------------------------*
-*       Full source reconstruction by concatenating ZLLD_CHUNKS rows in
-*       CHUNK_INDEX order - NOT just the matching chunk. This matters
-*       concretely: the gem's correct "already implemented" catch on the
-*       real R2 case depended on seeing the entire method body, not only
-*       the top-scoring fragment (see brief). Joined with a blank line
-*       between chunks, matching retrieval.py's "\n\n".join(chunk_texts).
+*       Full source reconstruction by concatenating ZDCCRT_CHUNKS rows
+*       in CHUNK_INDEX order - NOT just the matching chunk. The gem
+*       needs the entire method body to judge whether a requirement is
+*       already implemented, not only the top-scoring fragment. Joined
+*       with a blank line between chunks.
 *&---------------------------------------------------------------------*
 FORM build_source_text USING iv_object_name TYPE string CHANGING cv_source TYPE string.
   DATA lt_texts TYPE string_t.
@@ -1443,17 +1401,14 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  BUILD_DDIC_JSON_SECTION
 *&---------------------------------------------------------------------*
-*       Rebuilds the real {"PACKAGES":[{"PACKAGE":...,"DOMAIN":[...],
+*       Rebuilds the {"PACKAGES":[{"PACKAGE":...,"DOMAIN":[...],
 *       "DATA_ELEMENT":[...],"TABLE":[...],"STRUCTURE":[...],
 *       "TABLE_TYPE":[...]}, ...]} shape from ZDCCRT_DDIC_OBJ, scoped to
-*       GT_PACK_NAMES - this was previously a hardcoded empty
-*       {"PACKAGES":[]} stub, which meant the gem saw zero DDIC context
-*       for every exported candidate file regardless of how much real
-*       DDIC data the package actually has. Each row's DETAIL_JSON is
-*       already the exact raw JSON object ZLLD_PACKAGE_EXTRACTOR staged
-*       (never parsed, copied through verbatim - same "never re-encode"
-*       rule as BUILD_DEPENDENCIES_JSON's SIGNATURE_JSON), so this only
-*       needs to bucket rows by DDIC_TYPE and join them back into arrays.
+*       GT_PACK_NAMES. Each row's DETAIL_JSON is already the exact raw
+*       JSON object ZLLD_PACKAGE_EXTRACTOR staged - never parsed, copied
+*       through verbatim, same rule as BUILD_DEPENDENCIES_JSON's
+*       SIGNATURE_JSON - so this only needs to bucket rows by DDIC_TYPE
+*       and join them back into arrays.
 *&---------------------------------------------------------------------*
 FORM build_ddic_json_section CHANGING cv_ddic_json TYPE string.
   DATA: lr_pack        TYPE tt_devclass_range,
@@ -1626,8 +1581,7 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *       File picker (not the folder picker P_FILE/F4_OUTPUT_FOLDER
 *       uses below) - cl_gui_frontend_services=>file_open_dialog is the
-*       standard counterpart to the already-confirmed-working
-*       directory_browse used for P_FILE.
+*       standard counterpart to directory_browse.
 *&---------------------------------------------------------------------*
 FORM f4_requirement_file CHANGING cv_file TYPE string.
   DATA: lt_files       TYPE filetable,
@@ -1678,9 +1632,7 @@ FORM load_requirement_text.
   " CODEPAGE = '4110' (UTF-8) - without it, GUI_UPLOAD's default ASC-mode
   " read assumes a single-byte codepage, which corrupts multi-byte UTF-8
   " characters (smart quotes, em-dashes, etc. commonly present in
-  " requirement text pasted from Word/PDF) into mojibake. Confirmed live:
-  " a first run without this produced "Get system" instead of the
-  " source file's curly-quoted "Get system".
+  " requirement text pasted from Word/PDF) into mojibake.
   CALL FUNCTION 'GUI_UPLOAD'
     EXPORTING
       filename                = p_reqf

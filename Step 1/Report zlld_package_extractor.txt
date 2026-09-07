@@ -3,60 +3,35 @@ REPORT zlld_package_extractor.
 *&---------------------------------------------------------------------*
 *& ZLLD_PACKAGE_EXTRACTOR
 *&---------------------------------------------------------------------*
-*  Step 1 of the LLD tool: package-scoped extraction with transport
-*  sync. First run against a package = full extraction of every
-*  PROG/CLAS/FUNC (incl. FUGR members) it contains. Every run after
-*  that = incremental: only objects touched by released transports
-*  since the last sync, plus deletion detection against the package's
-*  live TADIR contents. Output is written in the LLD block format that
-*  lld_step2.parser (the Python side of this tool) already understands
-*  - see the brief this was built from for the exact format.
+*  Package-scoped extraction with transport sync. First run against a
+*  package is a full extraction of every PROG/CLAS/FUNC (incl. FUGR
+*  members) it contains. Every run after that is incremental: only
+*  objects touched by released transports since the last sync, plus
+*  deletion detection against the package's live TADIR contents. In
+*  file mode, output is written in the LLD block format the downstream
+*  Python parser understands; in DB mode, the same data is staged and
+*  loaded into query-ready tables instead.
 *
-*  This is a NEW, separate report. It reuses ZCR_GET_DEPENDENCY_OBJ_NEW,
-*  ZCR_GET_OBJECT_SIGNATURE and Z_GET_DDIC_INFO exactly as they exist
-*  (no changes to any of the three), and reuses several forms from
+*  Reuses ZCR_GET_DEPENDENCY_OBJ_NEW, ZCR_GET_OBJECT_SIGNATURE and
+*  Z_GET_DDIC_INFO as-is, and reuses several forms from
 *  ZCR_AURA_CODE_EXTRACTOR verbatim or near-verbatim (marked "REUSED"
-*  below). Nothing about ZCR_AURA_CODE_EXTRACTOR's own behavior changes.
+*  below); ZCR_AURA_CODE_EXTRACTOR itself is untouched.
 *
-*  REQUIRES (already created - see DDIC_TABLES_TO_CREATE_LLD.txt):
+*  REQUIRES:
 *    - Table ZDCCRT_SYNC_LOG
 *    - Table ZDCCRT_SYNC_OBJ
 *
-*  REQUIRES for DB output mode (step1_db_mode_brief.md +
-*  step2_native_processing_brief.md - created, but see
-*  DDIC_TABLES_TO_CREATE_LLD.txt's "as-built" notes: several of these
-*  were renamed/retyped from the original ZLLD_* proposal to match this
-*  system's own naming convention and its rejection of STRING as a table
-*  key component - the ABAP code below uses the AS-BUILT names):
+*  REQUIRES for DB output mode:
 *    - Table ZDCCRT_STG_RUN, ZDCCRT_STG_OBJ, ZDCCRT_STG_DEP, ZDCCRT_STG_DDIC
 *    - Table ZDCCRT_OBJECTS, ZDCCRT_OBJ_CALLS, ZDCCRT_OBJ_DDREF,
 *      ZDCCRT_DDIC_OBJ, ZDCCRT_CHUNKS, ZDCCRT_CHUNK_TOK, ZDCCRT_EKIND_MAP,
 *      ZDCCRT_CONFIG
 *    - The native chunk/token/graph load itself is a plain INCLUDE, not
-*      a function module (no SE37/function group setup needed) - see
-*      "INCLUDE zlld_extract_to_db_f01." below and
-*      Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt.
-*    - ZDCCRT_STG_DEP's key originally lacked DEPENDENCY_SEQ (would have
-*      failed every dependency after the first per object on a duplicate
-*      key) - CONFIRMED FIXED, DEPENDENCY_SEQ is now part of the key
-*      (MANDT, RUN_ID, OBJ_NAME, DEPENDENCY_SEQ).
-*    - ZDCCRT_STG_DDIC's DETAIL_JSON field (TYPE Z_STRING, non-key) -
-*      CONFIRMED added.
-*  File mode (the default) needs none of the above and is unchanged.
-*
-*  SEVERAL FM CALLS BELOW ARE FLAGGED "VERIFY" - their exact parameter
-*  names/types are written from best recollection, not from a live
-*  system, since this was built without SAP access. Check each one in
-*  SE37 before activating. See LLD_EXTRACTOR_DESIGN_NOTES.md for the
-*  full list and for the acceptance-criteria test plan.
+*      a function module - see "INCLUDE zlld_extract_to_db_f01." below
+*      and Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt.
+*  File mode (the default) needs none of the above.
 *&---------------------------------------------------------------------*
 
-* Native chunk/token/graph load (step2_native_processing_brief.md) -
-* only exercised by the DB-mode path (CALL_EXTRACT_TO_DB below PERFORMs
-* EXTRACT_TO_DB, defined in this include). Create this include as a
-* normal ABAP program (SE38, program type "Include") from
-* Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt before activating DB mode -
-* file mode does not need it at all.
 INCLUDE zlld_extract_to_db_f01.
 
 *&---------------------------------------------------------------------*
@@ -154,7 +129,7 @@ DATA: gv_run_type          TYPE char4,
       gv_new_hwm           TYPE e070-trkorr,
       gv_extracted_count   TYPE i.
 
-" DB-mode state (step1_db_mode_brief.md). GV_OUTPUT_MODE is set once at
+" DB-mode state. GV_OUTPUT_MODE is set once at
 " the top of MAIN from the selection screen radio buttons and never
 " changes during a run - everything downstream branches on it, not on
 " P_MFILE/P_MDB directly, so there is exactly one place (MAIN) where the
@@ -255,23 +230,21 @@ AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
 *&      hidden entirely (not just disabled) when Database mode is
 *&      selected.
 *&
-*&      NOT marked OBLIGATORY, deliberately - CONFIRMED against the
-*&      real system that this matters, not just a theoretical concern:
-*&      OBLIGATORY's mandatory-field check runs during PAI validation,
-*&      which happens BEFORE this PBO logic gets a chance to hide the
-*&      field again - with OBLIGATORY still set, that validation step
-*&      interfered with the hide/show round-trip (triggered by
-*&      P_MDB's USER-COMMAND) badly enough that the field could get
-*&      stuck. DEFAULT 'C:\temp\' still keeps it populated in normal
-*&      use without needing the hard mandatory check.
+*&      NOT marked OBLIGATORY, deliberately: OBLIGATORY's mandatory-
+*&      field check runs during PAI validation, which happens BEFORE
+*&      this PBO logic gets a chance to hide the field again - with
+*&      OBLIGATORY still set, that validation step interferes with the
+*&      hide/show round-trip (triggered by P_MDB's USER-COMMAND) badly
+*&      enough that the field can get stuck visible. DEFAULT
+*&      'C:\temp\' still keeps it populated in normal use without
+*&      needing the hard mandatory check.
 *&
 *&      Toggles on SCREEN-GROUP1 ('FIL', via the PARAMETERS ... MODIF ID
 *&      FIL above), not SCREEN-NAME = 'P_FILE' - a PARAMETERS field's
 *&      input box and its text label are separate screen elements with
-*&      their own SCREEN-NAME entries in the LOOP AT SCREEN table;
-*&      toggling only the input box by name leaves the label visible
-*&      (and, on some releases, the F4 icon too), which is the "hide/
-*&      show isn't working correctly" symptom. MODIF ID tags every
+*&      their own SCREEN-NAME entries in the LOOP AT SCREEN table, so
+*&      toggling only the input box by name leaves the label (and, on
+*&      some releases, the F4 icon) visible. MODIF ID tags every
 *&      element on that line with the same SCREEN-GROUP1, so one check
 *&      hides the whole row together.
 *&---------------------------------------------------------------------*
@@ -298,15 +271,12 @@ START-OF-SELECTION.
 *       candidate object list, show the ALV review screen, and - once
 *       confirmed - write the LLD file and update sync state.
 *
-*       Output-mode branching (step1_db_mode_brief.md) happens ONLY
-*       after CALL SCREEN 9000 returns, at the exact point file mode
-*       already wrote its output - everything above that point (object
-*       enumeration, sync, deletion detection, the ALV review) is
-*       identical regardless of mode, and the FILE branch below calls
-*       exactly the same three forms, in the same order, that this form
-*       called unconditionally before this brief - a regression there
-*       would mean genuinely new code executing on the file path, which
-*       the brief treats as a hard requirement not to do.
+*       Output-mode branching happens ONLY after CALL SCREEN 9000
+*       returns, at the exact point file mode writes its output -
+*       everything above that point (object enumeration, sync, deletion
+*       detection, the ALV review) is identical regardless of mode, and
+*       the FILE branch below calls exactly the same three forms, in
+*       the same order, that file mode has always called.
 *&---------------------------------------------------------------------*
 FORM main.
   gv_output_mode = COND #( WHEN p_mdb = abap_true THEN 'DB' ELSE 'FILE' ).
@@ -358,8 +328,7 @@ FORM main.
       PERFORM call_extract_to_db USING gv_run_id.
       PERFORM display_db_mode_result.
 
-    WHEN OTHERS.  " 'FILE' - the default, byte-for-byte unchanged from
-                  " before this brief.
+    WHEN OTHERS.  " 'FILE' - the default output mode.
       PERFORM build_and_write_lld_file.
       PERFORM finalize_sync_state USING p_pack gv_run_type gv_new_hwm.
       PERFORM download_output_file.
@@ -455,11 +424,10 @@ FORM build_package_inventory USING iv_package TYPE devclass
   " Explicit flat-table declarations, not inline SELECT ... INTO TABLE
   " @DATA(...) - a single-column inline SELECT always creates a table of
   " a one-component STRUCTURE in ABAP, never a flat table of that scalar
-  " type, even though it looks like it should. Looping such a result
-  " into a plain variable and using it directly (e.g. in a string
-  " template) fails with "cannot be converted to a character-type
-  " value" - this is exactly that gotcha, fixed by declaring the target
-  " table's line type explicitly instead of letting it be inferred.
+  " type. Looping such a result into a plain variable and using it
+  " directly (e.g. in a string template) fails with "cannot be
+  " converted to a character-type value", so the target table's line
+  " type is declared explicitly instead of letting it be inferred.
   DATA: lt_prog       TYPE STANDARD TABLE OF tadir-obj_name,
         lt_clas       TYPE STANDARD TABLE OF tadir-obj_name,
         lt_func       TYPE STANDARD TABLE OF tadir-obj_name,
@@ -736,10 +704,9 @@ ENDFORM.
 *       run, or the HWM would never really advance past irrelevant
 *       system activity.
 *
-*       VERIFY: this assumes E070-TRSTATUS = 'R' is this system's
-*       "released" status value (the standard SAP convention). Some
-*       landscapes use additional/different status codes - confirm
-*       against a known-released transport before relying on this.
+*       Assumes E070-TRSTATUS = 'R' is this landscape's "released"
+*       status value (the standard SAP convention) - some landscapes
+*       use additional or different status codes.
 *&---------------------------------------------------------------------*
 FORM gather_qualifying_transports USING iv_package  TYPE devclass
                                          iv_last_hwm TYPE e070-trkorr
@@ -939,10 +906,10 @@ FORM determine_owner USING is_hit TYPE ts_tr_hit
       IF sy-subrc = 0 AND lv_master IS NOT INITIAL.
         cv_owner_name = lv_master.
       ELSE.
-        " VERIFY: no D010INC row means either this include has no
-        " separately-tracked master (it IS the main program), or the
-        " program simply has zero other includes - falling back to the
-        " include's own name as the owner in that case.
+        " No D010INC row means either this include has no separately-
+        " tracked master (it IS the main program), or the program
+        " simply has zero other includes - fall back to the include's
+        " own name as the owner in that case.
         cv_owner_name = is_hit-obj_name.
       ENDIF.
 
@@ -1180,16 +1147,16 @@ FORM get_source_for_lld_object USING iv_owner_type TYPE e071-object
       " every method's own include - reading it the same way a PROG
       " object is read (main program + every RS_GET_ALL_INCLUDES result)
       " gives back the whole class source, without needing a
-      " class-source-specific FM (SEO_CLASS_GET_SOURCE does not exist on
-      " every release - confirmed absent on this system).
-      " VERIFY: CL_OO_CLASSNAME_SERVICE=>GET_CLASSPOOL_NAME is assumed to
-      " exist as a sibling of GET_PUBSEC_NAME/GET_PRISEC_NAME/
-      " GET_PROSEC_NAME/GET_CCDEF_NAME, which ZCR_AURA_CODE_EXTRACTOR's
-      " own BUILD_DEPENDENCY_INPUT already calls successfully on this
-      " system - if this specific method is also missing, RS_GET_ALL_
-      " INCLUDES can resolve the same classpool name another way (e.g.
-      " reading it off any one of the section include names it already
-      " returns via TRDIR/D010INC, since they all share one master).
+      " class-source-specific FM (SEO_CLASS_GET_SOURCE is not available
+      " on every release).
+      " CL_OO_CLASSNAME_SERVICE=>GET_CLASSPOOL_NAME is a sibling of
+      " GET_PUBSEC_NAME/GET_PRISEC_NAME/GET_PROSEC_NAME/GET_CCDEF_NAME,
+      " which ZCR_AURA_CODE_EXTRACTOR's own BUILD_DEPENDENCY_INPUT also
+      " relies on - if this specific method were ever unavailable,
+      " RS_GET_ALL_INCLUDES can resolve the same classpool name another
+      " way (e.g. reading it off any one of the section include names it
+      " already returns via TRDIR/D010INC, since they all share one
+      " master).
       lv_classpool = cl_oo_classname_service=>get_classpool_name( lv_clsname ).
       PERFORM read_program_and_includes USING lv_classpool CHANGING ct_source cv_skip.
 
@@ -1266,18 +1233,14 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  READ_SINGLE_PROGRAM_SOURCE
 *&---------------------------------------------------------------------*
-*       Confirmed against this system's actual RPY_PROGRAM_READ
-*       signature (SE37): no STATE parameter exists. READ_LATEST_VERSION
+*       RPY_PROGRAM_READ has no STATE parameter; READ_LATEST_VERSION
 *       (TYPE PROGDIR-STATE, default SPACE) is the real equivalent -
 *       'A' is the standard SAP convention for "active version," passed
 *       explicitly here since this report always wants current active
 *       source, never whatever SPACE's default behavior resolves to.
-*       SOURCE_EXTENDED (TABLES, LIKE ABAPTXT255) is confirmed to exist
-*       with that exact name; its line type is assumed flat C(255),
-*       matching TS_LINE_255 and the same convention already used
-*       elsewhere in this codebase for SVRS_GET_REPS_FROM_OBJECT's
-*       REPOS_TAB - if source comes back garbled, ABAPTXT255's real line
-*       type is the first thing to check.
+*       SOURCE_EXTENDED's line type is flat C(255), matching TS_LINE_255
+*       and the same convention used elsewhere in this codebase for
+*       SVRS_GET_REPS_FROM_OBJECT's REPOS_TAB.
 *&---------------------------------------------------------------------*
 FORM read_single_program_source USING iv_progname TYPE progname
                                  CHANGING ct_source TYPE tt_code_line
@@ -1332,8 +1295,7 @@ ENDFORM.
 *       Each call's own EV_DDIC_JSON is intentionally discarded - the
 *       file's single shared DDIC section comes from
 *       BUILD_PACKAGE_DDIC_JSON instead (package-scoped, not
-*       object-referenced-scoped), per the brief's "one shared DDIC
-*       section, not duplicated per object" requirement.
+*       object-referenced-scoped), so it is never duplicated per object.
 *&---------------------------------------------------------------------*
 FORM build_dependency_for_object USING iv_owner_type TYPE e071-object
                                             iv_owner_name TYPE e071-obj_name
@@ -1442,11 +1404,9 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  BUILD_REMOVED_OBJECTS_LIST
 *&---------------------------------------------------------------------*
-*       Extracted out of APPEND_FILE_HEADER unchanged (pure refactor -
-*       same loop, same string building, same output) so DB mode's
-*       ZLLD_STG_RUN-REMOVED_OBJECTS can share the exact same
-*       "TYPE:NAME, TYPE:NAME" / "NONE" format as the file header line,
-*       without file mode's own output changing by a single character.
+*       Shared by both output modes, so ZDCCRT_STG_RUN-REMOVED_OBJECTS
+*       and the file header line always use the exact same
+*       "TYPE:NAME, TYPE:NAME" / "NONE" format.
 *&---------------------------------------------------------------------*
 FORM build_removed_objects_list USING it_removed TYPE tt_lld_obj
                                  CHANGING cv_list TYPE string.
@@ -1584,30 +1544,30 @@ FORM download_output_file.
 ENDFORM.
 
 *&=======================================================================*
-*& DB-mode output (step1_db_mode_brief.md)
+*& DB-mode output
 *&
 *& Stages the SAME already-computed data FILE mode writes to GT_OUTPUT -
-*& instead as rows in ZLLD_STG_RUN/_OBJECT/_DEPENDENCY/_DDIC - then hands
-*& off to EXTRACT_TO_DB (real logic, defined in the included
+*& instead as rows in ZDCCRT_STG_RUN/_OBJ/_DEP/_DDIC - then hands off to
+*& EXTRACT_TO_DB (defined in the included
 *& Step 1/Include ZLLD_EXTRACT_TO_DB_F01.txt - see the INCLUDE statement
 *& near the top of this report). This report's own staging forms below
-*& still do not derive EDGE_KIND or otherwise interpret DEPENDENCY_TYPE
-*& - that stays EXTRACT_TO_DB's job, unchanged from the original design.
+*& do not derive EDGE_KIND or otherwise interpret DEPENDENCY_TYPE - that
+*& stays EXTRACT_TO_DB's job.
 *&
 *& EXTRACT_LLD_OBJECT_DB and PROCESS_CHECKED_LLD_OBJECTS_DB below are
 *& deliberate near-duplicates of EXTRACT_LLD_OBJECT/
-*& PROCESS_CHECKED_LLD_OBJECTS rather than a shared, branching form -
-*& the brief's "do not touch any existing extraction logic" is honored
-*& most literally by never adding a conditional into those forms at all,
-*& even at the cost of a small amount of duplicated owner-rollup logic.
+*& PROCESS_CHECKED_LLD_OBJECTS rather than a shared, branching form, so
+*& the existing file-mode extraction forms never need a conditional
+*& added to them, at the cost of a small amount of duplicated
+*& owner-rollup logic.
 *&=======================================================================*
 
 *&---------------------------------------------------------------------*
 *&      Form  GENERATE_RUN_ID
 *&---------------------------------------------------------------------*
 *       CL_SYSTEM_UUID is a stable, universally-available kernel-level
-*       utility class (unlike /UI2/CL_JSON or similar add-on-dependent
-*       classes) - no VERIFY needed here.
+*       utility class, unlike /UI2/CL_JSON or similar add-on-dependent
+*       classes.
 *&---------------------------------------------------------------------*
 FORM generate_run_id CHANGING cv_run_id TYPE sysuuid_x16.
   TRY.
@@ -1645,12 +1605,11 @@ FORM stage_extraction_run USING iv_run_id   TYPE sysuuid_x16
   DATA: ls_stg_run TYPE zdccrt_stg_run,
         lv_ts      TYPE timestampl.
 
-  " ZDCCRT_STG_RUN-EXTRACTED_AT was built as TIMESTAMPL (long form, with
+  " ZDCCRT_STG_RUN-EXTRACTED_AT is TIMESTAMPL (long form, with
   " fractional seconds - same data element ZDCCRT_SYNC_LOG-LAST_SYNC_TS
-  " already uses), not the plain TIMESTAMP originally proposed - LV_TS
-  " matches that real field type so GET TIME STAMP FIELD populates it
-  " correctly rather than relying on an implicit TIMESTAMP->TIMESTAMPL
-  " conversion.
+  " uses). LV_TS matches that field type so GET TIME STAMP FIELD
+  " populates it directly rather than relying on an implicit
+  " TIMESTAMP->TIMESTAMPL conversion.
   GET TIME STAMP FIELD lv_ts.
 
   ls_stg_run-run_id       = iv_run_id.
@@ -1690,11 +1649,10 @@ ENDFORM.
 *&      Form  EXTRACT_LLD_OBJECT_DB
 *&---------------------------------------------------------------------*
 *       Deliberate near-duplicate of EXTRACT_LLD_OBJECT - calls the SAME
-*       GET_SOURCE_FOR_LLD_OBJECT/BUILD_DEPENDENCY_FOR_OBJECT (unchanged,
-*       untouched), then stages instead of appending text. Stores the
-*       short OWNER_TYPE code (CLAS/PROG/FUNC) as OBJECT_TYPE, per the
-*       brief's staging-table spec - not the long LLD_TYPE name
-*       (PROGRAM/CLASS/FUNCTION_MODULE) file mode's output uses.
+*       GET_SOURCE_FOR_LLD_OBJECT/BUILD_DEPENDENCY_FOR_OBJECT, then
+*       stages instead of appending text. Stores the short OWNER_TYPE
+*       code (CLAS/PROG/FUNC) as OBJECT_TYPE - not the long LLD_TYPE
+*       name (PROGRAM/CLASS/FUNCTION_MODULE) file mode's output uses.
 *&---------------------------------------------------------------------*
 FORM extract_lld_object_db USING iv_owner_type TYPE e071-object
                                   iv_owner_name TYPE e071-obj_name.
@@ -1771,28 +1729,20 @@ ENDFORM.
 *& Minimal JSON walker (DB mode only)
 *&
 *& ZCR_GET_DEPENDENCY_OBJ_NEW/Z_GET_DDIC_INFO emit JSON strings, not
-*& native ABAP structures - FILE mode has always just embedded that text
-*& as-is, but ZLLD_STG_DEPENDENCY/_DDIC need DEPENDENCY_TYPE/NAME and
-*& DDIC_TYPE/NAME split into their own columns (see the brief). Rather
-*& than depend on an add-on-provided JSON library (e.g. /UI2/CL_JSON -
-*& not guaranteed present on every system, and awkward for "re-serialize
-*& this nested object as its own opaque string" which SIGNATURE_JSON/
-*& DETAIL_JSON need), this is a small, self-contained bracket-matching
-*& scanner written against the EXACT, already-confirmed real shapes (see
-*& lld_step2/parser.py on the Python side, validated against real
-*& ZZBA91 output):
+*& native ABAP structures - FILE mode simply embeds that text as-is, but
+*& ZDCCRT_STG_DEP/_DDIC need DEPENDENCY_TYPE/NAME and DDIC_TYPE/NAME
+*& split into their own columns. Rather than depend on an add-on-
+*& provided JSON library (e.g. /UI2/CL_JSON - not guaranteed present on
+*& every system, and awkward for re-serializing a nested object as its
+*& own opaque string, which SIGNATURE_JSON/DETAIL_JSON need), this is a
+*& small, self-contained bracket-matching scanner written against the
+*& real shapes these two function modules emit:
 *&   dependency JSON: [{"TYPE":owner_type,"NAME":owner_name,
 *&                      "DEPENDENCIES":[{"TYPE":...,"NAME":...,
 *&                                       "SIGNATURE":{...}?}, ...]}]
 *&   DDIC JSON:        {"PACKAGES":[{"DOMAIN":[{"NAME":...,...}],
 *&                      "DATA_ELEMENT":[...],"TABLE":[...],
 *&                      "STRUCTURE":[...],"TABLE_TYPE":[...]}]}
-*& VERIFY: this has not been run against a live system - the shapes
-*& above are confirmed from real extraction output already processed by
-*& this project's Python side, not from a live ABAP test of this scanner
-*& itself. Test against a real, non-trivial dependency JSON (multiple
-*& entries, at least one WITH a SIGNATURE and one WITHOUT) before
-*& trusting DB mode's staged rows.
 *&=======================================================================*
 
 *&---------------------------------------------------------------------*
@@ -1870,16 +1820,13 @@ ENDFORM.
 *       skips non-bracket characters on its own, so leading/trailing
 *       whitespace here is harmless).
 *
-*       Every real caller passes the SAME variable for both IV_JSON and
-*       CV_INNER (e.g. "USING lv_deps_raw CHANGING lv_deps_raw") to
-*       strip a value in place - since USING binds by reference, IV_JSON
-*       and CV_INNER are then literally the same memory. Confirmed live
-*       (via GT_DBG_TRACE) that clearing CV_INNER up front wiped
-*       IV_JSON before it was ever read, so every one of those in-place
-*       calls silently returned empty - the actual root cause of
-*       ZDCCRT_STG_DEP/_DDIC staging zero rows. Fixed by building the
-*       result into a local variable and only assigning it to CV_INNER
-*       as the very last statement, once every read of IV_JSON is done.
+*       Callers pass the SAME variable for both IV_JSON and CV_INNER
+*       (e.g. "USING lv_deps_raw CHANGING lv_deps_raw") to strip a value
+*       in place - since USING binds by reference, IV_JSON and CV_INNER
+*       are then literally the same memory. The result is built into a
+*       local variable and only assigned to CV_INNER as the very last
+*       statement, once every read of IV_JSON is done, so an in-place
+*       call never clears IV_JSON before it has been read.
 *&---------------------------------------------------------------------*
 FORM strip_outer_json_array USING iv_json TYPE string
                              CHANGING cv_inner TYPE string.
@@ -1942,8 +1889,8 @@ ENDFORM.
 *       "NAME":"FOO") from one JSON object's raw text. Unescapes \" and
 *       \\ only - real dependency/DDIC TYPE and NAME values are ABAP
 *       identifiers and never contain other JSON escapes in practice.
-*       VERIFY if a NAME value is ever found to legitimately need fuller
-*       JSON unescaping (e.g. \uXXXX).
+*       If a NAME value is ever found to legitimately need fuller JSON
+*       unescaping (e.g. \uXXXX), extend this accordingly.
 *
 *       CV_VALUE is CHANGING ... TYPE CSEQUENCE (a generic ABAP type
 *       covering STRING and any fixed CHAR length) deliberately, not a
@@ -1990,8 +1937,8 @@ ENDFORM.
 *       Extracts a nested object/array-valued field (e.g. "SIGNATURE":
 *       {...}, "DEPENDENCIES":[...], "PACKAGES":[...]) as its exact raw
 *       JSON substring, unparsed - this is what lets SIGNATURE_JSON/
-*       DETAIL_JSON stay opaque blobs per the brief, without needing a
-*       full JSON-to-ABAP deserializer. Blank if the field is absent or
+*       DETAIL_JSON stay opaque blobs without needing a full
+*       JSON-to-ABAP deserializer. Blank if the field is absent or
 *       is not itself an object/array (the two real callers of this form
 *       never expect a bare scalar here).
 *&---------------------------------------------------------------------*
@@ -2155,10 +2102,10 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  DISPLAY_DB_MODE_RESULT
 *&---------------------------------------------------------------------*
-*       Simple confirmation, not a new complex UI, per the brief - this
-*       confirms the DB-mode path executed, staged data, and
-*       successfully handed off, without claiming anything was actually
-*       processed into a usable graph yet.
+*       A simple confirmation, not a full UI - confirms the DB-mode path
+*       executed, staged data, and successfully handed off, without
+*       claiming anything was actually processed into a usable graph
+*       yet.
 *&---------------------------------------------------------------------*
 FORM display_db_mode_result.
   WRITE: / 'DB-mode extraction complete.'.
@@ -2332,7 +2279,7 @@ ENDFORM.
 *&      Form  BUILD_LLD_FIELDCAT
 *&---------------------------------------------------------------------*
 *       Only CHECKED is editable - no version/compare column exists in
-*       this report at all (dropped entirely, per the brief).
+*       this report at all.
 *&---------------------------------------------------------------------*
 FORM build_lld_fieldcat CHANGING ct_fieldcat TYPE lvc_t_fcat.
   CLEAR ct_fieldcat.

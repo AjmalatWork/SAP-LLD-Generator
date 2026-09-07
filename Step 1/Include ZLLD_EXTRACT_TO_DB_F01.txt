@@ -56,12 +56,6 @@ TYPES: BEGIN OF zlld_ts_token_count,
 
 TYPES: zlld_tt_edge_map TYPE STANDARD TABLE OF zdccrt_ekind_map WITH EMPTY KEY.
 
-TYPES: BEGIN OF zlld_ts_doc_freq,
-         token    TYPE string,
-         doc_freq TYPE i,
-       END OF zlld_ts_doc_freq,
-       zlld_tt_doc_freq TYPE STANDARD TABLE OF zlld_ts_doc_freq WITH EMPTY KEY.
-
 *&=======================================================================*
 *& Orchestration
 *&=======================================================================*
@@ -96,8 +90,6 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
         lt_stopwords        TYPE string_table,
         lv_min_lines_str    TYPE string,
         lv_min_lines        TYPE i,
-        lv_min_chunk_len_str TYPE string,
-        lv_min_chunk_length TYPE i,
         lv_batch_size_str   TYPE string,
         lv_batch_size       TYPE i,
         lt_removed          TYPE zlld_tt_obj_key,
@@ -134,15 +126,6 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
 
   PERFORM zlld_get_config_value USING 'CHUNK_MERGE_MIN_LINES' '3' CHANGING lv_min_lines_str.
   lv_min_lines = lv_min_lines_str.
-
-  " Must equal ZLLD_GET_CANDIDATES' own MIN_CHUNK_LENGTH lookup exactly
-  " - a chunk's stored CHUNK_NORM is only meaningful if it was computed
-  " using the same "which chunks count as a document" threshold the
-  " retrieval report later queries against. Both sides read this same
-  " ZDCCRT_CONFIG key, so they can never drift apart the way two
-  " independently-maintained CONSTANTS could.
-  PERFORM zlld_get_config_value USING 'MIN_CHUNK_LENGTH' '15' CHANGING lv_min_chunk_len_str.
-  lv_min_chunk_length = lv_min_chunk_len_str.
 
   " 0 (or any non-positive value) disables mid-run commits entirely -
   " every object write happens in one transaction, same as before this
@@ -181,7 +164,6 @@ FORM extract_to_db USING iv_run_id TYPE sysuuid_x16
                                         lt_edge_map
                                         lv_min_lines
                                         lt_stopwords
-                                        lv_min_chunk_length
                                   CHANGING lv_failed lv_error_message
                                            lv_calls_written lv_ddref_written
                                            lv_chunks_written lv_tokens_written.
@@ -718,7 +700,6 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
                                   it_edge_map TYPE zlld_tt_edge_map
                                   iv_min_chunk_lines TYPE i
                                   it_stopwords TYPE string_table
-                                  iv_min_chunk_length TYPE i
                             CHANGING cv_failed TYPE abap_bool
                                      cv_error_message TYPE string
                                      cv_calls_written TYPE i
@@ -731,8 +712,7 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
         lt_tokens     TYPE zlld_tt_token_count,
         lv_edge_kind  TYPE string,
         lv_call_like  TYPE abap_bool,
-        lv_chunk_id   TYPE sysuuid_x16,
-        lv_chunk_norm TYPE f.
+        lv_chunk_id   TYPE sysuuid_x16.
 
   CLEAR: cv_failed, cv_error_message.
 
@@ -822,81 +802,7 @@ FORM zlld_load_one_object USING iv_run_id TYPE sysuuid_x16
       MODIFY zdccrt_chunk_tok FROM ls_tok_row.
       cv_tokens_written = cv_tokens_written + 1.
     ENDLOOP.
-
-    " Below the scoring threshold - never queried as a "document" by
-    " ZLLD_GET_CANDIDATES, so its norm is left at the field's initial
-    " value rather than computed.
-    IF lv_chunk_length >= iv_min_chunk_length.
-      PERFORM zlld_compute_chunk_norm USING iv_package lt_tokens iv_min_chunk_length
-                                       CHANGING lv_chunk_norm.
-      UPDATE zdccrt_chunks SET chunk_norm = @lv_chunk_norm WHERE chunk_id = @lv_chunk_id.
-    ENDIF.
   ENDLOOP.
-ENDFORM.
-
-*&---------------------------------------------------------------------*
-*&      Form  ZLLD_COMPUTE_CHUNK_NORM
-*&---------------------------------------------------------------------*
-*       Precomputes one chunk's own TF-IDF vector norm - called right
-*       after that chunk's own ZDCCRT_CHUNK_TOK rows have been written
-*       (so this chunk counts as one of its own tokens' occurrences,
-*       same as any other chunk would), using the same "count only the
-*       tokens this chunk actually has, scoped to the package" technique
-*       ZLLD_GET_CANDIDATES uses at query time - see COMPUTE_IDF_TABLE
-*       there. Storing this here is what lets retrieval skip loading
-*       every chunk in a package just to know its magnitude: it only
-*       ever needs to look this value up for chunks that already matched
-*       on a shared word.
-*
-*       IT_TOKENS is this chunk's own token/term-frequency list (already
-*       in memory from ZLLD_TOKENIZE_CHUNK - no need to re-read
-*       ZDCCRT_CHUNK_TOK back out).
-*&---------------------------------------------------------------------*
-FORM zlld_compute_chunk_norm USING iv_package TYPE devclass
-                                     it_tokens TYPE zlld_tt_token_count
-                                     iv_min_chunk_length TYPE i
-                               CHANGING cv_norm TYPE f.
-  DATA: lr_token        TYPE RANGE OF string,
-        lv_total_chunks TYPE i,
-        lt_doc_freq     TYPE zlld_tt_doc_freq,
-        lv_norm_sq      TYPE f.
-
-  CLEAR cv_norm.
-  CHECK it_tokens IS NOT INITIAL.
-
-  LOOP AT it_tokens INTO DATA(ls_tok).
-    APPEND VALUE #( sign = 'I' option = 'EQ' low = ls_tok-token ) TO lr_token.
-  ENDLOOP.
-
-  SELECT COUNT(*)
-    FROM zdccrt_chunks AS c
-    INNER JOIN zdccrt_objects AS o ON o~obj_name = c~obj_name
-    WHERE o~zpackage = @iv_package
-      AND c~chunk_length >= @iv_min_chunk_length
-    INTO @lv_total_chunks.
-
-  CHECK lv_total_chunks > 0.
-
-  SELECT tok~token AS token, COUNT( * ) AS doc_freq
-    FROM zdccrt_chunk_tok AS tok
-    INNER JOIN zdccrt_chunks  AS c ON c~chunk_id = tok~chunk_id
-    INNER JOIN zdccrt_objects AS o ON o~obj_name = c~obj_name
-    INTO TABLE @lt_doc_freq
-    WHERE tok~token IN @lr_token
-      AND o~zpackage = @iv_package
-      AND c~chunk_length >= @iv_min_chunk_length
-    GROUP BY tok~token.
-
-  LOOP AT it_tokens INTO DATA(ls_tf).
-    READ TABLE lt_doc_freq INTO DATA(ls_df) WITH KEY token = ls_tf-token.
-    CHECK sy-subrc = 0 AND ls_df-doc_freq > 0.
-
-    DATA(lv_idf)    = log( lv_total_chunks / ls_df-doc_freq ).
-    DATA(lv_weight) = ls_tf-tf * lv_idf.
-    lv_norm_sq = lv_norm_sq + lv_weight * lv_weight.
-  ENDLOOP.
-
-  cv_norm = sqrt( lv_norm_sq ).
 ENDFORM.
 
 *&---------------------------------------------------------------------*

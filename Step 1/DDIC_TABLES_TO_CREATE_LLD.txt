@@ -233,15 +233,27 @@ names/fields below.
     CHUNK_INDEX         I              INT4        10       0-based, in source order, after the minimum-length merge pass
     CHUNK_TEXT          Z_STRING (STRING)  STRING  -        the chunk's source lines, newline-joined
     CHUNK_LENGTH         I              INT4        10       STRLEN(CHUNK_TEXT), stored so ZLLD_GET_CANDIDATES can filter "too short to score" chunks in the WHERE clause (Open SQL on this system can't call STRLEN() directly) instead of pulling every chunk's full text into ABAP first to check its length
-    CHUNK_NORM            FLOAT          FLTP        16       precomputed TF-IDF vector norm of this chunk's own token set, written once by ZLLD_LOAD_ONE_OBJECT right after this chunk's ZDCCRT_CHUNK_TOK rows exist; 0/initial until then. Lets ZLLD_GET_CANDIDATES compute cosine similarity from only the chunks that share a word with the requirement, instead of loading every chunk/token in the whole package scope on every search - see COMPUTE_SEMANTIC_SCORES
 
     Notes:
-    - CHUNK_LENGTH/CHUNK_NORM are new fields added after the table's
-      initial creation - existing rows from before that point have
-      CHUNK_LENGTH = 0 and CHUNK_NORM = 0 until the owning package is
-      re-extracted (FULL run); a chunk with CHUNK_LENGTH = 0 is treated
-      as below the scoring threshold and never counted as a "document"
-      until then.
+    - CHUNK_LENGTH is a new field added after the table's initial
+      creation - existing rows from before that point have
+      CHUNK_LENGTH = 0 until the owning package is re-extracted (FULL
+      run); a chunk with CHUNK_LENGTH = 0 is treated as below the
+      scoring threshold and never counted as a "document" until then.
+    - This table briefly also carried a CHUNK_NORM (FLTP) field, a
+      precomputed cosine-vector norm written at extraction time. It was
+      removed after real usage showed SEMANTIC_SCORE values coming out
+      above 1.0 (mathematically impossible for a cosine similarity) -
+      root cause was comparing a chunk's norm (computed from whatever
+      IDF the corpus had back when that chunk was extracted) against a
+      dot product computed from today's IDF; once the corpus had grown
+      enough for the two to diverge, the ratio broke its [0,1] bound.
+      ZLLD_GET_CANDIDATES now computes a matched chunk's norm and its
+      dot product with the requirement together, in the same query-time
+      pass, from the same IDF - see FIND_MATCHED_CHUNKS/COMPUTE_
+      SEMANTIC_SCORES there. If your table still has a CHUNK_NORM
+      column from before this fix, it's simply unused now and can be
+      dropped in SE11 at your convenience - nothing reads or writes it.
 
 12) Table ZDCCRT_CHUNK_TOK ("inverted index: one row per distinct
     token per chunk")

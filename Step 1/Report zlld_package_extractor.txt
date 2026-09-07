@@ -2250,8 +2250,8 @@ FORM display_db_mode_result.
   WRITE: / 'DB-mode extraction complete.'.
   WRITE: / 'Run ID:', gv_run_id.
   WRITE: / 'Objects staged:', gv_extracted_count.
-  WRITE: / 'Hand-off status:', gv_db_status.
-  WRITE: / 'Hand-off message:', gv_db_message.
+  WRITE: / 'Run status:', gv_db_status.
+  WRITE: / 'Run message:', gv_db_message.
 ENDFORM.
 
 *&=======================================================================*

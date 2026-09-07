@@ -324,7 +324,7 @@ FORM validate_inputs.
   ENDIF.
 
   IF p_topn <= 0.
-    MESSAGE 'TOP N must be a positive number.' TYPE 'S' DISPLAY LIKE 'E'.
+    MESSAGE 'Candidate Limit must be a positive number.' TYPE 'S' DISPLAY LIKE 'E'.
     gv_error = abap_true.
   ENDIF.
 ENDFORM.

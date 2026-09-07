@@ -511,8 +511,8 @@ ENDFORM.
 *       Loops the package's current inventory through the SAME
 *       single-object builders ZCR_AURA_CODE_EXTRACTOR already has
 *       (BUILD_OBJECT_LIST_FROM_PROG/_CLASS/_FUNC, reused unchanged),
-*       then ADD_CLASS_METHODS (also unchanged) expands every collected
-*       class into its methods for the ALV.
+*       then ADD_CLASS_METHODS expands every collected class into its
+*       methods for the ALV.
 *&---------------------------------------------------------------------*
 FORM build_object_list_from_package USING iv_package TYPE devclass.
   DATA: lt_inventory TYPE tt_lld_obj,
@@ -638,7 +638,15 @@ FORM build_object_list_from_func USING iv_func TYPE rs38l_fnam.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
-*&      Form  ADD_CLASS_METHODS   (REUSED unchanged)
+*&      Form  ADD_CLASS_METHODS
+*&---------------------------------------------------------------------*
+*       SEOCOMPO (CMPTYPE = '1') only lists methods a class newly
+*       declares. A method that purely redefines an inherited method
+*       (e.g. the DEFINE/EXECUTE_ACTION overrides commonly found in
+*       OData _EXT classes) never gets its own SEOCOMPO row, so it would
+*       otherwise be silently dropped - RTTI's own method list includes
+*       redefinitions, so a per-class RTTI pass fills that gap below,
+*       skipping any method already added from SEOCOMPO.
 *&---------------------------------------------------------------------*
 FORM add_class_methods.
   LOOP AT gt_e071 ASSIGNING FIELD-SYMBOL(<fs_class>) WHERE object = 'CLAS'.
@@ -653,11 +661,46 @@ FORM add_class_methods.
    WHERE clsname IN @gr_class_name
      AND cmptype = '1'.
 
-  CHECK sy-subrc = 0.
-
   LOOP AT lt_methods INTO DATA(ls_meth).
     APPEND VALUE #( object = 'METH'
                      obj_name = |{ ls_meth-clsname WIDTH = 30 }{ ls_meth-cmpname }| ) TO gt_e071.
+  ENDLOOP.
+
+  LOOP AT gt_e071 INTO DATA(ls_class_hit) WHERE object = 'CLAS'.
+    PERFORM add_redefined_class_methods USING ls_class_hit-obj_name CHANGING gt_e071.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ADD_REDEFINED_CLASS_METHODS
+*&---------------------------------------------------------------------*
+*       Adds any method RTTI reports as IS_REDEFINED = abap_true for
+*       IV_CLSNAME that isn't already present in CT_HITS - see
+*       ADD_CLASS_METHODS' own header comment for why this is needed
+*       alongside the SEOCOMPO query.
+*&---------------------------------------------------------------------*
+FORM add_redefined_class_methods USING iv_clsname TYPE seoclsname
+                                  CHANGING ct_hits TYPE tt_e071.
+  DATA: lo_typedescr  TYPE REF TO cl_abap_typedescr,
+        lo_classdescr TYPE REF TO cl_abap_classdescr,
+        lv_obj_name   TYPE e071-obj_name.
+
+  TRY.
+      lo_typedescr = cl_abap_typedescr=>describe_by_name( iv_clsname ).
+    CATCH cx_root.
+      RETURN.
+  ENDTRY.
+
+  lo_classdescr ?= lo_typedescr.
+
+  LOOP AT lo_classdescr->methods INTO DATA(ls_method) WHERE is_redefined = abap_true.
+    lv_obj_name = |{ iv_clsname WIDTH = 30 }{ ls_method-name }|.
+
+    READ TABLE ct_hits TRANSPORTING NO FIELDS
+      WITH KEY object = 'METH' obj_name = lv_obj_name.
+    IF sy-subrc <> 0.
+      APPEND VALUE #( object = 'METH' obj_name = lv_obj_name ) TO ct_hits.
+    ENDIF.
   ENDLOOP.
 ENDFORM.
 
@@ -839,7 +882,16 @@ FORM collect_tr_hits USING iv_trkorr TYPE e070-trkorr
 ENDFORM.
 
 *&---------------------------------------------------------------------*
-*&      Form  EXPAND_CLASS_METHODS   (REUSED unchanged from ZCR_AURA_CODE_EXTRACTOR)
+*&      Form  EXPAND_CLASS_METHODS
+*&---------------------------------------------------------------------*
+*       SEOCOMPO (CMPTYPE = '1') only lists methods a class newly
+*       declares. A method that purely redefines an inherited method
+*       (e.g. the DEFINE/EXECUTE_ACTION overrides commonly found in
+*       OData _EXT classes) never gets its own SEOCOMPO row, so it would
+*       otherwise be silently dropped - RTTI's own method list includes
+*       redefinitions, so a per-class RTTI pass fills that gap below,
+*       tagged to every TR its owning class hit came from, same as the
+*       SEOCOMPO-sourced rows.
 *&---------------------------------------------------------------------*
 FORM expand_class_methods CHANGING ct_hits TYPE tt_tr_hit.
   DATA: lt_clas_hits  TYPE tt_tr_hit,
@@ -858,8 +910,6 @@ FORM expand_class_methods CHANGING ct_hits TYPE tt_tr_hit.
    WHERE clsname IN @lr_class_name
      AND cmptype = '1'.
 
-  CHECK sy-subrc = 0.
-
   LOOP AT lt_methods INTO DATA(ls_meth).
     LOOP AT lt_clas_hits INTO DATA(ls_clas_hit) WHERE obj_name = ls_meth-clsname.
       APPEND VALUE #( pgmid    = 'LIMU'
@@ -869,7 +919,45 @@ FORM expand_class_methods CHANGING ct_hits TYPE tt_tr_hit.
     ENDLOOP.
   ENDLOOP.
 
+  LOOP AT lt_clas_hits INTO DATA(ls_clas_hit_rtti).
+    PERFORM add_redefined_tr_methods USING ls_clas_hit_rtti CHANGING lt_new_hits.
+  ENDLOOP.
+
   APPEND LINES OF lt_new_hits TO ct_hits.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  ADD_REDEFINED_TR_METHODS
+*&---------------------------------------------------------------------*
+*       Adds any method RTTI reports as IS_REDEFINED = abap_true for
+*       IS_CLAS_HIT's class that isn't already present in CT_NEW_HITS
+*       under the same TRKORR - see EXPAND_CLASS_METHODS' own header
+*       comment for why this is needed alongside the SEOCOMPO query.
+*&---------------------------------------------------------------------*
+FORM add_redefined_tr_methods USING is_clas_hit TYPE ts_tr_hit
+                               CHANGING ct_new_hits TYPE tt_tr_hit.
+  DATA: lo_typedescr  TYPE REF TO cl_abap_typedescr,
+        lo_classdescr TYPE REF TO cl_abap_classdescr,
+        lv_obj_name   TYPE e071-obj_name.
+
+  TRY.
+      lo_typedescr = cl_abap_typedescr=>describe_by_name( is_clas_hit-obj_name ).
+    CATCH cx_root.
+      RETURN.
+  ENDTRY.
+
+  lo_classdescr ?= lo_typedescr.
+
+  LOOP AT lo_classdescr->methods INTO DATA(ls_method) WHERE is_redefined = abap_true.
+    lv_obj_name = |{ is_clas_hit-obj_name WIDTH = 30 }{ ls_method-name }|.
+
+    READ TABLE ct_new_hits TRANSPORTING NO FIELDS
+      WITH KEY object = 'METH' obj_name = lv_obj_name trkorr = is_clas_hit-trkorr.
+    IF sy-subrc <> 0.
+      APPEND VALUE #( pgmid = 'LIMU' object = 'METH' obj_name = lv_obj_name
+                       trkorr = is_clas_hit-trkorr ) TO ct_new_hits.
+    ENDIF.
+  ENDLOOP.
 ENDFORM.
 
 *&---------------------------------------------------------------------*

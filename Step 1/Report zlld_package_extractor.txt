@@ -3,14 +3,16 @@ REPORT zlld_package_extractor.
 *&---------------------------------------------------------------------*
 *& ZLLD_PACKAGE_EXTRACTOR
 *&---------------------------------------------------------------------*
-*  Package-scoped extraction with transport sync. First run against a
-*  package is a full extraction of every PROG/CLAS/FUNC (incl. FUGR
-*  members) it contains. Every run after that is incremental: only
-*  objects touched by released transports since the last sync, plus
-*  deletion detection against the package's live TADIR contents. In
-*  file mode, output is written in the LLD block format the downstream
-*  Python parser understands; in DB mode, the same data is staged and
-*  loaded into query-ready tables instead.
+*  Package-scoped extraction with transport sync, one or more packages
+*  per run (S_PACK). Each selected package is processed independently,
+*  start to finish, including its own ALV review screen. First run
+*  against a package is a full extraction of every PROG/CLAS/FUNC
+*  (incl. FUGR members) it contains. Every run after that is
+*  incremental: only objects touched by released transports since the
+*  last sync, plus deletion detection against the package's live TADIR
+*  contents. In file mode, output is written in the LLD block format the
+*  downstream Python parser understands; in DB mode, the same data is
+*  staged and loaded into query-ready tables instead.
 *
 *  Reuses ZCR_GET_DEPENDENCY_OBJ_NEW, ZCR_GET_OBJECT_SIGNATURE and
 *  Z_GET_DDIC_INFO as-is, and reuses several forms from
@@ -120,6 +122,11 @@ DATA: gt_e071        TYPE tt_e071,
       gv_full_path   TYPE string,
       gv_error       TYPE abap_bool.
 
+" The package this run's loop iteration is currently processing - set
+" once per PROCESS_ONE_PACKAGE call, read by every form below that used
+" to reference the (now multi-value) selection-screen field directly.
+DATA: gv_current_pack TYPE devclass.
+
 DATA: gv_run_type          TYPE char4,
       gs_sync_log          TYPE zdccrt_sync_log,
       gv_sync_found        TYPE abap_bool,
@@ -217,9 +224,13 @@ PARAMETERS: p_mdb   RADIOBUTTON GROUP outm DEFAULT 'X' USER-COMMAND ucomm,
 SELECTION-SCREEN END OF BLOCK b1.
 
 * text-002: maintain via SE38 Text Elements, e.g. "Package & Output"
+* S_PACK is low-only (NO INTERVALS) - each entered value is one whole
+* package, not a range; MAIN loops over the resolved values and runs
+* the full extraction independently for each one.
+TABLES: tdevc.
 SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE text-002.
-PARAMETERS: p_pack TYPE devclass,
-            p_file TYPE string  DEFAULT 'C:\temp\' MODIF ID fil.
+SELECT-OPTIONS: s_pack FOR tdevc-devclass OBLIGATORY NO INTERVALS.
+PARAMETERS: p_file TYPE string  DEFAULT 'C:\temp\' MODIF ID fil.
 SELECTION-SCREEN END OF BLOCK b2.
 
 AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_file.
@@ -266,10 +277,36 @@ START-OF-SELECTION.
 *&---------------------------------------------------------------------*
 *&      Form  MAIN
 *&---------------------------------------------------------------------*
-*       Orchestrates the whole run: determine FULL vs INCR, run
+*       Resolves S_PACK to a flat list of package values (each row is
+*       one EQ, low-only entry - see the selection screen) and runs the
+*       whole per-package extraction independently, once per package.
+*       DELETE ADJACENT DUPLICATES guards against the same package
+*       being entered twice on the selection screen.
+*&---------------------------------------------------------------------*
+FORM main.
+  DATA lt_packages TYPE STANDARD TABLE OF devclass.
+
+  gv_output_mode = COND #( WHEN p_mdb = abap_true THEN 'DB' ELSE 'FILE' ).
+
+  LOOP AT s_pack INTO DATA(ls_pack).
+    APPEND ls_pack-low TO lt_packages.
+  ENDLOOP.
+  SORT lt_packages.
+  DELETE ADJACENT DUPLICATES FROM lt_packages.
+
+  LOOP AT lt_packages INTO gv_current_pack.
+    PERFORM process_one_package.
+  ENDLOOP.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  PROCESS_ONE_PACKAGE
+*&---------------------------------------------------------------------*
+*       The full single-package extraction: determine FULL vs INCR, run
 *       deletion detection (always, regardless of run type), build the
 *       candidate object list, show the ALV review screen, and - once
-*       confirmed - write the LLD file and update sync state.
+*       confirmed - write the LLD file and update sync state. Runs once
+*       per GV_CURRENT_PACK, called from MAIN's loop over S_PACK.
 *
 *       Output-mode branching happens ONLY after CALL SCREEN 9000
 *       returns, at the exact point file mode writes its output -
@@ -278,29 +315,27 @@ START-OF-SELECTION.
 *       the FILE branch below calls exactly the same three forms, in
 *       the same order, that file mode has always called.
 *&---------------------------------------------------------------------*
-FORM main.
-  gv_output_mode = COND #( WHEN p_mdb = abap_true THEN 'DB' ELSE 'FILE' ).
-
-  PERFORM validate_package.
+FORM process_one_package.
+  PERFORM validate_package USING gv_current_pack CHANGING gv_error.
   CHECK gv_error = abap_false.
 
-  PERFORM read_sync_log USING p_pack CHANGING gs_sync_log gv_sync_found.
+  PERFORM read_sync_log USING gv_current_pack CHANGING gs_sync_log gv_sync_found.
   gv_run_type = COND #( WHEN gv_sync_found = abap_true THEN 'INCR' ELSE 'FULL' ).
 
   " Deletion detection runs on every run - on a first (FULL) run there is
   " simply nothing stored yet to compare against, so it naturally yields
   " zero removed objects rather than needing a special case here.
-  PERFORM build_package_inventory USING p_pack CHANGING gt_current_inventory.
-  PERFORM detect_removed_objects USING p_pack gt_current_inventory
+  PERFORM build_package_inventory USING gv_current_pack CHANGING gt_current_inventory.
+  PERFORM detect_removed_objects USING gv_current_pack gt_current_inventory
                                   CHANGING gt_removed_objects.
 
   CLEAR: gt_e071, gr_class_name, gt_hits, gt_lld_multi_obj, gv_extracted_count.
 
   IF gv_run_type = 'FULL'.
-    PERFORM build_object_list_from_package USING p_pack.
+    PERFORM build_object_list_from_package USING gv_current_pack.
     PERFORM convert_e071_to_lld_hits CHANGING gt_hits.
   ELSE.
-    PERFORM gather_qualifying_transports USING p_pack gs_sync_log-last_trkorr_hwm
+    PERFORM gather_qualifying_transports USING gv_current_pack gs_sync_log-last_trkorr_hwm
                                           CHANGING gt_qualifying_trkorr gv_new_hwm.
 
     LOOP AT gt_qualifying_trkorr INTO DATA(lv_qual_trkorr).
@@ -313,10 +348,24 @@ FORM main.
   ENDIF.
 
   PERFORM build_unique_lld_objects USING gt_hits.
-  PERFORM determine_lld_output_path USING p_pack gv_run_type.
+  PERFORM determine_lld_output_path USING gv_current_pack gv_run_type.
 
   CLEAR gv_multi_cancelled.
   CALL SCREEN 9000.
+
+  " The ALV container/grid are freed here rather than left bound, so
+  " the next package's iteration (if any) rebuilds screen 9000's ALV
+  " fresh against ITS OWN GT_LLD_MULTI_OBJ - STATUS_9000's own PBO logic
+  " only calls CREATE_LLD_ALV when GO_CONTAINER is not yet bound, which
+  " would otherwise leave a second package's review screen showing the
+  " first package's rows.
+  IF go_alv_grid IS BOUND.
+    go_alv_grid->free( ).
+  ENDIF.
+  IF go_container IS BOUND.
+    go_container->free( ).
+  ENDIF.
+  CLEAR: go_alv_grid, go_container.
 
   CHECK gv_multi_cancelled = abap_false.
 
@@ -324,13 +373,13 @@ FORM main.
     WHEN 'DB'.
       PERFORM generate_run_id CHANGING gv_run_id.
       PERFORM build_and_stage_lld_db.
-      PERFORM finalize_sync_state USING p_pack gv_run_type gv_new_hwm.
+      PERFORM finalize_sync_state USING gv_current_pack gv_run_type gv_new_hwm.
       PERFORM call_extract_to_db USING gv_run_id.
       PERFORM display_db_mode_result.
 
     WHEN OTHERS.  " 'FILE' - the default output mode.
       PERFORM build_and_write_lld_file.
-      PERFORM finalize_sync_state USING p_pack gv_run_type gv_new_hwm.
+      PERFORM finalize_sync_state USING gv_current_pack gv_run_type gv_new_hwm.
       PERFORM download_output_file.
   ENDCASE.
 ENDFORM.
@@ -338,25 +387,14 @@ ENDFORM.
 *&---------------------------------------------------------------------*
 *&      Form  VALIDATE_PACKAGE
 *&---------------------------------------------------------------------*
-FORM validate_package.
-  CLEAR gv_error.
+FORM validate_package USING iv_package TYPE devclass
+                       CHANGING cv_error TYPE abap_bool.
+  CLEAR cv_error.
 
-  " P_PACK is NOT marked OBLIGATORY (removed for the same reason as
-  " P_FILE - see that field's own comment: OBLIGATORY's mandatory-field
-  " PAI check interfered with the hide/show round-trip triggered by
-  " P_MDB's USER-COMMAND). A blank check here replaces that validation
-  " instead, with its own clear message rather than falling through to
-  " "Package does not exist" with an empty name in it.
-  IF p_pack IS INITIAL.
-    MESSAGE 'Package is required.' TYPE 'S' DISPLAY LIKE 'E'.
-    gv_error = abap_true.
-    RETURN.
-  ENDIF.
-
-  SELECT SINGLE devclass FROM tdevc INTO @DATA(lv_dummy) WHERE devclass = @p_pack.
+  SELECT SINGLE devclass FROM tdevc INTO @DATA(lv_dummy) WHERE devclass = @iv_package.
   IF sy-subrc <> 0.
-    MESSAGE |Package { p_pack } does not exist.| TYPE 'S' DISPLAY LIKE 'E'.
-    gv_error = abap_true.
+    MESSAGE |Package { iv_package } does not exist - skipped.| TYPE 'S' DISPLAY LIKE 'E'.
+    cv_error = abap_true.
   ENDIF.
 ENDFORM.
 
@@ -1204,7 +1242,7 @@ FORM extract_lld_object USING iv_owner_type TYPE e071-object
                                            CHANGING lv_dep_json lv_skip.
   CHECK lv_skip = abap_false.
 
-  PERFORM append_lld_object_block USING lv_lld_type iv_owner_name p_pack lt_source lv_dep_json.
+  PERFORM append_lld_object_block USING lv_lld_type iv_owner_name gv_current_pack lt_source lv_dep_json.
   gv_extracted_count = gv_extracted_count + 1.
 ENDFORM.
 
@@ -1494,8 +1532,8 @@ FORM build_and_write_lld_file.
 
   CLEAR gt_output.
 
-  PERFORM build_package_ddic_json USING p_pack CHANGING lv_ddic_json.
-  PERFORM append_file_header USING p_pack gv_run_type gt_removed_objects lv_ddic_json.
+  PERFORM build_package_ddic_json USING gv_current_pack CHANGING lv_ddic_json.
+  PERFORM append_file_header USING gv_current_pack gv_run_type gt_removed_objects lv_ddic_json.
   PERFORM process_checked_lld_objects.
 ENDFORM.
 
@@ -1687,8 +1725,8 @@ FORM build_and_stage_lld_db.
 
   gv_extracted_count = 0.
 
-  PERFORM build_package_ddic_json USING p_pack CHANGING lv_ddic_json.
-  PERFORM stage_extraction_run USING gv_run_id p_pack gv_run_type gt_removed_objects.
+  PERFORM build_package_ddic_json USING gv_current_pack CHANGING lv_ddic_json.
+  PERFORM stage_extraction_run USING gv_run_id gv_current_pack gv_run_type gt_removed_objects.
   PERFORM stage_package_ddic USING gv_run_id lv_ddic_json.
   PERFORM process_checked_lld_objects_db.
 ENDFORM.
@@ -1773,7 +1811,7 @@ FORM extract_lld_object_db USING iv_owner_type TYPE e071-object
                                            CHANGING lv_dep_json lv_skip.
   CHECK lv_skip = abap_false.
 
-  PERFORM stage_lld_object USING gv_run_id iv_owner_type iv_owner_name p_pack lt_source lv_dep_json.
+  PERFORM stage_lld_object USING gv_run_id iv_owner_type iv_owner_name gv_current_pack lt_source lv_dep_json.
   gv_extracted_count = gv_extracted_count + 1.
 ENDFORM.
 

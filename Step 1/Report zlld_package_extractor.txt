@@ -678,15 +678,25 @@ ENDFORM.
 *       IV_CLSNAME that isn't already present in CT_HITS - see
 *       ADD_CLASS_METHODS' own header comment for why this is needed
 *       alongside the SEOCOMPO query.
+*
+*       IV_CLSNAME is TYPE E071-OBJ_NAME, matching its only caller
+*       exactly (GT_E071's own OBJ_NAME field) - a classic FORM's
+*       default by-reference USING binding requires the actual
+*       parameter's type to be IDENTICAL to the formal's, so this
+*       cannot stay a narrower SEOCLSNAME. Narrowed to SEOCLSNAME
+*       locally for RTTI and for the fixed-width OBJ_NAME it builds.
 *&---------------------------------------------------------------------*
-FORM add_redefined_class_methods USING iv_clsname TYPE seoclsname
+FORM add_redefined_class_methods USING iv_clsname TYPE e071-obj_name
                                   CHANGING ct_hits TYPE tt_e071.
   DATA: lo_typedescr  TYPE REF TO cl_abap_typedescr,
         lo_classdescr TYPE REF TO cl_abap_classdescr,
+        lv_clsname    TYPE seoclsname,
         lv_obj_name   TYPE e071-obj_name.
 
+  lv_clsname = iv_clsname.
+
   TRY.
-      lo_typedescr = cl_abap_typedescr=>describe_by_name( iv_clsname ).
+      lo_typedescr = cl_abap_typedescr=>describe_by_name( lv_clsname ).
     CATCH cx_root.
       RETURN.
   ENDTRY.
@@ -694,7 +704,7 @@ FORM add_redefined_class_methods USING iv_clsname TYPE seoclsname
   lo_classdescr ?= lo_typedescr.
 
   LOOP AT lo_classdescr->methods INTO DATA(ls_method) WHERE is_redefined = abap_true.
-    lv_obj_name = |{ iv_clsname WIDTH = 30 }{ ls_method-name }|.
+    lv_obj_name = |{ lv_clsname WIDTH = 30 }{ ls_method-name }|.
 
     READ TABLE ct_hits TRANSPORTING NO FIELDS
       WITH KEY object = 'METH' obj_name = lv_obj_name.

@@ -35,8 +35,7 @@ FORM confirm_and_empty_tables.
       titlebar       = 'Empty ZDCCRT_* run-data tables'
       text_question  = 'This deletes all rows from the 12 ZDCCRT_* run-data tables (ZDCCRT_EKIND_MAP and ZDCCRT_CONFIG are left untouched). This cannot be undone. Continue?'
       text_button_1  = 'Yes'
-      text_button_2  = 'Cancel'
-      default_button = '2'
+      default_button = 'C'
     IMPORTING
       answer         = lv_answer.
 

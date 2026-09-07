@@ -578,7 +578,7 @@ FORM build_object_list_from_package USING iv_package TYPE devclass.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
-*&      Form  BUILD_OBJECT_LIST_FROM_PROG   (REUSED unchanged)
+*&      Form  BUILD_OBJECT_LIST_FROM_PROG
 *&---------------------------------------------------------------------*
 FORM build_object_list_from_prog USING iv_prog TYPE sy-repid.
   DATA ls_e071 TYPE e071.
@@ -588,8 +588,9 @@ FORM build_object_list_from_prog USING iv_prog TYPE sy-repid.
     INTO @DATA(ls_trdir)
     WHERE name = @iv_prog.
 
+  " A TADIR entry with no matching TRDIR row (orphaned registration, or
+  " never activated) is silently skipped rather than extracted.
   IF sy-subrc <> 0.
-    MESSAGE |Program { iv_prog } does not exist or is inactive - skipped.| TYPE 'S' DISPLAY LIKE 'E'.
     RETURN.
   ENDIF.
 
@@ -637,7 +638,7 @@ FORM add_program_includes USING iv_program TYPE sy-repid.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
-*&      Form  BUILD_OBJECT_LIST_FROM_CLASS   (REUSED unchanged)
+*&      Form  BUILD_OBJECT_LIST_FROM_CLASS
 *&---------------------------------------------------------------------*
 FORM build_object_list_from_class USING iv_clas TYPE seoclsname.
   SELECT SINGLE clsname, clstype
@@ -645,8 +646,9 @@ FORM build_object_list_from_class USING iv_clas TYPE seoclsname.
     INTO @DATA(ls_class)
     WHERE clsname = @iv_clas.
 
+  " A TADIR entry with no matching SEOCLASS row is silently skipped
+  " rather than extracted.
   IF sy-subrc <> 0.
-    MESSAGE |Class { iv_clas } does not exist - skipped.| TYPE 'S' DISPLAY LIKE 'E'.
     RETURN.
   ENDIF.
 
@@ -659,7 +661,7 @@ FORM build_object_list_from_class USING iv_clas TYPE seoclsname.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
-*&      Form  BUILD_OBJECT_LIST_FROM_FUNC   (REUSED unchanged)
+*&      Form  BUILD_OBJECT_LIST_FROM_FUNC
 *&---------------------------------------------------------------------*
 FORM build_object_list_from_func USING iv_func TYPE rs38l_fnam.
   SELECT SINGLE funcname
@@ -667,8 +669,9 @@ FORM build_object_list_from_func USING iv_func TYPE rs38l_fnam.
     INTO @DATA(lv_funcname)
     WHERE funcname = @iv_func.
 
+  " A TADIR entry with no matching TFDIR row is silently skipped rather
+  " than extracted.
   IF sy-subrc <> 0.
-    MESSAGE |Function Module { iv_func } does not exist - skipped.| TYPE 'S' DISPLAY LIKE 'E'.
     RETURN.
   ENDIF.
 

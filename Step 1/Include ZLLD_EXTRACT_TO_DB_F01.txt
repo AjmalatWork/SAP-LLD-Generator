@@ -552,6 +552,14 @@ FORM zlld_tokenize_chunk USING iv_text TYPE string
   LOOP AT lt_matches INTO DATA(ls_match).
     lv_token = to_lower( substring( val = iv_text off = ls_match-offset len = ls_match-length ) ).
 
+    " Purely numeric tokens (line-number-like literals, WIDTH/offset
+    " constants, padding) carry no domain meaning for text similarity -
+    " a plain-English requirement essentially never quotes a bare number
+    " to match against, so these just dilute the vector.
+    IF lv_token CO '0123456789'.
+      CONTINUE.
+    ENDIF.
+
     READ TABLE it_stopwords TRANSPORTING NO FIELDS WITH KEY table_line = lv_token BINARY SEARCH.
     IF sy-subrc = 0.
       CONTINUE.

@@ -2418,7 +2418,10 @@ ENDFORM.
 *&      Form  BUILD_LLD_FIELDCAT
 *&---------------------------------------------------------------------*
 *       Only CHECKED is editable - no version/compare column exists in
-*       this report at all.
+*       this report at all. TR_LIST/MOST_RECENT_TR are only populated on
+*       an INCREMENTAL run (see BUILD_UNIQUE_LLD_OBJECTS), so they're
+*       left out of the fieldcat entirely on a FULL run rather than
+*       shown blank.
 *&---------------------------------------------------------------------*
 FORM build_lld_fieldcat CHANGING ct_fieldcat TYPE lvc_t_fcat.
   CLEAR ct_fieldcat.
@@ -2427,10 +2430,13 @@ FORM build_lld_fieldcat CHANGING ct_fieldcat TYPE lvc_t_fcat.
                    checkbox = abap_true edit = abap_true outputlen = 8 ) TO ct_fieldcat.
   APPEND VALUE #( fieldname = 'OBJ_DISPLAY'    coltext = 'Object'
                    outputlen = 40 ) TO ct_fieldcat.
-  APPEND VALUE #( fieldname = 'TR_LIST'        coltext = 'TRs Appeared In'
-                   outputlen = 40 ) TO ct_fieldcat.
-  APPEND VALUE #( fieldname = 'MOST_RECENT_TR' coltext = 'Most Recent TR'
-                   outputlen = 20 ) TO ct_fieldcat.
+
+  IF gv_run_type = 'INCR'.
+    APPEND VALUE #( fieldname = 'TR_LIST'        coltext = 'TRs Appeared In'
+                     outputlen = 40 ) TO ct_fieldcat.
+    APPEND VALUE #( fieldname = 'MOST_RECENT_TR' coltext = 'Most Recent TR'
+                     outputlen = 20 ) TO ct_fieldcat.
+  ENDIF.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
